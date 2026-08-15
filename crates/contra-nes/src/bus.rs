@@ -27,12 +27,12 @@ pub struct NesBus {
 }
 
 impl NesBus {
-    pub fn new(mapper: Mapper2, ppu: Ppu) -> Self {
+    pub fn new(mapper: Mapper2, ppu: Ppu, audio_sample_rate: f64) -> Self {
         Self {
             ram: [0; 0x800],
             prg_ram: [0; 0x2000],
             ppu,
-            apu: Apu::new(),
+            apu: Apu::new(audio_sample_rate),
             mapper,
             controllers: [Controller::default(), Controller::default()],
             dma_stall: 0,

@@ -18,6 +18,7 @@ bincode = { workspace = true }
 winit = "0.29"
 softbuffer = "0.4"
 gilrs = "0.10"
+cpal = "0.15"
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }

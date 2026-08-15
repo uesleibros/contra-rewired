@@ -10,6 +10,8 @@
 //! runs and the engine pipeline (config -> input -> save states ->
 //! framebuffer -> window) stays demonstrable on its own.
 
+mod audio;
+
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -172,6 +174,13 @@ impl Session {
         }
     }
 
+    /// Empty for the placeholder demo - it has no APU to drain.
+    fn drain_audio(&mut self) -> Vec<f32> {
+        match self {
+            Session::Emulator { nes, .. } => nes.take_audio_samples(),
+            Session::Placeholder { .. } => Vec::new(),
+        }
+    }
 }
 
 fn controller_byte(actions: &ActionState) -> u8 {
@@ -214,7 +223,7 @@ fn resolve_rom_path(args: &Args) -> Option<PathBuf> {
     default.exists().then_some(default)
 }
 
-fn load_session(args: &Args, rewind_capacity: usize) -> Session {
+fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> Session {
     let Some(path) = resolve_rom_path(args) else {
         log::info!("No ROM specified and no ./baserom.nes found - running the engine-only placeholder demo. Pass a ROM path: contra-pc <path-to-your-rom.nes>");
         return Session::Placeholder {
@@ -234,7 +243,7 @@ fn load_session(args: &Args, rewind_capacity: usize) -> Session {
                 rom.md5_hex
             );
             let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
-            let nes = Nes::new(rom.prg_rom, mirroring);
+            let nes = Nes::new_with_audio(rom.prg_rom, mirroring, audio_sample_rate);
             Session::Emulator {
                 nes: Box::new(nes),
                 save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
@@ -276,7 +285,13 @@ fn main() -> anyhow::Result<()> {
     let rewind_capacity = (config.gameplay.rewind_buffer_seconds as usize) * 60;
     let rewind_enabled = config.gameplay.rewind_enabled;
 
-    let mut session = load_session(&args, rewind_capacity);
+    let audio_output = audio::AudioOutput::new();
+    if audio_output.is_none() {
+        log::warn!("no audio output available; running silently");
+    }
+    let audio_sample_rate = audio_output.as_ref().map(|a| a.sample_rate).unwrap_or(44_100.0);
+
+    let mut session = load_session(&args, rewind_capacity, audio_sample_rate);
     let window_title = match &session {
         Session::Emulator { .. } => "contra-rewired",
         Session::Placeholder { .. } => "contra-rewired (no ROM loaded - engine placeholder demo)",
@@ -335,7 +350,7 @@ fn main() -> anyhow::Result<()> {
                     if repeat {
                         return;
                     }
-                    let code = format!("{physical_key:?}");
+                    let code = key_code_name(physical_key);
                     let is_down = state == ElementState::Pressed;
                     if is_down {
                         held_keys.insert(code);
@@ -395,6 +410,9 @@ fn main() -> anyhow::Result<()> {
                 while accumulator >= frame_duration {
                     if routine.accepts_gameplay_input() {
                         session.step(&action_state, rewind_enabled);
+                        if let Some(audio) = &audio_output {
+                            audio.push_samples(&session.drain_audio());
+                        }
                     }
                     accumulator -= frame_duration;
                 }
@@ -447,6 +465,23 @@ fn poll_gamepad(gilrs: Option<&mut Gilrs>) -> GamepadFrame {
         jump: gamepad.is_pressed(Button::East),
         start: gamepad.is_pressed(Button::Start),
         select: gamepad.is_pressed(Button::Select),
+    }
+}
+
+/// Turns a winit [`PhysicalKey`] into the plain key-name string
+/// [`contra_core::input::Bindings`] uses (e.g. `"Enter"`, `"ArrowUp"`).
+///
+/// This must format the *inner* [`KeyCode`], not [`PhysicalKey`] itself:
+/// `PhysicalKey` is `enum { Code(KeyCode), Unidentified(NativeKeyCode) }`,
+/// so `format!("{physical_key:?}")` on a known key produces `"Code(Enter)"`,
+/// which never matches a binding stored as `"Enter"`. That mismatch
+/// silently broke every keyboard action bound through `Bindings` (Start,
+/// Select, and anything else routed through `keyboard_held`) even though
+/// the input event itself was received correctly.
+fn key_code_name(physical_key: PhysicalKey) -> String {
+    match physical_key {
+        PhysicalKey::Code(key_code) => format!("{key_code:?}"),
+        PhysicalKey::Unidentified(native) => format!("Unidentified({native:?})"),
     }
 }
 
@@ -536,3 +571,53 @@ fn present(surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit
     }
     let _ = buffer.present();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_code_name_matches_bindings_string_not_the_enum_debug_wrapper() {
+        // This is the exact bug: PhysicalKey debug-formats as "Code(Enter)",
+        // not "Enter". key_code_name must unwrap to the bare KeyCode name so
+        // it matches what Bindings::default_keyboard_p1 stores.
+        assert_eq!(key_code_name(PhysicalKey::Code(KeyCode::Enter)), "Enter");
+        assert_eq!(key_code_name(PhysicalKey::Code(KeyCode::ShiftRight)), "ShiftRight");
+        assert_eq!(key_code_name(PhysicalKey::Code(KeyCode::ArrowUp)), "ArrowUp");
+        assert_eq!(key_code_name(PhysicalKey::Code(KeyCode::KeyZ)), "KeyZ");
+    }
+
+    #[test]
+    fn default_keyboard_bindings_are_reachable_via_key_code_name() {
+        // Every default P1 binding must be producible by key_code_name for
+        // some real KeyCode - otherwise the binding can never match a live
+        // key press, regardless of what the player presses.
+        let bindings = Bindings::default_keyboard_p1();
+        let live_codes = [
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::KeyZ,
+            KeyCode::KeyX,
+            KeyCode::Enter,
+            KeyCode::ShiftRight,
+            KeyCode::Escape,
+            KeyCode::F5,
+            KeyCode::F9,
+            KeyCode::Backspace,
+            KeyCode::F6,
+        ];
+        let reachable: std::collections::HashSet<String> =
+            live_codes.into_iter().map(|kc| key_code_name(PhysicalKey::Code(kc))).collect();
+
+        for inputs in bindings.map.values() {
+            for input in inputs {
+                if let PhysicalInput::Keyboard(name) = input {
+                    assert!(reachable.contains(name), "binding {name:?} is unreachable from any live KeyCode");
+                }
+            }
+        }
+    }
+}
+

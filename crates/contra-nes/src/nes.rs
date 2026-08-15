@@ -12,6 +12,7 @@ use crate::ppu::{Mirroring, Ppu, SCREEN_H};
 const DOTS_PER_SCANLINE: f64 = 341.0;
 const CPU_DOTS_PER_CYCLE: f64 = 3.0;
 const SCANLINES_AFTER_VBLANK_START: u32 = 20; // 262 total = 1 pre-render + 240 visible + 1 post-render + 1 vblank-start + 19 more
+const DEFAULT_AUDIO_SAMPLE_RATE: f64 = 44_100.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Nes {
@@ -22,10 +23,16 @@ pub struct Nes {
 impl Nes {
     /// `prg_rom` and `mirroring` come from the user's own dumped ROM (see
     /// `contra-assets`); this crate never bundles or reads a ROM itself.
+    /// Uses a default 44.1kHz audio sample rate; see
+    /// [`Self::new_with_audio`] to match your actual output device.
     pub fn new(prg_rom: Vec<u8>, mirroring: Mirroring) -> Self {
+        Self::new_with_audio(prg_rom, mirroring, DEFAULT_AUDIO_SAMPLE_RATE)
+    }
+
+    pub fn new_with_audio(prg_rom: Vec<u8>, mirroring: Mirroring, audio_sample_rate: f64) -> Self {
         let mapper = Mapper2::new(prg_rom);
         let ppu = Ppu::new(mirroring);
-        let mut bus = NesBus::new(mapper, ppu);
+        let mut bus = NesBus::new(mapper, ppu, audio_sample_rate);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
         Self { cpu, bus }
@@ -39,6 +46,13 @@ impl Nes {
 
     pub fn framebuffer(&self) -> &[u32] {
         &self.bus.ppu.framebuffer
+    }
+
+    /// Drains every audio sample generated since the last call (mono,
+    /// `f32` in roughly `[0, 1)`), for the front-end to feed to its audio
+    /// output device.
+    pub fn take_audio_samples(&mut self) -> Vec<f32> {
+        self.bus.apu.take_samples()
     }
 
     /// Runs exactly one NTSC frame (262 scanlines): pre-render, 240 visible
@@ -71,8 +85,15 @@ impl Nes {
     fn advance_cpu(&mut self, budget: &mut f64) {
         *budget += DOTS_PER_SCANLINE / CPU_DOTS_PER_CYCLE;
         while (self.cpu.cycles as f64) < *budget {
-            self.cpu.step(&mut self.bus);
+            let cycles = self.cpu.step(&mut self.bus);
+            for _ in 0..cycles {
+                self.bus.apu.step();
+            }
             if self.bus.dma_stall > 0 {
+                // OAM DMA halts the CPU but not the APU on real hardware.
+                for _ in 0..self.bus.dma_stall {
+                    self.bus.apu.step();
+                }
                 self.cpu.cycles += self.bus.dma_stall as u64;
                 self.bus.dma_stall = 0;
             }

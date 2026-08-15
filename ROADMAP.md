@@ -37,8 +37,11 @@ everything else is an opt-in layered on top, never a replacement.
 - [x] Standard controller shift-register protocol, 2 ports (`controller.rs`)
 - [x] Full-state save/rewind snapshots that skip the static PRG-ROM
       (`Nes::snapshot`/`restore`, `NesSnapshot`)
-- [ ] APU: **silent stub today** - pulse/triangle/noise/DMC synthesis not
-      implemented (`apu.rs`)
+- [x] APU: pulse 1/2, triangle, and noise channels, frame sequencer
+      (4-step/5-step), length counters, envelopes, sweep, the standard
+      non-linear mixing formula, real-time playback via `cpal` in
+      `contra-pc` (`apu.rs`, 27 tests) - **DMC (sample playback) not
+      implemented**, registers accepted but silent
 - [ ] Per-dot PPU timing for mid-scanline register-change effects
 - [ ] Additional mappers, if a future ROM needs one (Contra only needs UxROM)
 - [ ] Undocumented/illegal 6502 opcodes (currently a recorded no-op; add
@@ -73,7 +76,11 @@ is loaded**
 
 **Controls**
 - [x] Fully rebindable action system (`input.rs`), hold/toggle fire modes
-- [x] Keyboard support (`contra-pc`)
+- [x] Keyboard support (`contra-pc`) - fixed a bug where every keyboard
+      binding silently never matched (`format!("{physical_key:?}")` on
+      winit's `PhysicalKey` prints `"Code(Enter)"`, not `"Enter"`, so it
+      never equaled what `Bindings` stores); regression-tested in
+      `main.rs` so this class of bug can't come back quietly
 - [x] Gamepad support via `gilrs` (`contra-pc`): d-pad + left stick with
       deadzone for movement, south/east face buttons for shoot/jump, Start
       for pause - works alongside keyboard, first connected pad only

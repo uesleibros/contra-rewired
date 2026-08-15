@@ -11,9 +11,11 @@ opt-in layer instead of a replacement.**
 > plays the actual game, not a reimplementation of it. Verified against a
 > real US retail ROM: title screen, stage intro, and in-level gameplay
 > (player, enemies, item drops) all render correctly - see
-> [docs/FIDELITY.md](docs/FIDELITY.md) for exactly what was checked. No
-> sound yet (the APU is a silent stub). See [Project status](#project-status)
-> and [ROADMAP.md](ROADMAP.md) for exactly what's real today versus planned.
+> [docs/FIDELITY.md](docs/FIDELITY.md) for exactly what was checked. It has
+> real audio too now (pulse/triangle/noise synthesis, played back live via
+> `cpal`; DMC sample playback is the one channel still missing). See
+> [Project status](#project-status) and [ROADMAP.md](ROADMAP.md) for exactly
+> what's real today versus planned.
 
 ## Why an emulator core, not a hand-ported reimplementation
 
@@ -75,7 +77,7 @@ instead of failing outright.
 | 6502/2A03 CPU | All official opcodes, incl. the JMP-indirect page-boundary bug; 21 unit tests against hand-assembled programs - see `crates/contra-nes/src/cpu.rs` |
 | 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
 | Mapper 2 (UxROM) | Implemented - PRG bank switching, CHR-RAM |
-| APU | **Silent stub** - no audio synthesis yet |
+| APU | Pulse 1/2, triangle, noise, frame sequencer, real-time playback via `cpal` - **DMC (sample playback) not implemented** |
 | Controller input | Implemented (standard shift-register protocol) |
 | Save states | Full emulator snapshots (CPU+RAM+PPU+APU), excluding the static PRG-ROM - real quick save/load/rewind wired in `contra-pc` |
 | **Hand-ported simulation layer** (`contra-core`) | |
@@ -103,7 +105,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-53 tests, all green, no ROM or window required - the emulator core is
+60 tests, all green, no ROM or window required - the emulator core is
 validated with small original hand-assembled 6502 programs (see
 `crates/contra-nes/src/cpu.rs` and `nes.rs`), not against Contra itself.
 

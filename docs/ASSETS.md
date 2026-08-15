@@ -41,8 +41,10 @@ cargo run -p contra-extract -- path\to\your\baserom.nes
 2. Computes an MD5 and tells you whether it matches the documented US retail
    hash (`7bdad8b4a7a56a634c9649d20bd3011b`) - informational only, so you know
    what you pointed it at. We never bundle, cache, or transmit the ROM.
-3. Reports sizes/mapper and exits. `contra-pc` does the same validation
-   internally, so this is mainly for scripting/CI or a quick sanity check.
+3. Reports sizes/mapper, and if the mapper is 2 (UxROM, what Contra USA
+   uses), prints the exact `contra-pc` command to play it. `contra-pc` does
+   the same validation internally, so this is mainly for a quick sanity
+   check or scripting - not a required step before playing.
 
 `contra-pc` itself needs no separate extraction step - pass it the ROM path
 directly (`cargo run -p contra-pc -- path\to\your\baserom.nes`) or drop a
