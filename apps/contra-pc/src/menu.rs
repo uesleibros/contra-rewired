@@ -67,6 +67,14 @@ pub struct Settings {
     pub zoom_percent: i32,
     pub fullscreen: bool,
     pub audio_muted: bool,
+    /// Overlays each active sprite's bounding box (from OAM, scaled/offset
+    /// to match wherever wide mode currently draws it - see
+    /// `contra_nes::Nes::wide_x_offset`). This is the *visual* sprite
+    /// bounding box, not necessarily Contra's exact collision box (which
+    /// may be smaller or offset within it) - a useful, honest
+    /// approximation without needing to reverse-engineer every entity's
+    /// real hitbox from the disassembly.
+    pub show_hitboxes: bool,
 }
 
 impl Default for Settings {
@@ -78,6 +86,7 @@ impl Default for Settings {
             zoom_percent: 100,
             fullscreen: false,
             audio_muted: false,
+            show_hitboxes: false,
         }
     }
 }
@@ -157,11 +166,12 @@ pub fn pause_menu(
 }
 
 fn settings_tab(ui: &mut egui::Ui, settings: &mut Settings) {
-    ui.checkbox(&mut settings.widescreen, "Widescreen");
-    ui.checkbox(&mut settings.unlimited_sprites, "No sprite flicker");
-    ui.checkbox(&mut settings.pixel_perfect, "Pixel perfect");
-    ui.checkbox(&mut settings.fullscreen, "Fullscreen");
-    ui.checkbox(&mut settings.audio_muted, "Mute audio");
+    ui.checkbox(&mut settings.widescreen, "Widescreen (F1)");
+    ui.checkbox(&mut settings.unlimited_sprites, "No sprite flicker (F2)");
+    ui.checkbox(&mut settings.pixel_perfect, "Pixel perfect (F3)");
+    ui.checkbox(&mut settings.show_hitboxes, "Show hitboxes (F4)");
+    ui.checkbox(&mut settings.fullscreen, "Fullscreen (F11)");
+    ui.checkbox(&mut settings.audio_muted, "Mute audio (F8)");
     ui.horizontal(|ui| {
         ui.label("Zoom");
         ui.add(egui::Slider::new(&mut settings.zoom_percent, 50..=300).suffix("%"));

@@ -120,6 +120,14 @@ pub struct Ppu {
     /// frame-to-frame.
     #[serde(skip)]
     frame_scroll_dir: i8,
+    /// Fraction (0.0..=1.0) of wide mode's extra width currently placed on
+    /// the *left* margin - `0.5` centered, `0.1` mostly-right (biased
+    /// toward a rightward-scrolling leading edge), `0.9` mostly-left.
+    /// Eased toward `frame_scroll_dir`'s target each frame in
+    /// [`Self::step_wide_bias`] rather than snapping straight to it, so a
+    /// direction change pans instead of visibly jumping.
+    #[serde(skip)]
+    wide_bias_frac: f32,
 }
 
 impl Ppu {
@@ -146,6 +154,7 @@ impl Ppu {
             unlimited_sprites: false,
             prev_frame_scroll_x: None,
             frame_scroll_dir: 0,
+            wide_bias_frac: 0.5,
         }
     }
 
@@ -307,25 +316,20 @@ impl Ppu {
         let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
         let wide = width > SCREEN_W;
         let extra = width as i32 - SCREEN_W as i32;
+
+        if y == 0 {
+            self.step_wide_bias();
+        }
         // Biased, not centered: an auto-scrolling stage has only pre-drawn
         // nametable data in the direction it's scrolling *toward* (see
         // `EXTENDED_WIDTH`'s docs) - the trailing edge, behind the camera,
-        // can be stale/wrong. Put (almost) all the extra width on the
-        // leading edge instead of splitting it 50/50, so wide mode uses
-        // real drawn tiles from the direction that has them instead of
-        // showing half of a strip that's known-bad. Stationary scenes
-        // (`frame_scroll_dir == 0`: indoor rooms, boss arenas, before the
-        // first frame) keep the old centered split, since neither edge is
-        // "trailing" there.
-        let x_offset = if !wide {
-            0
-        } else {
-            match self.frame_scroll_dir {
-                d if d > 0 => (extra as f32 * 0.1).round() as i32, // scrolling right: trailing edge is on the left
-                d if d < 0 => (extra as f32 * 0.9).round() as i32, // scrolling left: trailing edge is on the right
-                _ => extra / 2,
-            }
-        };
+        // can be stale/wrong. `wide_bias_frac` (see `step_wide_bias`) is
+        // the fraction of `extra` that goes on the left; it's *eased*
+        // toward its target over several frames rather than snapping, so a
+        // frame-to-frame direction flip (a brief pause, a jitter in the
+        // scroll delta) pans the extra columns instead of visibly
+        // teleporting them to the other edge.
+        let x_offset = if wide { (extra as f32 * self.wide_bias_frac).round() as i32 } else { 0 };
 
         if y == SCREEN_H - 1 {
             self.update_frame_scroll_dir();
@@ -358,6 +362,49 @@ impl Ppu {
         }
 
         self.advance_v_for_next_line();
+    }
+
+    /// How many pixels the wide-mode background/sprites are currently
+    /// shifted right of their normal (narrow-mode) position - `0` when not
+    /// wide. Public so a front-end overlaying its own screen-space
+    /// annotations (e.g. a hitbox viewer) on top of the wide framebuffer
+    /// can line them up with where sprites actually got drawn, including
+    /// the direction bias in [`Self::wide_bias_frac`] (which moves frame
+    /// to frame, so this can't just be computed once from settings).
+    pub fn wide_x_offset(&self) -> i32 {
+        let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
+        if width <= SCREEN_W {
+            0
+        } else {
+            ((width - SCREEN_W) as f32 * self.wide_bias_frac).round() as i32
+        }
+    }
+
+    /// Current sprite height in pixels (8 or 16), from PPUCTRL bit 5 - the
+    /// same value [`Self::render_sprites_line`] uses, exposed for a
+    /// front-end drawing sprite-bounds overlays (see [`Self::wide_x_offset`]).
+    pub fn sprite_height(&self) -> i32 {
+        if self.ctrl & CTRL_SPRITE_16 != 0 {
+            16
+        } else {
+            8
+        }
+    }
+
+    /// Eases [`Self::wide_bias_frac`] toward whatever `frame_scroll_dir`
+    /// currently calls for (0.1 scrolling right, 0.9 scrolling left, 0.5
+    /// stationary), by at most `MAX_STEP` per frame instead of snapping.
+    /// Called once per frame (at `y == 0`), before that frame's scanlines
+    /// use `wide_bias_frac` to place the extra wide-mode columns.
+    fn step_wide_bias(&mut self) {
+        const MAX_STEP: f32 = 0.04; // ~0.8 span (0.1<->0.9) over ~20 frames, a third of a second
+        let target = match self.frame_scroll_dir {
+            d if d > 0 => 0.1,
+            d if d < 0 => 0.9,
+            _ => 0.5,
+        };
+        let delta = target - self.wide_bias_frac;
+        self.wide_bias_frac += delta.clamp(-MAX_STEP, MAX_STEP);
     }
 
     /// Samples the current raw horizontal scroll (0..511, wrapping across

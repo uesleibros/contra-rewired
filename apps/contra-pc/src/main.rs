@@ -540,7 +540,17 @@ fn main() -> anyhow::Result<()> {
             .build(&event_loop)?,
     );
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    // `InstanceFlags::default()` auto-enables the Vulkan validation layer
+    // in debug builds (`debug_assertions`) - real, measurable extra memory
+    // and per-draw-call overhead from the validation layer itself, on top
+    // of everything else a `cargo build` (vs `--release`) debug binary
+    // already costs. Not something a player running a debug build needs;
+    // `--release` (`cargo run -p contra-pc --release`) is the number worth
+    // judging memory/perf against.
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        flags: wgpu::InstanceFlags::empty(),
+        ..Default::default()
+    });
     let surface = instance.create_surface(window.clone())?;
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -583,6 +593,9 @@ fn main() -> anyhow::Result<()> {
     let mut held_keys: HashSet<String> = HashSet::new();
     let mut edges = EdgeTracker::default();
     let mut settings = Settings::default();
+    // Tracked outside `redraw` on purpose - see `apply_toggle_side_effects`.
+    let mut prev_widescreen = settings.widescreen;
+    let mut prev_fullscreen = settings.fullscreen;
     let mut menu_state = MenuState::new();
     let mut last_load_error: Option<String> = None;
 
@@ -650,6 +663,29 @@ fn main() -> anyhow::Result<()> {
                                 if is_down && key_code == KeyCode::Backspace && rewind_enabled {
                                     session.rewind();
                                 }
+                                // Hotkeys for the toggleable Settings tab
+                                // entries - work during gameplay too, not
+                                // just while the menu's open, same as
+                                // F5/F9/Backspace above. Each one just
+                                // flips the same `Settings` field the
+                                // matching checkbox is bound to; the
+                                // widescreen-resize/fullscreen side effects
+                                // (see `apply_toggle_side_effects`) are
+                                // applied right after, same as they would
+                                // be after a menu click.
+                                if is_down {
+                                    match key_code {
+                                        KeyCode::F1 => settings.widescreen = !settings.widescreen,
+                                        KeyCode::F2 => settings.unlimited_sprites = !settings.unlimited_sprites,
+                                        KeyCode::F3 => settings.pixel_perfect = !settings.pixel_perfect,
+                                        KeyCode::F4 => settings.show_hitboxes = !settings.show_hitboxes,
+                                        KeyCode::F8 => settings.audio_muted = !settings.audio_muted,
+                                        KeyCode::F11 => settings.fullscreen = !settings.fullscreen,
+                                        _ => {}
+                                    }
+                                    apply_toggle_side_effects(&settings, &mut prev_widescreen, &mut prev_fullscreen, &window);
+                                    window.request_redraw();
+                                }
                             }
                         }
                     }
@@ -685,6 +721,8 @@ fn main() -> anyhow::Result<()> {
                             &mut last_load_error,
                             rewind_capacity,
                             audio_sample_rate,
+                            &mut prev_widescreen,
+                            &mut prev_fullscreen,
                         );
                     }
                     _ => {}
@@ -761,6 +799,45 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Applies the two `Settings` toggles that need more than a field flip -
+/// called both right after a hotkey changes one of them (`WindowEvent::
+/// KeyboardInput`) and after `redraw`'s `egui` pass, which is the only
+/// other place they can change (a menu checkbox click). `prev_widescreen`/
+/// `prev_fullscreen` are owned by `main`'s event loop, not `redraw`, for
+/// exactly that reason: a diff captured fresh inside `redraw` can't see a
+/// change the hotkey handler already applied to `settings` *before*
+/// `redraw` ever ran for that frame.
+fn apply_toggle_side_effects(settings: &Settings, prev_widescreen: &mut bool, prev_fullscreen: &mut bool, window: &winit::window::Window) {
+    if settings.fullscreen != *prev_fullscreen {
+        window.set_fullscreen(settings.fullscreen.then_some(Fullscreen::Borderless(None)));
+        *prev_fullscreen = settings.fullscreen;
+    }
+    if settings.widescreen != *prev_widescreen {
+        // Flipping the setting alone changes what `render_scanline` draws,
+        // but if the window is still sized for the narrow 256px view, the
+        // fill-scaling in `game_image_rect` just draws the wider content
+        // smaller to fit - visually a much smaller change than intended.
+        // Resize the window's width to match, at whatever per-pixel scale
+        // is already in effect (so a window the user has already resized/
+        // zoomed keeps that scale, it just gets proportionally wider or
+        // narrower) - the way other NES PC ports grow their window when
+        // widescreen is turned on. No-op in fullscreen, where the
+        // compositor owns the size.
+        let (old_internal_w, new_internal_w) = if settings.widescreen {
+            (contra_nes::SCREEN_W, contra_nes::EXTENDED_WIDTH)
+        } else {
+            (contra_nes::EXTENDED_WIDTH, contra_nes::SCREEN_W)
+        };
+        let current = window.inner_size();
+        if current.width > 0 {
+            let scale = current.width as f64 / old_internal_w as f64;
+            let new_width = (new_internal_w as f64 * scale).round() as u32;
+            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, current.height));
+        }
+        *prev_widescreen = settings.widescreen;
+    }
+}
+
 /// Runs one `egui` frame: builds the widget tree (game background image +
 /// pause menu / no-ROM screen as applicable), applies any resulting
 /// [`MenuAction`]s, and paints via `egui-wgpu`. Split out of the event
@@ -784,8 +861,11 @@ fn redraw(
     last_load_error: &mut Option<String>,
     rewind_capacity: usize,
     audio_sample_rate: f64,
+    prev_widescreen: &mut bool,
+    prev_fullscreen: &mut bool,
 ) {
     let is_placeholder = matches!(session, Session::Placeholder { .. });
+    let mut hitboxes: Vec<egui::Rect> = Vec::new();
 
     if let Session::Emulator { nes, .. } = session {
         let (fb, w) = if nes.wide_width() > contra_nes::SCREEN_W && !nes.wide_framebuffer().is_empty() {
@@ -798,10 +878,30 @@ fn redraw(
             Some(handle) => handle.set(image, egui::TextureOptions::NEAREST),
             None => *fb_texture = Some(egui_ctx.load_texture("nes-fb", image, egui::TextureOptions::NEAREST)),
         }
+
+        if settings.show_hitboxes {
+            // OAM entries in *internal texture* pixel space (same space
+            // `game_image_rect` maps to the screen) - the visual sprite
+            // bounding box, not necessarily Contra's exact collision box
+            // (see `menu::Settings::show_hitboxes`'s doc comment). `+1` on
+            // Y and `+ wide_x_offset()` on X match the same placement math
+            // `Ppu::render_sprites_line` actually draws with, so the boxes
+            // line up in both narrow and (biased) wide mode.
+            let x_offset = nes.wide_x_offset() as f32;
+            let height = nes.sprite_height() as f32;
+            let oam = &nes.bus.ppu.oam;
+            for i in 0..64 {
+                let oam_y = oam[i * 4];
+                if oam_y >= 0xEF {
+                    continue; // conventional "hidden" Y, not an active sprite
+                }
+                let x = oam[i * 4 + 3] as f32 + x_offset;
+                let y = oam_y as f32 + 1.0;
+                hitboxes.push(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(8.0, height)));
+            }
+        }
     }
 
-    let prev_widescreen = settings.widescreen;
-    let prev_fullscreen = settings.fullscreen;
     let mut actions: Vec<MenuAction> = Vec::new();
     let mut pending_rom_pick = false;
 
@@ -817,6 +917,15 @@ fn redraw(
                     let internal_h = tex.size()[1] as f32;
                     let rect = game_image_rect(screen, internal_w, internal_h, settings);
                     ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+
+                    let scale = rect.width() / internal_w;
+                    for hb in &hitboxes {
+                        let screen_hb = egui::Rect::from_min_size(
+                            rect.min + hb.min.to_vec2() * scale,
+                            hb.size() * scale,
+                        );
+                        ui.painter().rect_stroke(screen_hb, 0.0, egui::Stroke::new(1.5f32, egui::Color32::from_rgb(255, 64, 64)));
+                    }
                 });
             }
             if *routine == GameRoutine::Paused {
@@ -851,32 +960,7 @@ fn redraw(
         }
     }
 
-    if settings.fullscreen != prev_fullscreen {
-        window.set_fullscreen(settings.fullscreen.then_some(Fullscreen::Borderless(None)));
-    }
-    if settings.widescreen != prev_widescreen {
-        // Flipping the setting alone changes what `render_scanline` draws,
-        // but if the window is still sized for the narrow 256px view, the
-        // fill-scaling in `game_image_rect` just draws the wider content
-        // smaller to fit - visually a much smaller change than intended.
-        // Resize the window's width to match, at whatever per-pixel scale
-        // is already in effect (so a window the user has already resized/
-        // zoomed keeps that scale, it just gets proportionally wider or
-        // narrower) - the way other NES PC ports grow their window when
-        // widescreen is turned on. No-op in fullscreen, where the
-        // compositor owns the size.
-        let (old_internal_w, new_internal_w) = if settings.widescreen {
-            (contra_nes::SCREEN_W, contra_nes::EXTENDED_WIDTH)
-        } else {
-            (contra_nes::EXTENDED_WIDTH, contra_nes::SCREEN_W)
-        };
-        let current = window.inner_size();
-        if current.width > 0 {
-            let scale = current.width as f64 / old_internal_w as f64;
-            let new_width = (new_internal_w as f64 * scale).round() as u32;
-            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, current.height));
-        }
-    }
+    apply_toggle_side_effects(settings, prev_widescreen, prev_fullscreen, window);
 
     egui_state.handle_platform_output(window, full_output.platform_output);
     let clipped_primitives = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);

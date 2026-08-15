@@ -71,6 +71,16 @@ impl Nes {
         self.bus.ppu.wide_width = width.clamp(crate::ppu::SCREEN_W, crate::ppu::EXTENDED_WIDTH);
     }
 
+    /// See [`crate::ppu::Ppu::wide_x_offset`].
+    pub fn wide_x_offset(&self) -> i32 {
+        self.bus.ppu.wide_x_offset()
+    }
+
+    /// See [`crate::ppu::Ppu::sprite_height`].
+    pub fn sprite_height(&self) -> i32 {
+        self.bus.ppu.sprite_height()
+    }
+
     /// Lifts the real NES's 8-sprites-per-scanline rendering limit (the
     /// cause of "sprite flicker" whenever a scene has more sprites on one
     /// line than that). Purely a rendering choice, off by default so

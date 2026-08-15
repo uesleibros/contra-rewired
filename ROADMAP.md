@@ -135,6 +135,20 @@ is loaded**
       existing wide-mode regression tests (direction defaults to 0/
       centered when a test never advances a second frame, so the existing
       byte-for-byte-center assertion is unaffected)
+- [x] **Fixed: widescreen "teleporting."** The bias above originally
+      *snapped* straight to its target (10%/90%) the instant
+      `frame_scroll_dir` changed sign, which happens on ordinary,
+      frequent things - stopping to shoot, a half-step backward, a single
+      noisy frame-to-frame scroll delta. Every flip visibly jumped the
+      extra columns to the opposite edge, which read as the screen
+      teleporting during normal play, not just on a real direction change.
+      `Ppu::wide_bias_frac` now *eases* toward its target by a capped
+      step per frame (`step_wide_bias`, ~0.33s to cross the full 10%-90%
+      span) instead of snapping, so a genuine direction change pans and a
+      one-frame jitter barely moves it. Verified the CPU's final state is
+      byte-identical with and without widescreen enabled across a 900-frame
+      real-ROM run (`dump_frames.rs`), confirming this still never touches
+      game state - only how gradually the bias itself moves
 - [ ] **Enemy/bullet spawn-ahead in widescreen** - investigated, not yet
       implemented. The random soldier-generation edges
       (`soldier_generation_01` in the reference disassembly's `bank2.asm`,
@@ -204,7 +218,15 @@ is loaded**
 **Practice tooling**
 - [x] Config surface (hitbox/spawn-marker/frame-counter/coordinates/boss-HP
       overlays, fixed RNG seed)
-- [ ] Actually wired to a renderer/simulation once one exists
+- [x] **Hitbox overlay, real and wired** (Settings tab / F4): outlines every
+      active OAM sprite (`Nes::bus::ppu::oam`, hidden entries at Y≥0xEF
+      skipped) in the same screen space the game image is drawn in,
+      including wide mode's live direction bias (`Nes::wide_x_offset`) so
+      the boxes stay lined up under widescreen. This is the *visual*
+      sprite bounding box (8x8 or 8x16 per `PPUCTRL` bit 5), not
+      necessarily Contra's exact per-entity collision box, which the
+      disassembly doesn't document as a single fixed table - a real,
+      honest approximation rather than a guessed-at exact hitbox
 - [ ] Frame advance / slow-motion (25–200%)
 
 **Menu / UI - v3, real `egui`, real widgets**
@@ -222,6 +244,19 @@ is loaded**
       testing to widgets bound directly to `Settings` fields - a checkbox
       *is* the toggle now, no separate action-dispatch layer for anything
       that's just a plain value flip
+- [x] **Memory footprint fix**: `wgpu::Instance` was created with default
+      flags, which auto-enable the Vulkan validation layer under
+      `debug_assertions` (i.e. every non-`--release` build) - real,
+      measurable extra memory and per-draw-call overhead on top of what an
+      unoptimized debug binary already costs, and not something a player
+      needs. Now created with `InstanceFlags::empty()`. A `cargo build`
+      debug run vs `--release` is not a fair memory comparison in general
+      (unoptimized codegen, debug info, and previously the validation
+      layer all add up); `cargo run -p contra-pc --release` is the number
+      worth judging idle memory against - measured ~110MB resident on this
+      machine post-fix, mostly GPU driver/Vulkan instance overhead
+      (`wgpu`'s baseline, not something specific to this app) rather than
+      anything growing unbounded
 - [x] Pause menu: two tabs plus Debug - **Settings** (Widescreen, No
       Sprite Flicker, Pixel Perfect, Zoom slider, Fullscreen, Audio Mute -
       all direct `egui::Checkbox`/`egui::Slider` bindings), **Mods** (every
@@ -253,6 +288,19 @@ is loaded**
       `PlayerPhysics` still exists as the save-state fallback and
       RAM-tooling reference, it's just never driven or drawn as a
       "gameplay" screen
+- [x] **Hotkeys for every toggleable Settings entry** - F1 Widescreen, F2
+      No Sprite Flicker, F3 Pixel Perfect, F4 Show Hitboxes, F8 Mute Audio,
+      F11 Fullscreen. Work during gameplay, not just while the menu's open
+      (same as the existing F5/F9/Backspace quicksave/quickload/rewind
+      keys), and each label in the Settings tab shows its hotkey inline.
+      Flipping a setting via hotkey applies the same widescreen-resize/
+      `set_fullscreen` side effects a menu click would (`apply_toggle_
+      side_effects`, called from both places against `prev_widescreen`/
+      `prev_fullscreen` state owned by the event loop, not `redraw` -
+      the first version of this had a real bug where a hotkey-driven
+      change was invisible to `redraw`'s own before/after diff, since by
+      the time `redraw` ran the change had already happened). Not yet
+      user-rebindable - same honest gap as gameplay `Bindings` remapping
 - [ ] Everything else from the config surface (CRT filter, scanlines,
       palette, keybind remapping, difficulty, checkpoint mode, ...) still
       needs a menu entry; this is the pattern to extend, not a finished
