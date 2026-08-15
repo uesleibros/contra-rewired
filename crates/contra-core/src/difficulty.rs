@@ -120,7 +120,7 @@ impl CustomDifficulty {
         }
     }
 
-    /// All multipliers at 1.0 — the NES original, unmodified.
+    /// All multipliers at 1.0 - the NES original, unmodified.
     pub fn original() -> Self {
         Self {
             starting_lives: 3,

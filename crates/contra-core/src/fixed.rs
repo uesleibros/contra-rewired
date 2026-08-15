@@ -2,7 +2,7 @@
 //!
 //! The original 6502 code stores most velocities as two separate bytes: a
 //! "fractional" byte (sub-pixel accumulator, wraps with carry) and a "fast"
-//! byte (signed whole-pixel velocity). This is *not* a generic Q8.8 type —
+//! byte (signed whole-pixel velocity). This is *not* a generic Q8.8 type -
 //! it's exactly the two-register accumulate-with-carry pattern used by
 //! routines like `apply_gravity` in `bank7.asm` of the community
 //! disassembly (<https://github.com/vermiceli/nes-contra-us>), reproduced
@@ -43,7 +43,7 @@ impl Velocity16 {
     }
 
     /// Adds a raw signed 8-bit amount to `fract`, carrying into `fast` on
-    /// overflow — the exact operation `apply_gravity` performs.
+    /// overflow - the exact operation `apply_gravity` performs.
     pub fn add_fract(&mut self, amount: u8) {
         let (result, carry) = self.fract.overflowing_add(amount);
         self.fract = result;

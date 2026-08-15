@@ -1,25 +1,30 @@
-//! `contra-pc`: minimal desktop shell around `contra-core`.
+//! `contra-pc`: desktop shell around `contra-nes` (the real emulator core)
+//! and `contra-core` (config/input/save-state plumbing).
 //!
-//! This is the Phase 1 vertical slice: a real window, a real 256x240
-//! internal framebuffer presented with integer scaling, real keyboard *and*
-//! gamepad input routed through `contra-core`'s rebindable
-//! [`contra_core::input`] system, working quick-save/quick-load/rewind
-//! against `contra-core`'s save-state manager, and a placeholder scene
-//! driven by the ported gravity/jump/walk physics — so the whole pipeline
-//! (config -> input -> simulation -> save states -> framebuffer -> window)
-//! is demonstrably working end to end. There is no real Contra gameplay
-//! here yet — no ROM loading, no sprites, no levels. See ROADMAP.md.
+//! Pass your own legally-dumped ROM on the command line - or drop a
+//! `baserom.nes` next to the executable - and this runs it for real: a
+//! from-scratch 6502/2C02/mapper-2 core (see `crates/contra-nes`), not a
+//! reimplementation of Contra's game logic. No ROM ships with this repo;
+//! see docs/ASSETS.md. Without a ROM, it falls back to the same
+//! placeholder physics demo from earlier in Phase 1, so the binary still
+//! runs and the engine pipeline (config -> input -> save states ->
+//! framebuffer -> window) stays demonstrable on its own.
 
 use std::collections::HashSet;
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+use clap::Parser;
 
 use contra_core::config::{Config, ScalingMode};
 use contra_core::input::{Action, ActionState, Bindings, PhysicalInput};
 use contra_core::physics::{LevelLocation, PlayerPhysics};
-use contra_core::savestate::{SaveStateManager, SaveStateMeta, SlotId, SAVESTATE_FORMAT_VERSION};
+use contra_core::savestate::{SaveState, SaveStateManager, SaveStateMeta, SlotId, SAVESTATE_FORMAT_VERSION};
 use contra_core::state_machine::{GameEvent, GameRoutine};
+
+use contra_nes::{Mirroring, Nes, NesSnapshot};
 
 use gilrs::{Axis, Button, Gilrs};
 use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
@@ -32,9 +37,16 @@ const INTERNAL_H: u32 = 240;
 const CONFIG_PATH: &str = "config.toml";
 const GAMEPAD_STICK_DEADZONE: f32 = 0.35;
 
-/// Tracks which buttons were held last poll, so one-shot actions (pause,
-/// quick save/load, rewind) fire once per press instead of every frame
-/// they're held.
+#[derive(Parser)]
+#[command(author, version, about = "contra-rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
+struct Args {
+    /// Path to your own ROM dump. If omitted, looks for ./baserom.nes, then
+    /// falls back to the engine-only placeholder demo.
+    rom: Option<PathBuf>,
+}
+
+/// Tracks which one-shot inputs were already held last poll, so pause /
+/// quick save / quick load / rewind fire once per press.
 #[derive(Default)]
 struct EdgeTracker {
     prev: HashSet<&'static str>,
@@ -52,7 +64,7 @@ impl EdgeTracker {
     }
 }
 
-fn quick_save_meta(frame_count: u64) -> SaveStateMeta {
+fn meta(frame_count: u64) -> SaveStateMeta {
     SaveStateMeta {
         format_version: SAVESTATE_FORMAT_VERSION,
         slot: SlotId::Quick,
@@ -63,8 +75,198 @@ fn quick_save_meta(frame_count: u64) -> SaveStateMeta {
     }
 }
 
+/// Either a real, running game (loaded from the user's own ROM) or the
+/// engine-only placeholder demo used when no ROM was found. Every method
+/// here is the seam between the two - `contra-pc`'s main loop doesn't
+/// otherwise care which one it's driving.
+enum Session {
+    Emulator {
+        nes: Box<Nes>,
+        save_mgr: SaveStateManager<NesSnapshot>,
+        frame_count: u64,
+    },
+    Placeholder {
+        player: PlayerPhysics,
+        save_mgr: SaveStateManager<PlayerPhysics>,
+        frame_count: u64,
+    },
+}
+
+impl Session {
+    fn step(&mut self, actions: &ActionState, rewind_enabled: bool) {
+        match self {
+            Session::Emulator { nes, save_mgr, frame_count } => {
+                nes.set_controller(0, controller_byte(actions));
+                nes.run_frame();
+                *frame_count += 1;
+                if rewind_enabled {
+                    save_mgr.push_rewind_frame(nes.snapshot());
+                }
+            }
+            Session::Placeholder { player, save_mgr, frame_count } => {
+                if actions.is_held(Action::Jump) {
+                    player.start_jump(LevelLocation::Outdoor);
+                }
+                let dir = match (actions.is_held(Action::Left), actions.is_held(Action::Right)) {
+                    (true, false) => -1,
+                    (false, true) => 1,
+                    _ => 0,
+                };
+                player.step_horizontal(dir);
+                player.x = player.x.clamp(8, INTERNAL_W as i16 - 16);
+                player.step_vertical(200);
+                *frame_count += 1;
+                if rewind_enabled {
+                    save_mgr.push_rewind_frame(player.clone());
+                }
+            }
+        }
+    }
+
+    fn quick_save(&mut self) {
+        match self {
+            Session::Emulator { nes, save_mgr, frame_count } => {
+                save_mgr.save(SlotId::Quick, meta(*frame_count), nes.snapshot());
+            }
+            Session::Placeholder { player, save_mgr, frame_count } => {
+                save_mgr.save(SlotId::Quick, meta(*frame_count), player.clone());
+            }
+        }
+        log::info!("Quick saved");
+    }
+
+    fn quick_load(&mut self) {
+        match self {
+            Session::Emulator { nes, save_mgr, frame_count } => {
+                let current = SaveState { meta: meta(*frame_count), payload: nes.snapshot() };
+                if let Some(loaded) = save_mgr.load(SlotId::Quick, current).cloned() {
+                    nes.restore(&loaded);
+                    log::info!("Quick loaded");
+                    return;
+                }
+            }
+            Session::Placeholder { player, save_mgr, frame_count } => {
+                let current = SaveState { meta: meta(*frame_count), payload: player.clone() };
+                if let Some(loaded) = save_mgr.load(SlotId::Quick, current).cloned() {
+                    *player = loaded;
+                    log::info!("Quick loaded");
+                    return;
+                }
+            }
+        }
+        log::info!("No quick save to load");
+    }
+
+    fn rewind(&mut self) {
+        match self {
+            Session::Emulator { nes, save_mgr, .. } => {
+                if let Some(prev) = save_mgr.rewind_step() {
+                    nes.restore(&prev);
+                }
+            }
+            Session::Placeholder { player, save_mgr, .. } => {
+                if let Some(prev) = save_mgr.rewind_step() {
+                    *player = prev;
+                }
+            }
+        }
+    }
+
+}
+
+fn controller_byte(actions: &ActionState) -> u8 {
+    use contra_nes::controller::*;
+    let mut b = 0u8;
+    if actions.is_held(Action::Up) {
+        b |= BUTTON_UP;
+    }
+    if actions.is_held(Action::Down) {
+        b |= BUTTON_DOWN;
+    }
+    if actions.is_held(Action::Left) {
+        b |= BUTTON_LEFT;
+    }
+    if actions.is_held(Action::Right) {
+        b |= BUTTON_RIGHT;
+    }
+    if actions.is_held(Action::Jump) {
+        b |= BUTTON_A;
+    }
+    if actions.is_held(Action::Shoot) {
+        b |= BUTTON_B;
+    }
+    if actions.is_held(Action::Start) {
+        b |= BUTTON_START;
+    }
+    if actions.is_held(Action::Select) {
+        b |= BUTTON_SELECT;
+    }
+    b
+}
+
+/// Resolves which ROM to load: an explicit CLI arg, else `./baserom.nes`
+/// if present, else `None` (placeholder mode).
+fn resolve_rom_path(args: &Args) -> Option<PathBuf> {
+    if let Some(p) = &args.rom {
+        return Some(p.clone());
+    }
+    let default = PathBuf::from("baserom.nes");
+    default.exists().then_some(default)
+}
+
+fn load_session(args: &Args, rewind_capacity: usize) -> Session {
+    let Some(path) = resolve_rom_path(args) else {
+        log::info!("No ROM specified and no ./baserom.nes found - running the engine-only placeholder demo. Pass a ROM path: contra-pc <path-to-your-rom.nes>");
+        return Session::Placeholder {
+            player: PlayerPhysics::new(120, 200),
+            save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
+            frame_count: 0,
+        };
+    };
+
+    match contra_assets::NesRom::load(&path) {
+        Ok(rom) if rom.mapper == 2 => {
+            log::info!(
+                "Loaded {} (mapper {}, {} KiB PRG, MD5 {})",
+                path.display(),
+                rom.mapper,
+                rom.prg_rom.len() / 1024,
+                rom.md5_hex
+            );
+            let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
+            let nes = Nes::new(rom.prg_rom, mirroring);
+            Session::Emulator {
+                nes: Box::new(nes),
+                save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
+                frame_count: 0,
+            }
+        }
+        Ok(rom) => {
+            log::error!(
+                "{} uses mapper {}, but contra-nes only supports mapper 2 (UxROM) right now - falling back to the placeholder demo.",
+                path.display(),
+                rom.mapper
+            );
+            Session::Placeholder {
+                player: PlayerPhysics::new(120, 200),
+                save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
+                frame_count: 0,
+            }
+        }
+        Err(e) => {
+            log::error!("Could not load {}: {e} - falling back to the placeholder demo.", path.display());
+            Session::Placeholder {
+                player: PlayerPhysics::new(120, 200),
+                save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
+                frame_count: 0,
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
+    let args = Args::parse();
 
     let config = Config::load_or_default(CONFIG_PATH);
     let initial_scale = match config.video.scaling {
@@ -72,11 +274,18 @@ fn main() -> anyhow::Result<()> {
         _ => 3,
     };
     let rewind_capacity = (config.gameplay.rewind_buffer_seconds as usize) * 60;
+    let rewind_enabled = config.gameplay.rewind_enabled;
+
+    let mut session = load_session(&args, rewind_capacity);
+    let window_title = match &session {
+        Session::Emulator { .. } => "contra-rewired",
+        Session::Placeholder { .. } => "contra-rewired (no ROM loaded - engine placeholder demo)",
+    };
 
     let event_loop = EventLoop::new()?;
     let window = Rc::new(
         WindowBuilder::new()
-            .with_title("contra-rewired (Phase 1 preview — no ROM loaded)")
+            .with_title(window_title)
             .with_inner_size(winit::dpi::LogicalSize::new(
                 INTERNAL_W * initial_scale,
                 INTERNAL_H * initial_scale,
@@ -89,7 +298,7 @@ fn main() -> anyhow::Result<()> {
     let mut surface = softbuffer::Surface::new(&context, window.clone())
         .map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
 
-    let mut framebuffer = vec![0u32; (INTERNAL_W * INTERNAL_H) as usize];
+    let mut placeholder_framebuffer = vec![0u32; (INTERNAL_W * INTERNAL_H) as usize];
 
     let bindings = config.input.player_bindings[0].clone();
     let mut action_state = ActionState::new();
@@ -98,13 +307,8 @@ fn main() -> anyhow::Result<()> {
     routine = routine.transition(GameEvent::StartPressed);
     routine = routine.transition(GameEvent::StageIntroFinished);
 
-    let mut player = PlayerPhysics::new(120, 200);
     let mut held_keys: HashSet<String> = HashSet::new();
     let mut edges = EdgeTracker::default();
-    let mut frame_count: u64 = 0;
-
-    let mut save_mgr: SaveStateManager<PlayerPhysics> = SaveStateManager::new(rewind_capacity.max(1));
-    let rewind_enabled = config.gameplay.rewind_enabled;
 
     let mut gilrs = Gilrs::new().ok();
     if gilrs.is_none() {
@@ -114,8 +318,6 @@ fn main() -> anyhow::Result<()> {
     let frame_duration = Duration::from_secs_f64(1.0 / 60.0);
     let mut last_tick = Instant::now();
     let mut accumulator = Duration::ZERO;
-
-    log::info!("contra-pc starting. No ROM loaded — this build only demonstrates the engine pipeline.");
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -150,25 +352,13 @@ fn main() -> anyhow::Result<()> {
                             };
                         }
                         if is_down && key_code == KeyCode::F5 {
-                            save_mgr.save(SlotId::Quick, quick_save_meta(frame_count), player.clone());
-                            log::info!("Quick saved at frame {frame_count}");
+                            session.quick_save();
                         }
                         if is_down && key_code == KeyCode::F9 {
-                            let current = contra_core::savestate::SaveState {
-                                meta: quick_save_meta(frame_count),
-                                payload: player.clone(),
-                            };
-                            if let Some(loaded) = save_mgr.load(SlotId::Quick, current).cloned() {
-                                player = loaded;
-                                log::info!("Quick loaded");
-                            } else {
-                                log::info!("No quick save to load");
-                            }
+                            session.quick_load();
                         }
                         if is_down && key_code == KeyCode::Backspace && rewind_enabled {
-                            if let Some(prev_state) = save_mgr.rewind_step() {
-                                player = prev_state;
-                            }
+                            session.rewind();
                         }
                     }
                 }
@@ -178,7 +368,11 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    present(&mut surface, &window, &framebuffer);
+                    let fb = match &session {
+                        Session::Emulator { nes, .. } => nes.framebuffer(),
+                        Session::Placeholder { .. } => &placeholder_framebuffer[..],
+                    };
+                    present(&mut surface, &window, fb);
                 }
                 _ => {}
             },
@@ -188,8 +382,7 @@ fn main() -> anyhow::Result<()> {
                 last_tick = now;
 
                 let gp = poll_gamepad(gilrs.as_mut());
-                let start_pressed = edges.just_pressed("gp_start", gp.start);
-                if start_pressed {
+                if edges.just_pressed("gp_start", gp.start) {
                     routine = match routine {
                         GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
                         GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
@@ -201,16 +394,14 @@ fn main() -> anyhow::Result<()> {
 
                 while accumulator >= frame_duration {
                     if routine.accepts_gameplay_input() {
-                        step(&mut player, &action_state);
-                        frame_count += 1;
-                        if rewind_enabled {
-                            save_mgr.push_rewind_frame(player.clone());
-                        }
+                        session.step(&action_state, rewind_enabled);
                     }
                     accumulator -= frame_duration;
                 }
 
-                render(&mut framebuffer, &player, routine);
+                if let Session::Placeholder { player, .. } = &session {
+                    render_placeholder(&mut placeholder_framebuffer, player, routine);
+                }
                 window.request_redraw();
             }
             _ => {}
@@ -232,6 +423,7 @@ struct GamepadFrame {
     shoot: bool,
     jump: bool,
     start: bool,
+    select: bool,
 }
 
 fn poll_gamepad(gilrs: Option<&mut Gilrs>) -> GamepadFrame {
@@ -254,6 +446,7 @@ fn poll_gamepad(gilrs: Option<&mut Gilrs>) -> GamepadFrame {
         shoot: gamepad.is_pressed(Button::South),
         jump: gamepad.is_pressed(Button::East),
         start: gamepad.is_pressed(Button::Start),
+        select: gamepad.is_pressed(Button::Select),
     }
 }
 
@@ -275,6 +468,8 @@ fn update_action_state(action_state: &mut ActionState, bindings: &Bindings, held
         (Action::Right, keyboard_held(bindings, held_keys, Action::Right) || gp.right),
         (Action::Jump, keyboard_held(bindings, held_keys, Action::Jump) || gp.jump),
         (Action::Shoot, keyboard_held(bindings, held_keys, Action::Shoot) || gp.shoot),
+        (Action::Start, keyboard_held(bindings, held_keys, Action::Start) || gp.start),
+        (Action::Select, keyboard_held(bindings, held_keys, Action::Select) || gp.select),
     ];
     for (action, held) in combos {
         let was_pressed = held && !action_state.is_held(action);
@@ -282,29 +477,13 @@ fn update_action_state(action_state: &mut ActionState, bindings: &Bindings, held
     }
 }
 
-fn step(player: &mut PlayerPhysics, actions: &ActionState) {
-    if actions.is_held(Action::Jump) {
-        player.start_jump(LevelLocation::Outdoor);
-    }
-    let dir = match (actions.is_held(Action::Left), actions.is_held(Action::Right)) {
-        (true, false) => -1,
-        (false, true) => 1,
-        _ => 0,
-    };
-    player.step_horizontal(dir);
-    player.x = player.x.clamp(8, INTERNAL_W as i16 - 16);
-    player.step_vertical(200);
-}
-
-fn render(fb: &mut [u32], player: &PlayerPhysics, routine: GameRoutine) {
+fn render_placeholder(fb: &mut [u32], player: &PlayerPhysics, routine: GameRoutine) {
     let bg = match routine {
         GameRoutine::Paused => 0x00202020,
         _ => 0x00104010,
     };
     fb.fill(bg);
 
-    // Draw an 8x8 placeholder "player" block so the physics pipeline is
-    // visibly doing something even with no real sprites loaded.
     let px = player.x.clamp(0, INTERNAL_W as i16 - 8) as u32;
     let py = (player.y as u32).min(INTERNAL_H - 8);
     for y in 0..8u32 {
@@ -318,6 +497,9 @@ fn render(fb: &mut [u32], player: &PlayerPhysics, routine: GameRoutine) {
 }
 
 fn present(surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>, window: &winit::window::Window, framebuffer: &[u32]) {
+    if framebuffer.len() < (INTERNAL_W * INTERNAL_H) as usize {
+        return;
+    }
     let size = window.inner_size();
     let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
         return;

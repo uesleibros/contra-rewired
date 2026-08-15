@@ -1,76 +1,96 @@
 # contra-rewired
 
 A from-scratch Rust engine for a PC (and eventually Android) port of
-*Contra* (NES, 1988) — built to the "definitive port" brief: **the original
+*Contra* (NES, 1988) - built to the "definitive port" brief: **the original
 game, unmodified by default, with every modern convenience available as an
 opt-in layer instead of a replacement.**
 
-> **Status: Phase 1 foundation.** This is a real, tested, compiling Rust
-> workspace — fixed-point physics and RNG mechanism ported from the
-> community disassembly, a full config/input/save-state/replay system, a
-> legal ROM pipeline, and a Lua modding scaffold. It is **not** a playable
-> Contra yet: no ROM decoder, no levels, no sprites. See
-> [Project status](#project-status) and [ROADMAP.md](ROADMAP.md) for exactly
-> what's real today versus planned.
+> **Status: playable, with your own ROM.** `contra-pc` now runs a real,
+> from-scratch NES emulation core (`crates/contra-nes`: 6502 CPU, 2C02 PPU,
+> mapper 2/UxROM) - point it at your own legally-dumped Contra ROM and it
+> plays the actual game, not a reimplementation of it. Verified against a
+> real US retail ROM: title screen, stage intro, and in-level gameplay
+> (player, enemies, item drops) all render correctly - see
+> [docs/FIDELITY.md](docs/FIDELITY.md) for exactly what was checked. No
+> sound yet (the APU is a silent stub). See [Project status](#project-status)
+> and [ROADMAP.md](ROADMAP.md) for exactly what's real today versus planned.
+
+## Why an emulator core, not a hand-ported reimplementation
+
+Contra's NES code is about 11,000 lines of 6502 across 8 banks - every
+enemy, every boss, every weapon, every piece of level data. Hand-porting all
+of that to Rust routine-by-routine, faithfully, would take months, and there
+would be no way to verify the result against the real game without... the
+real game. So instead: `contra-nes` emulates the hardware (CPU, PPU, the
+mapper Contra uses) accurately enough to run the *original, unmodified
+6502 code* directly. That gets bit-exact physics, RNG, hitboxes, and quirks
+**for free** - because it's literally Konami's code running, not a guess at
+what it did. This is also the only way "Original NES mode replicates even
+bugs/quirks" (from the original brief) is actually achievable.
+
+`crates/contra-core` (the hand-ported physics/RNG/config/save-state layer
+from earlier in this project) is still here and still useful - for
+documentation, for a placeholder demo when no ROM is loaded, and as the
+foundation for RAM-address-based tooling (Custom Difficulty, Practice mode
+overlays, trainers) that pokes the *emulator's* memory using the address map
+the community disassembly documents, the same way real "enhanced ports" of
+old console games are usually built.
 
 ## Design principle
 
 > Don't touch what makes Contra *Contra*. Put everything else behind a flag.
 
 Concretely: an `Original` mode that boots straight into the unmodified game
-with no menus in the way, and every other system — widescreen, save states,
-randomizers, roguelike mode, online co-op, a level editor — built as opt-in
+with no menus in the way, and every other system - widescreen, save states,
+randomizers, roguelike mode, online co-op, a level editor - built as opt-in
 layers that never change how `Original` plays. `contra_core::config::Config`
 enforces this today: `hardcore_mode` and `original_nes_mode` are hard
 overrides that force every convenience feature off, not just defaults.
 
-## Why Rust, and why this architecture
-
-- **Determinism you can unit test.** The simulation core
-  (`crates/contra-core`) has no rendering, audio, or windowing dependencies,
-  so physics, RNG, replays, and save states are tested headlessly — see
-  `cargo test --workspace` (31 tests, all green, no window required).
-- **One core, two platforms.** PC (`apps/contra-pc`, winit) and a future
-  Android front-end share `contra-core`/`contra-assets` unchanged; only the
-  windowing/input/rendering layer differs. See
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **Modding without recompiling the engine.** Asset-replacement mods need
-  nothing but a `mod.toml`; gameplay mods get a Lua host
-  (`crates/contra-mods`, feature-gated). See [docs/MODDING.md](docs/MODDING.md).
-
 ## The legal model: bring your own ROM
 
-**This repository contains zero Konami-owned assets** — no graphics, no
-audio, no level data, no ROM. It's built and verified against the public,
-source-only [vermiceli/nes-contra-us](https://github.com/vermiceli/nes-contra-us)
-disassembly, and follows the exact same rule that project does: you supply
-your own legally-dumped copy of the game (`baserom.nes`), and tooling in
-this repo (`apps/contra-extract`) reads *your* file at build/run time on
-*your* machine. See [docs/ASSETS.md](docs/ASSETS.md) for details and current
-limitations (the graphics/audio decoder isn't written yet).
+**This repository contains zero Konami-owned assets** - no graphics, no
+audio, no level data, no ROM. `contra-nes` doesn't ship or embed a copy of
+the game; it's a general-purpose NES emulation core that runs whatever ROM
+you give it. You supply your own legally-dumped copy of the game
+(`baserom.nes`), and `contra-pc` reads *your* file at run time on *your*
+machine. See [docs/ASSETS.md](docs/ASSETS.md) for details.
+
+## How to play (if you own the ROM)
+
+```sh
+cargo run -p contra-pc --release -- path\to\your\baserom.nes
+```
+
+Or drop a `baserom.nes` next to the executable and just run `contra-pc` -
+it's picked up automatically. Without a ROM, or with a ROM using a mapper
+other than 2 (UxROM), it falls back to an engine-only placeholder demo
+instead of failing outright.
 
 ## Project status
 
 | Area | Status |
 |---|---|
-| Fixed-point vertical physics (gravity, jump integration) | Ported from the disassembly, unit tested — see [docs/FIDELITY.md](docs/FIDELITY.md) |
-| Horizontal walk speed, jump takeoff velocity (outdoor/indoor), death-bounce velocity | Ported exactly (raw register bytes, not approximations) — see FIDELITY.md |
-| RNG mechanism | Modeled (idle-loop accumulator), not yet cycle-exact |
-| Weapon recoil, hitboxes, enemy AI, spawn tables | Not ported yet — honest placeholders, see FIDELITY.md |
-| Config (video/audio/input/gameplay/accessibility/practice) | Full schema implemented, round-trips through `config.toml` |
-| Rebindable input, hold/toggle fire | Implemented; keyboard **and gamepad** (`gilrs`: d-pad/stick + face buttons) both wired in `contra-pc` |
-| Save states (manual/quick/autosave/suspend), undo-load, rewind buffer | Implemented; quick save/load (F5/F9) and rewind (Backspace) wired end-to-end in `contra-pc` |
-| Difficulty presets + full Custom Difficulty + shareable codes | Implemented, tested |
-| Checkpoint modes (Original/Casual/Modern/Practice) | Implemented |
+| **NES emulation core** (`contra-nes`) | |
+| 6502/2A03 CPU | All official opcodes, incl. the JMP-indirect page-boundary bug; 21 unit tests against hand-assembled programs - see `crates/contra-nes/src/cpu.rs` |
+| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
+| Mapper 2 (UxROM) | Implemented - PRG bank switching, CHR-RAM |
+| APU | **Silent stub** - no audio synthesis yet |
+| Controller input | Implemented (standard shift-register protocol) |
+| Save states | Full emulator snapshots (CPU+RAM+PPU+APU), excluding the static PRG-ROM - real quick save/load/rewind wired in `contra-pc` |
+| **Hand-ported simulation layer** (`contra-core`) | |
+| Fixed-point vertical physics, walk/jump velocity | Ported from the disassembly for the placeholder demo - see FIDELITY.md |
+| Config (video/audio/input/gameplay/accessibility/practice) | Full schema, round-trips through `config.toml` |
+| Rebindable input, hold/toggle fire | Implemented; keyboard **and gamepad** (`gilrs`) both wired in `contra-pc` |
+| Difficulty presets + Custom Difficulty + shareable codes | Implemented, tested |
 | Replay format (input log, "Take Control" handoff) | Format implemented; no recording/playback loop yet |
-| ROM loading + identity check | Implemented; **asset decompression not implemented** |
-| Mod manifest, registry, load order, dependency checks | Implemented, tested |
-| Lua mod scripting | Working host behind `--features contra-mods/lua` (needs a C toolchain), minimal event API |
-| Actual playable game (levels, enemies, bosses, sprites, audio) | **Not implemented** |
+| **Everything else** | |
+| ROM loading + identity check | Implemented (`contra-assets`) |
+| Mod manifest, registry, Lua host | Implemented (`contra-mods`); not yet wired to the emulator |
+| Level editor, randomizer, netcode, roguelike, etc. | Not started - see ROADMAP.md |
 
-See [ROADMAP.md](ROADMAP.md) for the full three-phase plan (fidelity/PC/Android
-→ online/replays/speedrun tooling → editor/mods/roguelike/everything else),
-with every item tagged by what's actually done versus planned.
+See [ROADMAP.md](ROADMAP.md) for the full three-phase plan, with every item
+tagged by what's actually done versus planned.
 
 ## Building
 
@@ -83,15 +103,11 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Run the Phase 1 preview (opens a window, moves a placeholder block with the
-ported walk/jump physics via keyboard or gamepad — **not the real game**):
+53 tests, all green, no ROM or window required - the emulator core is
+validated with small original hand-assembled 6502 programs (see
+`crates/contra-nes/src/cpu.rs` and `nes.rs`), not against Contra itself.
 
-```sh
-cargo run -p contra-pc
-```
-
-Validate your own ROM (see [docs/ASSETS.md](docs/ASSETS.md); does not yet
-extract playable assets):
+Validate a ROM without launching the window:
 
 ```sh
 cargo run -p contra-extract -- path\to\your\baserom.nes
@@ -105,54 +121,72 @@ source:
 cargo build --features contra-mods/lua
 ```
 
-## Controls (Phase 1 preview)
+## Controls
 
 | Action | Keyboard | Gamepad |
 |---|---|---|
 | Move | Arrow keys | D-pad or left stick |
-| Jump | X | East face button (B/Circle) |
-| Shoot | Z | South face button (A/Cross) |
+| Jump (A) | X | East face button (B/Circle) |
+| Shoot (B) | Z | South face button (A/Cross) |
+| Start / Select | Enter / Right Shift | Start / Select |
 | Pause | Escape | Start |
-| Quick save / load | F5 / F9 | — |
-| Rewind | Backspace | — |
+| Quick save / load | F5 / F9 | - |
+| Rewind | Backspace | - |
 
-Gamepad support is via [`gilrs`](https://docs.rs/gilrs) and works
-alongside keyboard input; only the first connected controller is read today
-(per-player device assignment is tracked in ROADMAP.md). Rewind only does
-anything if `gameplay.rewind_enabled = true` in `config.toml` (off by
-default, matching `Original` fidelity).
+Gamepad support is via [`gilrs`](https://docs.rs/gilrs) and works alongside
+keyboard input; only the first connected controller is read today. Rewind
+only does anything if `gameplay.rewind_enabled = true` in `config.toml`
+(off by default, matching `Original` fidelity). Save states hold the whole
+emulator's state - CPU, RAM, PPU, APU - captured without copying the
+cartridge ROM each time (see `contra_nes::Nes::snapshot`/`restore`).
 
-Fully rebindable via `contra_core::input::Bindings` — an in-game rebinding
+Fully rebindable via `contra_core::input::Bindings` - an in-game rebinding
 UI isn't built yet; edit `config.toml` after first run, or see
 `crates/contra-core/src/input.rs`.
 
 ## Repository layout
 
 ```
-crates/contra-core/     simulation: physics, RNG, config, input, save states,
-                         replays, difficulty, checkpoints, state machine
-crates/contra-assets/   legal ROM loading + (future) asset extraction
+crates/contra-nes/      NES emulation core: 6502 CPU, 2C02 PPU, mapper 2/UxROM,
+                         APU stub, controller - the "play the real ROM" path
+crates/contra-core/     hand-ported simulation: physics, RNG, config, input,
+                         save states, replays, difficulty, checkpoints
+crates/contra-assets/   legal ROM loading/validation
 crates/contra-mods/     mod manifest/registry + optional Lua host
-apps/contra-pc/         desktop window/input/presentation shell
-apps/contra-extract/    ROM validation/extraction CLI
+apps/contra-pc/         desktop shell: loads a ROM into contra-nes (falling back
+                         to the contra-core placeholder demo), window, input
+apps/contra-extract/    ROM validation CLI
 docs/                   architecture, fidelity notes, asset pipeline, modding
 mods/                   drop community mods here (gitignored)
 ```
 
 ## Contributing
 
-The most valuable thing right now is porting more of the disassembly
-faithfully — horizontal movement tables, hitboxes, one enemy type, the
-graphics decompressor — each as a small, cited, unit-tested PR against
-[docs/FIDELITY.md](docs/FIDELITY.md)'s format: quote the exact routine,
-port it operation-for-operation, add a determinism test. See
-[ROADMAP.md](ROADMAP.md) for what's next in Phase 1.
+The highest-value work right now is on the emulator core, since it's what
+actually makes the game playable:
+
+- **APU (audio)** - pulse/triangle/noise/DMC synthesis. Currently silent.
+- **PPU accuracy** - moving from scanline-granular to per-dot rendering for
+  effects that change registers mid-scanline (rare, but real).
+- **More mappers**, if you want other NES games to run on this core too.
+- **RAM-address tooling** - Custom Difficulty sliders, Practice-mode
+  overlays, and trainers that poke the running emulator's memory using the
+  address map the community disassembly documents (`docs/FIDELITY.md` has
+  the pattern to follow).
+
+See [ROADMAP.md](ROADMAP.md) for the full list.
 
 ## Credits
 
 - Original game: Konami, 1988. This project is an independent, unofficial
   fan engine; it is not affiliated with or endorsed by Konami.
-- Physics/RNG/ROM-structure facts verified against
+- The NES hardware behavior `contra-nes` emulates (CPU opcodes, PPU
+  registers, mapper 2) is publicly documented, freely-reimplementable
+  console hardware behavior - see [nesdev.org](https://www.nesdev.org) - not
+  Konami's game code. `contra-nes` contains no code or data from Contra or
+  from any disassembly of it.
+- Physics/RNG/ROM-structure facts referenced in `contra-core` and its docs
+  were verified against
   [vermiceli/nes-contra-us](https://github.com/vermiceli/nes-contra-us), an
   annotated disassembly by the credited author(s), itself built on Trax's
   original disassembly for the *Revenge of the Red Falcon* project. No code
@@ -160,7 +194,7 @@ port it operation-for-operation, add a determinism test. See
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Applies to the original code in this
+MIT - see [LICENSE](LICENSE). Applies to the original code in this
 repository only; it does not grant any rights to Konami's *Contra* itself,
 and does not cover any ROM, asset, or mod file you supply or install
 yourself.

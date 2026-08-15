@@ -1,4 +1,4 @@
-//! `contra-extract` — validates a user-supplied `baserom.nes` and reports
+//! `contra-extract` - validates a user-supplied `baserom.nes` and reports
 //! what it found. Actual asset decompression (graphics/audio) is not yet
 //! implemented; see docs/ASSETS.md and ROADMAP.md. This tool exists now so
 //! the legal/data-flow story (BYO-ROM, nothing copyrighted in this repo) is

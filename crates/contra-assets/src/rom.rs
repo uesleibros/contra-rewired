@@ -10,7 +10,7 @@ use thiserror::Error;
 /// MD5 of the US retail *Contra* (NES) ROM, as documented by the public
 /// disassembly project this port is built against
 /// (<https://github.com/vermiceli/nes-contra-us>, README "Prerequisites").
-/// Used only to tell the user *which* game they pointed us at — we never
+/// Used only to tell the user *which* game they pointed us at - we never
 /// ship, embed, or redistribute the ROM itself.
 pub const CONTRA_US_MD5: &str = "7bdad8b4a7a56a634c9649d20bd3011b";
 
@@ -38,6 +38,11 @@ pub struct NesRom {
     pub prg_rom: Vec<u8>,
     pub chr_rom: Vec<u8>,
     pub mapper: u8,
+    /// From iNES header flags 6, bit 0: `false` = horizontal mirroring,
+    /// `true` = vertical mirroring. Contra (mapper 2/UxROM) wires this to
+    /// the cartridge's fixed mirroring pad, so it's read once at load time
+    /// rather than switched at runtime.
+    pub vertical_mirroring: bool,
     pub md5_hex: String,
 }
 
@@ -81,7 +86,7 @@ impl NesRom {
         hasher.update(bytes);
         let md5_hex = format!("{:x}", hasher.finalize());
 
-        Ok(Self { prg_rom, chr_rom, mapper, md5_hex })
+        Ok(Self { prg_rom, chr_rom, mapper, vertical_mirroring: flags6 & 0x01 != 0, md5_hex })
     }
 
     pub fn identity(&self) -> RomIdentity {

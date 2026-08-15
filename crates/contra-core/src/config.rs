@@ -2,7 +2,7 @@
 //!
 //! This is deliberately one big serde-friendly tree instead of scattered
 //! globals: every toggle in the README's feature list has a field here (even
-//! where the underlying system is still a Phase 2/3 stub — see ROADMAP.md),
+//! where the underlying system is still a Phase 2/3 stub - see ROADMAP.md),
 //! so the config format is stable from day one and front-ends (PC, Android)
 //! just render whichever sections their platform supports.
 
@@ -182,7 +182,7 @@ pub enum WidescreenMode {
     Classic,
     /// Renders extra world space on the sides, but spawn/camera logic must
     /// be adapted so nothing spawns/activates earlier than on real
-    /// hardware. See docs/FIDELITY.md — tracked as a Phase 2 item.
+    /// hardware. See docs/FIDELITY.md - tracked as a Phase 2 item.
     Extended,
     Ultrawide,
 }

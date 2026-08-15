@@ -1,10 +1,128 @@
 # Fidelity notes
 
 "Same physics, same RNG, same hitboxes" is a specific, checkable claim, not a
-vibe. This document tracks exactly what's been verified against the
-[vermiceli/nes-contra-us](https://github.com/vermiceli/nes-contra-us)
-disassembly, what's an honest placeholder, and why bit-exact "Original NES"
-mode is harder than it looks.
+vibe. This document covers two different things, because this project takes
+two different approaches to fidelity (see docs/ARCHITECTURE.md, "Two
+different kinds of fidelity"):
+
+1. **`contra-nes`** - the emulation core that runs the real ROM when one is
+   loaded. Its fidelity question is "how accurately does this emulate NES
+   *hardware*", not "does this match Contra specifically" - since it's
+   running Contra's own code, physics/RNG/hitboxes/quirks all come along for
+   free, correctly, as a consequence of correct hardware emulation. See
+   below for exactly what is and isn't accurate yet.
+2. **`contra-core`** - the hand-ported layer used for the placeholder demo
+   when no ROM is loaded. This is where "verified against the disassembly,
+   routine by routine" applies, and where the rest of this document's
+   original content (below) still lives.
+
+## `contra-nes`: emulation accuracy
+
+### What's accurate
+
+- **CPU**: every official 6502 opcode, correct N/V/Z/C flag behavior for
+  arithmetic/shifts/compares, the well-known JMP-`($xxFF)` page-boundary
+  hardware bug (reproduced deliberately, not fixed), NMI/IRQ/BRK/RESET.
+  Verified by unit tests using small original hand-assembled programs - see
+  `crates/contra-nes/src/cpu.rs`.
+- **PPU**: background rendering through the real scroll registers (`v`/`t`/
+  fine-x, the same "loopy" registers real hardware uses - see NESdev's "PPU
+  scrolling" article), sprite rendering (8x8/8x16, priority, H/V flip),
+  sprite 0 hit, sprite overflow, correct nametable mirroring, correct
+  palette mirroring (`$3F10`/`14`/`18`/`1C` → `$3F00`/`04`/`08`/`0C`).
+- **Mapper 2 (UxROM)**: PRG bank switching via any `$8000-$FFFF` write, last
+  bank fixed at `$C000`, CHR-RAM.
+- **Timing model**: CPU cycles are budgeted per scanline (341 PPU dots / 3),
+  NMI fires once per frame at the correct scanline, OAM DMA stalls the CPU
+  for 513 cycles.
+
+### What's a known, deliberate simplification
+
+- **PPU is scanline-granular, not per-dot.** Each visible scanline is
+  rendered once, in full, using whatever `v`/`t`/mask/ctrl state is current
+  *at the start of that scanline's CPU cycle budget* - not re-evaluated
+  dot-by-dot. This correctly reproduces the common "split scroll" trick (a
+  status bar HUD achieved by changing scroll once per frame at a fixed
+  scanline) because `v`'s Y-increment and horizontal-bits-copy are applied
+  at the real dot-256/dot-257 boundaries between scanlines. It does **not**
+  reproduce effects that change PPU registers *in the middle* of a
+  scanline's 256 pixels (rare even among NES games that use raster tricks).
+  If Contra turns out to rely on one, this is the first place to look.
+- **CPU cycle counts are the standard base-cost table**, including
+  page-cross and branch-taken extra cycles, but not every hardware edge
+  case (e.g. the dummy read some read-modify-write instructions perform on
+  real silicon). This affects cycle-counting accuracy in rare corner cases,
+  not correctness of the visible result.
+- **Only official 6502 opcodes are implemented.** An undocumented opcode is
+  treated as a recorded 2-cycle no-op rather than crashing (see
+  `Cpu::illegal_opcode_hit`). Commercial NES games using illegal opcodes are
+  rare; if Contra is found to use one, implementing it properly is a small,
+  well-scoped addition.
+- **No audio.** The APU (`apu.rs`) is a stub: it accepts every register
+  write (so game code never stalls waiting on it) and reports "nothing
+  pending" on every read, but performs no synthesis. This is the single
+  biggest remaining gap between "runs" and "is what playing this on a real
+  NES feels like" - see ROADMAP.md.
+- **Only mapper 2 (UxROM).** Enough for Contra; a ROM using any other mapper
+  is rejected (`contra-pc` falls back to the placeholder demo).
+
+The unit tests in `cpu.rs`/`ppu.rs`/`nes.rs` are verified by (a) original,
+hand-written 6502 programs exercising specific documented CPU/PPU behaviors,
+and (b) conformance to the publicly documented NES hardware behavior on
+[nesdev.org](https://www.nesdev.org) - none of them need a copy of Contra.
+
+### Validated against the real retail ROM
+
+The core has also been run against a legally-obtained US retail Contra ROM
+(MD5 `7bdad8b4a7a56a634c9649d20bd3011b`, matching the hash documented in the
+reference disassembly) using `crates/contra-nes/examples/dump_frames.rs`, a
+debug tool that runs the ROM headlessly and dumps PNG snapshots. Results:
+
+- The Konami logo, "CONTRA" title logo, "PLAY SELECT" menu, and copyright
+  text render pixel-correct.
+- The title screen's actual input state machine works as designed: Start
+  must be pressed once (during the scroll-in intro) to reach the "PLAY
+  SELECT" menu and again (once the menu is showing) to really start a game
+  - a single press just fast-forwards to the menu, exactly matching
+    `dec_theme_delay_check_user_input` in the reference disassembly's
+    `bank7.asm`. Getting this wrong in a test script looks exactly like a
+    "Start doesn't work" bug; it isn't one.
+- The Stage 1 "JUNGLE" intro card, in-level terrain (water, rock, grass,
+  mountain background), the player character, enemy soldiers, and item
+  capsules all render correctly during real (non-demo) gameplay driven by
+  synthetic held-right/jump/shoot input.
+- Across ~900 frames (15 seconds) of real ROM execution spanning boot,
+  title, stage-intro, and gameplay, zero undocumented ("illegal") 6502
+  opcodes were hit - Contra's code path exercised so far uses only official
+  opcodes, consistent with `cpu.rs` only implementing those.
+
+This run is also what found the one confirmed real bug so far: sprite
+draw order didn't respect OAM priority (see below).
+
+### Bug found and fixed this way: sprite draw priority
+
+`render_sprites_line` iterated OAM index 0..64 and wrote each opaque sprite
+pixel to the framebuffer unconditionally. On real hardware, sprite 0 has the
+*highest* display priority and sprite 63 the lowest, so when two sprites
+overlap, the lower index must win. Writing in ascending index order without
+tracking what a higher-priority sprite already claimed meant a *later*
+(lower-priority) sprite could silently paint over an earlier, higher-priority
+one wherever their pixels overlapped - backwards from hardware. This is
+exactly the kind of bug that reads as "flicker" or "wrong sprite part on
+top" on any multi-sprite character or overlapping-sprite effect, since which
+sprite "wins" would depend on OAM ordering that shifts frame to frame as
+animation advances. Fixed by tracking claimed pixels per scanline so a
+higher-priority sprite's pixel can never be overwritten by a
+lower-priority one; regression-tested in `ppu.rs`
+(`lower_oam_index_sprite_wins_overlap_priority`).
+
+## `contra-core`: hand-ported layer (placeholder demo)
+
+The rest of this document describes `contra-core`'s hand-ported physics/RNG
+- used for the engine-only placeholder demo when no ROM is loaded, and as
+a reference for the RAM-poke-based tooling described in ROADMAP.md. It does
+**not** describe what `contra-pc` does when you give it a real ROM - that's
+entirely `contra-nes`, above.
 
 ## Verified against the disassembly
 
@@ -52,12 +170,12 @@ FRAME_COUNTER`, over and over, as many times as fit before the next NMI.
 
 ### Horizontal movement (`physics.rs::WALK_SPEED`)
 
-Not fixed-point at all — `set_player_positive_x_velocity` /
+Not fixed-point at all - `set_player_positive_x_velocity` /
 `set_player_negative_x_velocity` in `bank7.asm` set `PLAYER_X_VELOCITY` to a
 literal `#$01` or `#$ff` (-1) every frame based on d-pad state, no
 accumulation. `PlayerPhysics::step_horizontal` reproduces this directly
 (`WALK_SPEED = 1`), which is why player horizontal movement is exactly ±1
-px/frame — the same speed the NES has, not an approximation of it.
+px/frame - the same speed the NES has, not an approximation of it.
 
 ### Jump takeoff velocity (`physics.rs::JUMP_VELOCITY_{OUTDOOR,INDOOR}`)
 
@@ -77,17 +195,17 @@ sta PLAYER_Y_FRACT_VELOCITY,x
 ```
 
 `JUMP_VELOCITY_OUTDOOR`/`JUMP_VELOCITY_INDOOR` store these as the exact raw
-register bytes (not a decimal reinterpretation — see the note in
+register bytes (not a decimal reinterpretation - see the note in
 `physics.rs`'s doc comments about why the disassembly's own inline "-5.94"/
 "-4.56" comments are a human shorthand rather than the literal two's-complement
 value). Feeding the raw bytes through the same `apply_gravity`/
 `JumpAccumulator::integrate` used for the rest of the fall means the
-resulting arc is bit-exact by construction — there's no separate "trust me"
+resulting arc is bit-exact by construction - there's no separate "trust me"
 constant to get subtly wrong.
 
 The player-death "pop" bounce (`DEATH_BOUNCE_VELOCITY`, from `kill_player`:
 fast=`$fd`, fract=`$80`) is ported the same way but not yet wired to a death
-state in `contra-pc` (there's no death state yet — no enemies to die to).
+state in `contra-pc` (there's no death state yet - no enemies to die to).
 
 ## Honest placeholders (not yet ported)
 
@@ -95,7 +213,7 @@ state in `contra-pc` (there's no death state yet — no enemies to die to).
   modifiers.** Not yet extracted from `bank6.asm`/`bank7.asm`.
 - **Enemy AI, hitboxes, spawn tables, aim math.** The disassembly's `Enemy
   Routines.md`, `Enemy Glossary.md`, and `Aim Documentation.md` are detailed
-  enough to port faithfully — this is scoped, tracked work (ROADMAP.md
+  enough to port faithfully - this is scoped, tracked work (ROADMAP.md
   Phase 1), not started.
 - **Bit-exact "Original NES" RNG.** Reproducing `RANDOM_NUM`'s *exact*
   sequence for a given input log requires knowing how many idle-loop
@@ -105,7 +223,7 @@ state in `contra-pc` (there's no death state yet — no enemies to die to).
   1. Cycle-accurate simulation of each frame's workload, then feed the
      resulting iteration count into `NesAccumulatorRng::tick_idle_frame`.
   2. Static recompilation of the original 6502 code (in the spirit of
-     projects like the N64/SM64 PC recomps) — translate the disassembly to
+     projects like the N64/SM64 PC recomps) - translate the disassembly to
      Rust routine-for-routine, so timing-dependent behavior like this falls
      out for free instead of being reverse-engineered twice.
 

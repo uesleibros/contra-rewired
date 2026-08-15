@@ -1,0 +1,504 @@
+//! A 2C02 PPU core, driven at **scanline granularity** rather than
+//! per-dot. For each of the 240 visible scanlines, the background is
+//! rendered from the current scroll registers (derived directly from the
+//! `v` "loopy" register - see NESdev's "PPU scrolling" article, this is
+//! the same algorithm real hardware uses, just evaluated once per line
+//! instead of once per dot), then `v` is advanced exactly the way the
+//! hardware advances it at dot 256 (Y increment) and dot 257 (horizontal
+//! bits copied from `t`). This reproduces per-scanline scroll splits (the
+//! common "HUD status bar" technique) correctly; it does **not** reproduce
+//! effects that change PPU registers mid-scanline (rare outside of a
+//! handful of trick effects). See docs/FIDELITY.md.
+//!
+//! Assumes CHR-RAM (mapper 2 / UxROM's usual configuration, which is what
+//! Contra (USA) uses) rather than bank-switched CHR-ROM.
+
+use serde::{Deserialize, Serialize};
+
+pub const SCREEN_W: usize = 256;
+pub const SCREEN_H: usize = 240;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Mirroring {
+    Horizontal,
+    Vertical,
+}
+
+const CTRL_NT_MASK: u8 = 0x03;
+const CTRL_VRAM_INC32: u8 = 1 << 2;
+const CTRL_SPRITE_PT: u8 = 1 << 3;
+const CTRL_BG_PT: u8 = 1 << 4;
+const CTRL_SPRITE_16: u8 = 1 << 5;
+const CTRL_NMI: u8 = 1 << 7;
+
+const MASK_SHOW_BG: u8 = 1 << 3;
+const MASK_SHOW_SPRITES: u8 = 1 << 4;
+
+const STATUS_SPRITE_OVERFLOW: u8 = 1 << 5;
+const STATUS_SPRITE0_HIT: u8 = 1 << 6;
+const STATUS_VBLANK: u8 = 1 << 7;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ppu {
+    #[serde(with = "crate::serde_arrays::arr_0x800")]
+    pub vram: [u8; 0x800],
+    pub palette: [u8; 32],
+    #[serde(with = "crate::serde_arrays::arr_256")]
+    pub oam: [u8; 256],
+    #[serde(with = "crate::serde_arrays::arr_0x2000")]
+    pub chr_ram: [u8; 0x2000],
+    pub oam_addr: u8,
+    pub ctrl: u8,
+    pub mask: u8,
+    pub status: u8,
+    pub v: u16,
+    pub t: u16,
+    pub fine_x: u8,
+    pub write_toggle: bool,
+    pub data_buffer: u8,
+    pub mirroring: Mirroring,
+    pub nmi_requested: bool,
+    #[serde(skip)]
+    pub framebuffer: Vec<u32>,
+}
+
+impl Ppu {
+    pub fn new(mirroring: Mirroring) -> Self {
+        Self {
+            vram: [0; 0x800],
+            palette: [0; 32],
+            oam: [0; 256],
+            chr_ram: [0; 0x2000],
+            oam_addr: 0,
+            ctrl: 0,
+            mask: 0,
+            status: 0,
+            v: 0,
+            t: 0,
+            fine_x: 0,
+            write_toggle: false,
+            data_buffer: 0,
+            mirroring,
+            nmi_requested: false,
+            framebuffer: vec![0; SCREEN_W * SCREEN_H],
+        }
+    }
+
+    fn nmi_enabled(&self) -> bool {
+        self.ctrl & CTRL_NMI != 0
+    }
+
+    fn bg_enabled(&self) -> bool {
+        self.mask & MASK_SHOW_BG != 0
+    }
+
+    fn sprites_enabled(&self) -> bool {
+        self.mask & MASK_SHOW_SPRITES != 0
+    }
+
+    // ---- CPU-facing register interface ($2000-$2007, mirrored to $3FFF) ----
+
+    pub fn read_register(&mut self, reg: u16) -> u8 {
+        match reg & 7 {
+            2 => {
+                let v = self.status | (self.data_buffer & 0x1F);
+                self.status &= !STATUS_VBLANK;
+                self.write_toggle = false;
+                v
+            }
+            4 => self.oam[self.oam_addr as usize],
+            7 => {
+                let addr = self.v & 0x3FFF;
+                let value = if addr >= 0x3F00 {
+                    self.data_buffer = self.read_vram(addr - 0x1000);
+                    self.read_palette(addr)
+                } else {
+                    let buffered = self.data_buffer;
+                    self.data_buffer = self.read_vram(addr);
+                    buffered
+                };
+                self.v = self.v.wrapping_add(if self.ctrl & CTRL_VRAM_INC32 != 0 { 32 } else { 1 });
+                value
+            }
+            _ => 0,
+        }
+    }
+
+    pub fn write_register(&mut self, reg: u16, value: u8) {
+        match reg & 7 {
+            0 => {
+                self.ctrl = value;
+                self.t = (self.t & !0x0C00) | (((value & CTRL_NT_MASK) as u16) << 10);
+            }
+            1 => self.mask = value,
+            3 => self.oam_addr = value,
+            4 => {
+                self.oam[self.oam_addr as usize] = value;
+                self.oam_addr = self.oam_addr.wrapping_add(1);
+            }
+            5 => {
+                if !self.write_toggle {
+                    self.fine_x = value & 0x07;
+                    self.t = (self.t & !0x001F) | ((value >> 3) as u16);
+                } else {
+                    self.t = (self.t & !0x73E0) | (((value & 0x07) as u16) << 12) | (((value >> 3) as u16) << 5);
+                }
+                self.write_toggle = !self.write_toggle;
+            }
+            6 => {
+                if !self.write_toggle {
+                    self.t = (self.t & 0x00FF) | (((value & 0x3F) as u16) << 8);
+                } else {
+                    self.t = (self.t & 0xFF00) | value as u16;
+                    self.v = self.t;
+                }
+                self.write_toggle = !self.write_toggle;
+            }
+            7 => {
+                let addr = self.v & 0x3FFF;
+                self.write_vram(addr, value);
+                self.v = self.v.wrapping_add(if self.ctrl & CTRL_VRAM_INC32 != 0 { 32 } else { 1 });
+            }
+            _ => {}
+        }
+    }
+
+    pub fn oam_dma_write(&mut self, offset: u8, value: u8) {
+        self.oam[offset as usize] = value;
+    }
+
+    // ---- Memory ----
+
+    fn nametable_index(&self, addr: u16) -> usize {
+        let nt = ((addr - 0x2000) / 0x400) as usize;
+        let offset = (addr as usize - 0x2000) % 0x400;
+        let physical = match self.mirroring {
+            Mirroring::Horizontal => nt >> 1,
+            Mirroring::Vertical => nt & 1,
+        };
+        physical * 0x400 + offset
+    }
+
+    fn read_vram(&self, addr: u16) -> u8 {
+        let addr = addr & 0x3FFF;
+        match addr {
+            0x0000..=0x1FFF => self.chr_ram[addr as usize],
+            0x2000..=0x2FFF => self.vram[self.nametable_index(addr)],
+            0x3000..=0x3EFF => self.vram[self.nametable_index(addr - 0x1000)],
+            _ => 0,
+        }
+    }
+
+    fn write_vram(&mut self, addr: u16, value: u8) {
+        let addr = addr & 0x3FFF;
+        match addr {
+            0x0000..=0x1FFF => self.chr_ram[addr as usize] = value,
+            0x2000..=0x2FFF => {
+                let i = self.nametable_index(addr);
+                self.vram[i] = value;
+            }
+            0x3000..=0x3EFF => {
+                let i = self.nametable_index(addr - 0x1000);
+                self.vram[i] = value;
+            }
+            0x3F00..=0x3FFF => self.write_palette(addr, value),
+            _ => {}
+        }
+    }
+
+    fn palette_index(addr: u16) -> usize {
+        let mut i = (addr & 0x1F) as usize;
+        if i >= 16 && i % 4 == 0 {
+            i -= 16; // $3F10/$14/$18/$1C mirror $3F00/$04/$08/$0C
+        }
+        i
+    }
+    fn read_palette(&self, addr: u16) -> u8 {
+        self.palette[Self::palette_index(addr)]
+    }
+    fn write_palette(&mut self, addr: u16, value: u8) {
+        self.palette[Self::palette_index(addr)] = value;
+    }
+
+    // ---- Rendering ----
+
+    /// Called once per visible scanline (0..SCREEN_H). Renders background
+    /// + sprites for `y` using the current `v`/`t`/`fine_x`, then advances
+    /// `v` for the next line exactly as hardware does at dots 256/257.
+    pub fn render_scanline(&mut self, y: usize) {
+        let mut bg_opaque = [false; SCREEN_W];
+        if self.bg_enabled() {
+            self.render_background_line(y, &mut bg_opaque);
+        } else {
+            let backdrop = NES_PALETTE[(self.palette[0] & 0x3F) as usize];
+            for x in 0..SCREEN_W {
+                self.framebuffer[y * SCREEN_W + x] = backdrop;
+            }
+        }
+        if self.sprites_enabled() {
+            self.render_sprites_line(y, &bg_opaque);
+        }
+        self.advance_v_for_next_line();
+    }
+
+    fn render_background_line(&mut self, y: usize, bg_opaque: &mut [bool; SCREEN_W]) {
+        let base_nt = (self.v >> 10) & 0x03;
+        let coarse_x0 = self.v & 0x1F;
+        let coarse_y = (self.v >> 5) & 0x1F;
+        let fine_y = (self.v >> 12) & 0x07;
+        let pattern_base: u16 = if self.ctrl & CTRL_BG_PT != 0 { 0x1000 } else { 0x0000 };
+
+        for x in 0..SCREEN_W {
+            let total_fine_x = self.fine_x as u32 + x as u32;
+            let tile_col = (coarse_x0 as u32 + total_fine_x / 8) % 32;
+            let nt_h_flip = ((coarse_x0 as u32 + total_fine_x / 8) / 32) % 2 == 1;
+            let px_in_tile = (total_fine_x % 8) as u8;
+            let nt = base_nt ^ (nt_h_flip as u16);
+
+            let nt_addr = 0x2000 + nt * 0x400 + coarse_y * 32 + tile_col as u16;
+            let tile_index = self.read_vram(nt_addr);
+
+            let attr_addr = 0x2000 + nt * 0x400 + 0x3C0 + (coarse_y / 4) * 8 + tile_col as u16 / 4;
+            let attr_byte = self.read_vram(attr_addr);
+            let quadrant = (((coarse_y % 4) / 2) * 2 + (tile_col as u16 % 4) / 2) as u8;
+            let palette_select = (attr_byte >> (quadrant * 2)) & 0x03;
+
+            let plane0 = self.read_vram(pattern_base + tile_index as u16 * 16 + fine_y);
+            let plane1 = self.read_vram(pattern_base + tile_index as u16 * 16 + fine_y + 8);
+            let bit = 7 - px_in_tile;
+            let color_index = (((plane1 >> bit) & 1) << 1) | ((plane0 >> bit) & 1);
+
+            let color = if color_index == 0 {
+                NES_PALETTE[(self.palette[0] & 0x3F) as usize]
+            } else {
+                bg_opaque[x] = true;
+                let pal = self.read_palette(0x3F00 + (palette_select as u16) * 4 + color_index as u16);
+                NES_PALETTE[(pal & 0x3F) as usize]
+            };
+            self.framebuffer[y * SCREEN_W + x] = color;
+        }
+    }
+
+    fn render_sprites_line(&mut self, y: usize, bg_opaque: &[bool; SCREEN_W]) {
+        let sprite_height: i32 = if self.ctrl & CTRL_SPRITE_16 != 0 { 16 } else { 8 };
+        let mut rendered_on_line = 0u8;
+        let mut sprite0_this_line = false;
+        // Sprite 0 has the highest display priority, sprite 63 the lowest:
+        // among the (up to 8) sprites on this scanline, a lower OAM index
+        // must win any overlap. Iterating 0..64 and writing unconditionally
+        // would let a *later* (lower-priority) sprite overwrite an earlier
+        // one wherever they overlap, which is backwards from hardware and
+        // shows up as flicker/wrong-part-on-top on any multi-sprite
+        // character or overlapping-sprite effect. Track which pixels a
+        // higher-priority sprite already claimed this line and skip them.
+        let mut claimed = [false; SCREEN_W];
+
+        for i in 0..64 {
+            let sprite_y = self.oam[i * 4] as i32 + 1;
+            let row = y as i32 - sprite_y;
+            if row < 0 || row >= sprite_height {
+                continue;
+            }
+            if rendered_on_line >= 8 {
+                self.status |= STATUS_SPRITE_OVERFLOW;
+                break;
+            }
+            rendered_on_line += 1;
+
+            let tile = self.oam[i * 4 + 1];
+            let attr = self.oam[i * 4 + 2];
+            let sx = self.oam[i * 4 + 3] as i32;
+            let flip_h = attr & 0x40 != 0;
+            let flip_v = attr & 0x80 != 0;
+            let behind_bg = attr & 0x20 != 0;
+            let palette_select = attr & 0x03;
+
+            let mut row_in_sprite = row;
+            if flip_v {
+                row_in_sprite = sprite_height - 1 - row_in_sprite;
+            }
+
+            let (pattern_table, tile_index, fine_row) = if sprite_height == 16 {
+                let table = if tile & 1 != 0 { 0x1000 } else { 0x0000 };
+                let base_tile = (tile & 0xFE) as u16 + if row_in_sprite >= 8 { 1 } else { 0 };
+                (table, base_tile, (row_in_sprite % 8) as u16)
+            } else {
+                let table: u16 = if self.ctrl & CTRL_SPRITE_PT != 0 { 0x1000 } else { 0x0000 };
+                (table, tile as u16, row_in_sprite as u16)
+            };
+
+            let plane0 = self.read_vram(pattern_table + tile_index * 16 + fine_row);
+            let plane1 = self.read_vram(pattern_table + tile_index * 16 + fine_row + 8);
+
+            for col in 0..8i32 {
+                let px = if flip_h { col } else { 7 - col };
+                let bit = px as u8;
+                let color_index = (((plane1 >> bit) & 1) << 1) | ((plane0 >> bit) & 1);
+                if color_index == 0 {
+                    continue;
+                }
+                let screen_x = sx + col;
+                if !(0..SCREEN_W as i32).contains(&screen_x) {
+                    continue;
+                }
+                if i == 0 && bg_opaque[screen_x as usize] {
+                    sprite0_this_line = true;
+                }
+                if claimed[screen_x as usize] {
+                    continue;
+                }
+                if behind_bg && bg_opaque[screen_x as usize] {
+                    // A lower-priority-than-background pixel is still
+                    // "claimed" for sprite-vs-sprite priority purposes even
+                    // though it doesn't get drawn over the background.
+                    claimed[screen_x as usize] = true;
+                    continue;
+                }
+                claimed[screen_x as usize] = true;
+                let pal = self.read_palette(0x3F10 + (palette_select as u16) * 4 + color_index as u16);
+                self.framebuffer[y * SCREEN_W + screen_x as usize] = NES_PALETTE[(pal & 0x3F) as usize];
+            }
+        }
+
+        if sprite0_this_line {
+            self.status |= STATUS_SPRITE0_HIT;
+        }
+    }
+
+    /// Mirrors the hardware's dot-256 Y increment and dot-257 horizontal-bits
+    /// copy, so scroll registers set mid-frame take effect on the correct
+    /// scanline boundary.
+    fn advance_v_for_next_line(&mut self) {
+        if self.bg_enabled() || self.sprites_enabled() {
+            let mut v = self.v;
+            if v & 0x7000 != 0x7000 {
+                v += 0x1000;
+            } else {
+                v &= !0x7000;
+                let mut coarse_y = (v & 0x03E0) >> 5;
+                if coarse_y == 29 {
+                    coarse_y = 0;
+                    v ^= 0x0800;
+                } else if coarse_y == 31 {
+                    coarse_y = 0;
+                } else {
+                    coarse_y += 1;
+                }
+                v = (v & !0x03E0) | (coarse_y << 5);
+            }
+            v = (v & !0x041F) | (self.t & 0x041F);
+            self.v = v;
+        }
+    }
+
+    /// Called once, at the start of vblank (scanline 241). Sets the vblank
+    /// flag and returns whether NMI should fire.
+    pub fn start_vblank(&mut self) -> bool {
+        self.status |= STATUS_VBLANK;
+        self.nmi_enabled()
+    }
+
+    /// Called once, at the pre-render line: clears status flags and copies
+    /// vertical scroll bits from `t` into `v` (approximating the real
+    /// per-dot 280-304 copy).
+    pub fn start_prerender(&mut self) {
+        self.status &= !(STATUS_VBLANK | STATUS_SPRITE0_HIT | STATUS_SPRITE_OVERFLOW);
+        if self.bg_enabled() || self.sprites_enabled() {
+            self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
+        }
+    }
+}
+
+/// The standard NTSC 2C02 palette (64 entries, RGB packed as 0x00RRGGBB).
+/// These are measured/derived hardware output colors, not Konami content -
+/// the same table (give or take small revisions) ships in essentially
+/// every NES emulator.
+#[rustfmt::skip]
+pub const NES_PALETTE: [u32; 64] = [
+    0x00666666, 0x00002A88, 0x001412A7, 0x003B00A4, 0x005C007E, 0x006E0040, 0x006C0600, 0x00561D00,
+    0x00333500, 0x000B4800, 0x00005200, 0x00004F08, 0x0000404D, 0x00000000, 0x00000000, 0x00000000,
+    0x00ADADAD, 0x00155FD9, 0x004240FF, 0x007527FE, 0x00A01ACC, 0x00B71E7B, 0x00B53120, 0x00994E00,
+    0x006B6D00, 0x00388700, 0x000C9300, 0x00008F32, 0x00007C8D, 0x00000000, 0x00000000, 0x00000000,
+    0x00FFFEFF, 0x0064B0FF, 0x009290FF, 0x00C676FF, 0x00F36AFF, 0x00FE6ECC, 0x00FE8170, 0x00EA9E22,
+    0x00BCBE00, 0x0088D800, 0x005CE430, 0x0045E082, 0x0048CDDE, 0x004F4F4F, 0x00000000, 0x00000000,
+    0x00FFFEFF, 0x00C0DFFF, 0x00D3D2FF, 0x00E8C8FF, 0x00FBC2FF, 0x00FEC4EA, 0x00FECCC5, 0x00F7D8A5,
+    0x00E4E594, 0x00CFEF96, 0x00BDF4AB, 0x00B3F3CC, 0x00B5EBF2, 0x00B8B8B8, 0x00000000, 0x00000000,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lower_oam_index_sprite_wins_overlap_priority() {
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.mask = MASK_SHOW_SPRITES; // sprites only, background left blank
+
+        // Tile 0 and tile 1: both fully opaque (color index 1) 8x8 tiles.
+        for row in 0..8usize {
+            ppu.chr_ram[row] = 0xFF; // tile 0 plane 0
+            ppu.chr_ram[8 + row] = 0x00; // tile 0 plane 1
+            ppu.chr_ram[16 + row] = 0xFF; // tile 1 plane 0
+            ppu.chr_ram[24 + row] = 0x00; // tile 1 plane 1
+        }
+        ppu.write_palette(0x3F11, 0x01); // sprite palette 0, color 1
+        ppu.write_palette(0x3F15, 0x02); // sprite palette 1, color 1
+
+        // Sprite 0 (highest priority) and sprite 1 fully overlap at (50, 10).
+        ppu.oam[0] = 9; // y+1 = 10
+        ppu.oam[1] = 0; // tile 0
+        ppu.oam[2] = 0; // palette 0, in front
+        ppu.oam[3] = 50; // x
+
+        ppu.oam[4] = 9;
+        ppu.oam[5] = 1; // tile 1
+        ppu.oam[6] = 1; // palette 1, in front
+        ppu.oam[7] = 50;
+
+        ppu.render_scanline(10);
+
+        let expected = NES_PALETTE[0x01];
+        let got = ppu.framebuffer[10 * SCREEN_W + 50];
+        assert_eq!(got, expected, "sprite 0 must win the overlap, not sprite 1");
+    }
+
+    #[test]
+    fn palette_mirroring_maps_sprite_backdrops_to_bg() {
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.write_palette(0x3F00, 0x0F);
+        assert_eq!(ppu.read_palette(0x3F10), 0x0F);
+    }
+
+    #[test]
+    fn horizontal_mirroring_maps_top_nametables_together() {
+        let ppu = Ppu::new(Mirroring::Horizontal);
+        assert_eq!(ppu.nametable_index(0x2000), ppu.nametable_index(0x23FF) - 0x3FF);
+        // $2000 and $2400 share the same physical table under horizontal mirroring.
+        assert_eq!(ppu.nametable_index(0x2005), ppu.nametable_index(0x2405));
+    }
+
+    #[test]
+    fn vertical_mirroring_maps_left_nametables_together() {
+        let ppu = Ppu::new(Mirroring::Vertical);
+        assert_eq!(ppu.nametable_index(0x2005), ppu.nametable_index(0x2805));
+    }
+
+    #[test]
+    fn ppuaddr_write_sequence_sets_v() {
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.write_register(6, 0x21); // high byte
+        ppu.write_register(6, 0x08); // low byte
+        assert_eq!(ppu.v, 0x2108);
+    }
+
+    #[test]
+    fn status_read_clears_vblank_and_write_toggle() {
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.status |= STATUS_VBLANK;
+        ppu.write_toggle = true;
+        let v = ppu.read_register(2);
+        assert!(v & STATUS_VBLANK != 0);
+        assert!(!ppu.write_toggle);
+        assert_eq!(ppu.status & STATUS_VBLANK, 0);
+    }
+}

@@ -1,14 +1,14 @@
 //! Player physics ported from `bank7.asm`. Vertical integration mirrors
 //! `apply_gravity` / `player_jumping_set_y_pos` exactly (see
 //! [`crate::fixed`] for the byte-level operations). Horizontal movement and
-//! jump takeoff velocity are now ported too — see [`JUMP_VELOCITY_OUTDOOR`],
+//! jump takeoff velocity are now ported too - see [`JUMP_VELOCITY_OUTDOOR`],
 //! [`JUMP_VELOCITY_INDOOR`], and [`WALK_SPEED`] below for the exact source
 //! lines. Weapon-specific recoil and enemy-collision knockback are not
 //! ported yet (ROADMAP.md, Phase 1).
 
 use crate::fixed::{JumpAccumulator, Velocity16};
 
-/// Player horizontal speed is not a fixed-point value on the NES — it's a
+/// Player horizontal speed is not a fixed-point value on the NES - it's a
 /// literal whole-pixel-per-frame constant, set directly from d-pad state
 /// every frame rather than accumulated. From `set_player_positive_x_velocity`
 /// / `set_player_negative_x_velocity` in `bank7.asm`:
@@ -113,7 +113,7 @@ impl PlayerPhysics {
     }
 
     /// One frame of horizontal movement: `dir` is -1, 0, or 1, matching
-    /// d-pad state exactly the way `set_player_x_vel_to_a` does — this is a
+    /// d-pad state exactly the way `set_player_x_vel_to_a` does - this is a
     /// direct per-frame set of `WALK_SPEED`, not an accumulated velocity.
     /// `speed_mult` is where non-Original modes (Turbo mutator, Custom
     /// Difficulty) hook in; it's `1.0` for bit-exact behavior.

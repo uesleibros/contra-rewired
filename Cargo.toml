@@ -4,6 +4,7 @@ members = [
     "crates/contra-core",
     "crates/contra-assets",
     "crates/contra-mods",
+    "crates/contra-nes",
     "apps/contra-pc",
     "apps/contra-extract",
 ]

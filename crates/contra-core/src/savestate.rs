@@ -2,7 +2,7 @@
 //! versioned binary snapshot format they all share.
 //!
 //! Snapshots are opaque `Vec<u8>` blobs (bincode-encoded by the caller's own
-//! state struct — `contra-core` doesn't know the full simulation state, so
+//! state struct - `contra-core` doesn't know the full simulation state, so
 //! it stays generic over `S: Serialize + DeserializeOwned`). This module
 //! owns slot management, metadata, and the undo-load / rewind ring buffer.
 

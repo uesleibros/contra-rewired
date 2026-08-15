@@ -2,7 +2,7 @@
 //! for contra-rewired.
 //!
 //! This crate deliberately has **no** rendering, audio, windowing, or file
-//! dialog code in it — see `apps/contra-pc` for that. What lives here is
+//! dialog code in it - see `apps/contra-pc` for that. What lives here is
 //! everything that must be identical across PC and Android, and everything
 //! that must be *provably* deterministic: fixed-point physics, RNG,
 //! save states, replays, difficulty, and the config schema that drives all
@@ -11,7 +11,7 @@
 //! Ported/verified-against-hardware pieces cite the exact routine and file
 //! in the community disassembly they were checked against
 //! (<https://github.com/vermiceli/nes-contra-us>). Anything not yet ported
-//! says so explicitly in its module docs rather than guessing — see
+//! says so explicitly in its module docs rather than guessing - see
 //! ROADMAP.md for what's tracked.
 
 pub mod checkpoint;

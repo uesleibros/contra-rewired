@@ -5,7 +5,7 @@
 //! replacements, a `.contramap` level, and (with the `lua` feature enabled
 //! at build time) a Lua entry script that hooks gameplay events.
 //!
-//! This crate works without Lua at all — asset-replacement-only mods (skins,
+//! This crate works without Lua at all - asset-replacement-only mods (skins,
 //! music packs, palettes) never need a script. The `lua` feature adds the
 //! scripting host on top; it's off by default because `mlua`'s `vendored`
 //! build needs a C toolchain (MSVC Build Tools on Windows, or a system

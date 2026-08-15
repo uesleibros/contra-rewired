@@ -1,0 +1,14 @@
+[package]
+name = "contra-nes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "A from-scratch NES (2A03/2C02, UxROM) emulation core. Runs the user's own legally-dumped ROM; ships no game code or assets."
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+contra-assets = { path = "../contra-assets" }
+png = "0.17"

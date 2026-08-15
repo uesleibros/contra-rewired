@@ -46,7 +46,7 @@ macro_rules! bitflags_like {
 }
 
 bitflags_like! {
-    /// One frame's worth of buttons for one player, packed into a byte —
+    /// One frame's worth of buttons for one player, packed into a byte -
     /// mirrors the NES controller shift-register bit order closely enough
     /// to be familiar, while adding the modern extras as high bits.
     pub struct InputFrame: u16 {

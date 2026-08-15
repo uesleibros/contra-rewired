@@ -5,30 +5,57 @@
 ```
 contra-rewired/
 ├── crates/
-│   ├── contra-core/     engine-agnostic simulation: fixed-point physics, RNG,
+│   ├── contra-nes/       from-scratch NES emulation core: 6502/2A03 CPU, 2C02
+│   │                     PPU, mapper 2 (UxROM), APU stub, controller. Runs
+│   │                     the user's own ROM directly - see docs/FIDELITY.md.
+│   │                     No game-specific code; doesn't know it's Contra.
+│   │
+│   ├── contra-core/      hand-ported simulation: fixed-point physics, RNG,
 │   │                     config schema, input mapping, save states, replays,
 │   │                     difficulty, checkpoints, the top-level state machine.
 │   │                     No rendering, audio, windowing, or filesystem UI code.
 │   │
-│   ├── contra-assets/    legal ROM loading + (future) asset extraction.
-│   │                     Ships zero Konami-owned bytes — see docs/ASSETS.md.
+│   ├── contra-assets/    legal ROM loading/validation.
+│   │                     Ships zero Konami-owned bytes - see docs/ASSETS.md.
 │   │
 │   └── contra-mods/      mod manifest/registry + optional Lua host (`lua`
-│                          feature, requires a C toolchain — see docs/MODDING.md).
+│                          feature, requires a C toolchain - see docs/MODDING.md).
 │
 ├── apps/
-│   ├── contra-pc/        desktop shell: window, framebuffer presentation,
-│   │                     keyboard/gamepad input, config load/save.
+│   ├── contra-pc/        desktop shell: loads a ROM into `contra-nes` (or
+│   │                     falls back to the `contra-core` placeholder demo),
+│   │                     window, framebuffer presentation, keyboard/gamepad
+│   │                     input, config load/save, save states.
 │   │
-│   └── contra-extract/   CLI that validates/extracts a user-supplied ROM.
+│   └── contra-extract/   CLI that validates a user-supplied ROM.
 │
 └── docs/                 this folder.
 ```
 
+## Two different kinds of "fidelity", and why both crates exist
+
+`contra-nes` and `contra-core` take opposite approaches to the same goal
+(faithful Contra behavior), and both are useful:
+
+- **`contra-nes`** runs the *actual game code*. Once a ROM is loaded, every
+  system Konami wrote - physics, hitboxes, enemy AI, RNG, the works - comes
+  along automatically, because it's their 6502 code executing on an emulated
+  6502. This is strictly better fidelity than hand-porting, and it's what
+  `contra-pc` uses whenever a ROM is available.
+- **`contra-core`** is a hand-written reimplementation of specific pieces
+  (currently: vertical physics, walk/jump velocity, the RNG mechanism),
+  verified against the disassembly rather than derived from running it. It
+  exists for three reasons: it drives the placeholder demo when no ROM is
+  loaded, it documents *why* the game behaves the way it does (comments cite
+  exact disassembly routines - useful even once `contra-nes` is running the
+  real thing), and it's the natural home for a future "Custom Difficulty"
+  system that pokes the *emulator's* live RAM using the same address map,
+  since a memory poke needs to know what address to poke.
+
 An Android front-end (`apps/contra-android/`, not yet started) would depend
 on the same `contra-core` and `contra-assets` crates via `cargo-ndk` / JNI,
 reusing every deterministic system unchanged and only replacing the
-windowing/input/rendering layer — the same split that lets `contra-pc` exist
+windowing/input/rendering layer - the same split that lets `contra-pc` exist
 without any Android-specific code today.
 
 ## Why the simulation core has no rendering code
@@ -39,7 +66,7 @@ netcode, TAS/practice tools, the level editor, Steam Rich Presence, a future
 `contra-core` free of `winit`/`wgpu`/Android-specific dependencies means:
 
 - it compiles fast and can be fuzzed/tested headlessly (see the unit tests in
-  every module — physics, RNG, replays, and save states are all covered
+  every module - physics, RNG, replays, and save states are all covered
   without opening a window);
 - a replay recorded on PC can, in principle, play back on Android and
   vice versa, because both link the exact same crate;
@@ -51,15 +78,15 @@ netcode, TAS/practice tools, the level editor, Steam Rich Presence, a future
 Everything that must produce bit-identical results given the same inputs
 lives in `contra-core`:
 
-- [`fixed`](../crates/contra-core/src/fixed.rs) — the two-byte
+- [`fixed`](../crates/contra-core/src/fixed.rs) - the two-byte
   fractional/fast velocity representation the NES code itself uses, ported
   operation-for-operation (see module docs and docs/FIDELITY.md).
-- [`rng`](../crates/contra-core/src/rng.rs) — the NES's actual idle-loop
-  accumulator RNG (modeled, not yet cycle-exact — see docs/FIDELITY.md) plus
+- [`rng`](../crates/contra-core/src/rng.rs) - the NES's actual idle-loop
+  accumulator RNG (modeled, not yet cycle-exact - see docs/FIDELITY.md) plus
   a seedable RNG for every non-"Original" mode.
-- [`replay`](../crates/contra-core/src/replay.rs) — records inputs, not
+- [`replay`](../crates/contra-core/src/replay.rs) - records inputs, not
   video, so a run is a few KB and can be scrubbed/resumed ("Take Control").
-- [`savestate`](../crates/contra-core/src/savestate.rs) — generic over the
+- [`savestate`](../crates/contra-core/src/savestate.rs) - generic over the
   game's own snapshot struct; owns slot management, undo-load, and the
   rewind ring buffer, not the struct's contents.
 
@@ -70,8 +97,8 @@ simulation.
 ## Config as the single source of truth
 
 [`contra_core::config::Config`](../crates/contra-core/src/config.rs) is one
-serde-friendly tree covering every option surface described in the README —
-fidelity, video, audio, input, gameplay, accessibility, practice — even
+serde-friendly tree covering every option surface described in the README -
+fidelity, video, audio, input, gameplay, accessibility, practice - even
 where the underlying system is still a stub. This means the `config.toml`
 format is stable from day one, and a settings UI (not yet built) just needs
 to render whichever `Config` fields the current platform supports, rather

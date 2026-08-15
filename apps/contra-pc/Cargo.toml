@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 contra-core = { path = "../../crates/contra-core" }
+contra-assets = { path = "../../crates/contra-assets" }
+contra-nes = { path = "../../crates/contra-nes" }
+bincode = { workspace = true }
 winit = "0.29"
 softbuffer = "0.4"
 gilrs = "0.10"

@@ -3,18 +3,33 @@
 **contra-rewired ships zero Konami-owned bytes.** No graphics, no music, no
 sound effects, no level data, no ROM. What's in this repository is:
 
-- an engine written from scratch in Rust;
-- documentation and physics/RNG values *verified against* the public
+- an NES emulation core (`crates/contra-nes`) and an engine, both written
+  from scratch in Rust - general-purpose console hardware behavior, not
+  Contra's game code;
+- documentation and a handful of physics/RNG values in `contra-core`
+  *verified against* the public
   [vermiceli/nes-contra-us](https://github.com/vermiceli/nes-contra-us)
-  disassembly (facts about how the original game behaves — not its code or
+  disassembly (facts about how the original game behaves - not its code or
   prose, which are that project's own work);
-- tooling that reads a ROM **you** already own and dumped yourself, at
-  build/run time, on your own machine.
+- tooling that reads a ROM **you** already own and dumped yourself, at run
+  time, on your own machine, and runs it on the emulation core.
 
-This is the same model the reference disassembly itself uses: it is source +
-build scripts, and requires you to drop your own `baserom.nes` next to it
-before anything will assemble. `contra-extract` (`apps/contra-extract`)
-follows the same rule for this project.
+## Graphics/audio decoding is no longer this project's problem
+
+Earlier in this project, the plan was to write a decoder for Contra's
+custom-compressed graphics/audio data (documented in the disassembly's
+`Graphics Documentation.md`/`Sound Documentation.md`) and extract it into
+plain asset files. That's no longer necessary: **`contra-nes` runs the
+original 6502 code, which decompresses its own graphics into CHR-RAM and
+plays its own audio at run time, the same way it does on real hardware.**
+There's nothing to extract - the PPU core reads pattern data straight out of
+the CHR-RAM the game itself populated. This is a direct consequence of the
+architecture decision in the main README ("why an emulator core, not a
+hand-ported reimplementation"): running the real code subsumes the asset
+pipeline that reimplementing it would have needed.
+
+`apps/contra-extract` still exists for a narrower, still-useful job:
+validating a ROM before you point `contra-pc` at it.
 
 ## What `contra-extract` does today
 
@@ -24,31 +39,30 @@ cargo run -p contra-extract -- path\to\your\baserom.nes
 
 1. Reads the iNES header, slices out PRG-ROM/CHR-ROM.
 2. Computes an MD5 and tells you whether it matches the documented US retail
-   hash (`7bdad8b4a7a56a634c9649d20bd3011b`) — informational only, so you know
+   hash (`7bdad8b4a7a56a634c9649d20bd3011b`) - informational only, so you know
    what you pointed it at. We never bundle, cache, or transmit the ROM.
-3. Reports sizes/mapper and exits. **It does not decode graphics or audio
-   yet** — see below.
+3. Reports sizes/mapper and exits. `contra-pc` does the same validation
+   internally, so this is mainly for scripting/CI or a quick sanity check.
 
-## What's not implemented yet
+`contra-pc` itself needs no separate extraction step - pass it the ROM path
+directly (`cargo run -p contra-pc -- path\to\your\baserom.nes`) or drop a
+`baserom.nes` next to the executable.
 
-The NES code stores most graphics and several audio structures compressed
-(RLE + custom encodings — see the disassembly's `Graphics Documentation.md`
-and `Sound Documentation.md` for the algorithms). Writing a correct decoder
-for those is real, scoped work, tracked in [ROADMAP.md](../ROADMAP.md) under
-Phase 1. Until it lands:
+## What's still a limitation
 
-- `contra-pc` renders a placeholder scene, not the real game (see the
-  Phase 1 status in the README).
-- No sprite/tile/music files are produced by `contra-extract`.
-
-If you want to help: the disassembly's bank comments already document which
-routines decompress what (`bank2.asm`–`bank6.asm`); porting one decoder at a
-time, with a unit test comparing output against a known-good FCEUX/Mesen
-memory dump, is the fastest path to a real Phase 1.
+- **Mapper 2 (UxROM) only.** That's what Contra (USA) uses, so it's enough
+  for this project's purpose, but a ROM using a different mapper won't run
+  (`contra-pc` detects this and falls back to the placeholder demo rather
+  than failing silently).
+- **No audio.** The APU is a silent stub - see docs/FIDELITY.md and
+  ROADMAP.md.
 
 ## Mods and assets
 
-Community texture/music packs under `/mods/` are a *separate* concern from
-this pipeline — see [MODDING.md](MODDING.md). A mod can replace what the
-extractor eventually produces, but it never needs the extractor to exist:
-mods ship their own original or properly-licensed art.
+Community texture/music packs under `/mods/` are a conceptually different
+thing from "the ROM": swapping the *rendered* output requires hooking the
+PPU after the game's own decompression has already populated CHR-RAM (a
+CHR-RAM snapshot/patch mechanism, not yet built - see ROADMAP.md and
+[MODDING.md](MODDING.md)), rather than replacing files the way an
+asset-extraction pipeline would have made possible. A mod never needs
+`baserom.nes` itself; it ships its own original or properly-licensed art.

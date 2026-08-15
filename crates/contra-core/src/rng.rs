@@ -16,7 +16,7 @@
 //! fit in whatever CPU time is left over that frame. Because the amount of
 //! leftover time depends on exactly which branches the game logic took that
 //! frame (how many enemies were on screen, which menu was open, etc.), the
-//! final value is effectively unpredictable from the player's perspective —
+//! final value is effectively unpredictable from the player's perspective -
 //! but it is *not* a value you can reproduce by ticking a formula once per
 //! frame. Bit-exact "Original NES" RNG requires knowing the idle-loop
 //! iteration count, which in turn requires either (a) cycle-accurate
@@ -26,7 +26,7 @@
 //! [`NesAccumulatorRng`] below implements the *accumulator itself* correctly
 //! (same `wrapping_add` behavior `RANDOM_NUM` has), and it is the seam
 //! where a future cycle-accurate front-end plugs in idle-loop tick counts
-//! (tracked in ROADMAP.md under Phase 1 — "Original NES" bit-exact RNG).
+//! (tracked in ROADMAP.md under Phase 1 - "Original NES" bit-exact RNG).
 //! Until that lands, "Original NES" mode drives it with a tick count derived
 //! from a fixed per-frame budget, which matches the original's *behavior*
 //! (same update rule, same 8-bit wraparound) but not yet its exact sequence.
