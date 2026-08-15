@@ -211,12 +211,11 @@ drawn. That guarantee shaped how true ultrawide got built.
   the active width was smaller. It's now sized and copied to the actual
   per-frame width.
 
-### Stage select: tried, doesn't work cleanly, not shipped
+### Stage select: works, but the first verification of it was wrong
 
-The Debug tab shows the current stage (read-only, from `CURRENT_LEVEL`,
-`$30`) but doesn't let you jump to one, even though it looks like it should
-be a two-byte poke. It was actually tried and reverted after empirical
-testing showed it doesn't work.
+The Debug tab lets you jump directly to any of the 8 stages. It works. That
+wasn't the original conclusion, and the story of the wrong conclusion is
+worth keeping here since the mistake itself is the useful lesson.
 
 The reference disassembly's "Contra Control Flow.md" documents that
 `level_routine_05` transitions between levels by incrementing
@@ -226,49 +225,51 @@ resetting `LEVEL_ROUTINE_INDEX` (`$2c`) to `$00` to restart level loading
 from `level_routine_00`. Replicating exactly that from `contra-pc` (poke
 `CURRENT_LEVEL` to the target stage, clear those two RAM ranges, reset
 `LEVEL_ROUTINE_INDEX`) was tried against the real ROM via
-`dump_frames.rs`'s `JUMP_STAGE` env var. Result: the CPU-side state machine
-stays consistent afterward - `GAME_ROUTINE_INDEX` stays `$05`, the PPU mask/
-ctrl registers look like normal in-game values, no illegal opcodes - but the
-*rendered screen* comes out corrupted (a wrong-colored horizontal line, a
-flat gray field where the level should be) on every stage tested (2 and 6),
-and stays that way for hundreds of frames afterward, not just a brief
-loading flicker.
+`dump_frames.rs`'s `JUMP_STAGE` env var, checked ~80 frames afterward.
+Result at the time: the CPU-side state machine looked consistent
+(`GAME_ROUTINE_INDEX` stayed `$05`, no illegal opcodes) but the rendered
+screen was a flat gray field - concluded broken, blamed on UxROM PRG
+bank-switching being mapper state a RAM poke can't touch, and shipped as
+read-only with that explanation.
 
-The most likely explanation: Mapper 2 (UxROM) PRG bank-switching is mapper
-state, set by whatever the CPU last wrote to `$8000-$FFFF` - not something
-`poke_ram`'s CPU-work-RAM writes touch at all. Level loading almost
-certainly expects a specific PRG bank to already be switched in (the level
-data tables live somewhere in ROM, split across banks the same way the
-enemy routines are - "Loads bank 0 where the enemy routines are" is called
-out explicitly for `level_routine_00`), and that switch is presumably a side
-effect of whatever code path *naturally* leads into `level_routine_00`
-(finishing the previous level, or the game's own boot sequence) - a code
-path this poke-based jump skips entirely by starting execution from
-`level_routine_00`'s dispatch directly.
+The conclusion was wrong, and the flaw was in the test, not the feature:
+80 frames (a bit over a second) isn't long enough. Re-tested with
+`LEVEL_ROUTINE_INDEX` traced every 10 frames for 3000+ frames: it actually
+*advances* the whole way, `level_routine_00 → 01 → 02 → 03 → 04`, each step
+taking real time (the score-flash step in particular has a timer that
+just runs longer than a second), and lands on genuine, correctly-rendered
+gameplay for the target stage - confirmed visually at two different target
+stages (a bright outdoor jungle-style level and a distinct blue-pipe indoor
+level), each unmistakably the right stage, not a corrupted mix of two. The
+gray field wasn't corruption; it was an intro/score screen the first test
+simply didn't wait for. A jump to a stage where the scripted test input
+wasn't suited to the terrain also correctly reached a real "GAME OVER /
+CONTINUE" screen - i.e., the *game* played normally afterward, including
+losing normally, not just rendering a static correct-looking frame.
 
-Confirming and fixing this for real means figuring out which PRG bank
-number the level data/graphics actually live in and replicating that
-mapper write too, which needs more of the disassembly's bank-layout
-documentation than has been dug into so far. Tracked as a real next step in
-ROADMAP.md; not shipped as a clickable action while it corrupts the screen
-every time.
+The practical upshot: jumping stages costs the same 30-60 real seconds a
+level-complete transition always costs in this game (it's the same code
+path, after all) - `contra-pc`'s stage-select buttons don't grey out or
+show a spinner during that stretch, which can look like nothing happened
+if you're not expecting the wait, so the Debug tab labels it explicitly.
 
 ### Where RAM-based tooling's limits are, in general
 
-The Debug tab's lives/weapon/rapid-fire/continues/boss-HP controls all work
-the same safe way: they poke a value the game reads passively every frame
-(a counter, a flag, a stat), so there's no "the game expected something else
-to happen first" gap for the poke to fall into - the next frame's game logic
-just reads the new value like it would've read the old one. Stage select
-fails precisely because it isn't that kind of value: `CURRENT_LEVEL` is a
-value the game *only* consults right after a specific, multi-step
-transition (bank switch included) that a plain poke doesn't reproduce. The
-general rule this suggests for future RAM-tooling ideas: a value the game
-polls every frame (position, HP, ammo, timers, flags) is safe to poke from
-outside; a value that's only meaningful *immediately after* a longer setup
-sequence (level transitions, boss-fight initialization, anything that also
-involves a bank switch or a multi-frame load) needs that sequence
-replicated too, or it's not a safe target.
+The Debug tab's lives/weapon/rapid-fire/continues controls poke a value
+the game reads passively every frame (a counter, a flag, a stat), so
+there's no "the game expected something else to happen first" gap - the
+next frame's game logic just reads the new value like it would've read the
+old one. Stage select looks like a different, riskier kind of value
+(`CURRENT_LEVEL` is only *consulted* right after a specific transition, not
+polled every frame) - but turns out to be safe too, because the transition
+it triggers (`level_routine_00`'s own loading code) is self-contained: it
+performs whatever bank-switching or setup it needs *as part of its own
+execution*, the same way it would if reached normally, regardless of how
+`LEVEL_ROUTINE_INDEX` came to be `0`. The real general rule, corrected from
+the earlier (wrong) one: a RAM-based trigger is safe if the code path it
+triggers is self-sufficient once started, even if that path takes a while
+to finish - the risk isn't "does this need multi-step setup", it's "does
+verifying this need patience the test didn't give it."
 
 ## `contra-core`: hand-ported layer (placeholder demo)
 

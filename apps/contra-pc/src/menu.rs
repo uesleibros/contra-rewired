@@ -35,7 +35,7 @@ pub enum MenuAction {
     ToggleRapidFire(Player),
     LivesDelta(Player, i32),
     ContinuesDelta(i32),
-    EnemyHpDelta(i32),
+    JumpToStage(u8),
     LoadRom,
 }
 
@@ -133,14 +133,9 @@ pub struct DebugInfo {
     pub p2_weapon: u8,
     pub p2_rapid_fire: bool,
     pub continues: u8,
-    /// 0-based `CURRENT_LEVEL` from RAM - the Stage Select row shows
-    /// `current_stage + 1` (Stage 1-8) to match how the game numbers them
-    /// on screen.
+    /// 0-based `CURRENT_LEVEL` from RAM, shown as `current_stage + 1`
+    /// (Stage 1-8) to match how the game numbers them on screen.
     pub current_stage: u8,
-    /// HP of whichever enemy slot currently has the most (a heuristic for
-    /// "the boss" - see `RAM_ENEMY_HP_BASE`'s comment in `main.rs`).
-    /// `None` when no enemy is active.
-    pub enemy_hp: Option<u8>,
 }
 
 pub const WEAPON_NAMES: [(u8, &str); 5] = [(0, "Standard"), (1, "Machine Gun"), (2, "Fire"), (3, "Spread"), (4, "Laser")];
@@ -286,20 +281,17 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
         }
     });
 
-    if let Some(hp) = debug.enemy_hp {
-        ui.horizontal(|ui| {
-            ui.label(format!("Enemy/boss HP: {hp}"));
-            if ui.small_button("-").clicked() {
-                actions.push(MenuAction::EnemyHpDelta(-1));
-            }
-            if ui.small_button("+").clicked() {
-                actions.push(MenuAction::EnemyHpDelta(1));
-            }
-        });
-    }
-
     ui.separator();
-    ui.label(format!("Current stage: {} / {STAGE_COUNT}", debug.current_stage + 1));
+    ui.label("Stage select");
+    ui.horizontal_wrapped(|ui| {
+        for stage in 0..STAGE_COUNT {
+            let selected = stage == debug.current_stage;
+            if ui.selectable_label(selected, format!("{}", stage + 1)).clicked() && !selected {
+                actions.push(MenuAction::JumpToStage(stage));
+            }
+        }
+    });
+    ui.label(egui::RichText::new("Takes 30-60s to load, same as a normal level transition - not stuck").weak());
 }
 
 /// Drawn instead of gameplay when no ROM is loaded - a real "load your

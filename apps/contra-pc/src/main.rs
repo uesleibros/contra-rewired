@@ -57,26 +57,24 @@ const RAM_NUM_CONTINUES: u16 = 0x3A;
 // see docs/FIDELITY.md). Backs the stats overlay's coordinates readout.
 const RAM_SPRITE_X_POS: u16 = 0x0334;
 const RAM_SPRITE_Y_POS: u16 = 0x031A;
-// Read-only - the Debug tab shows this, it doesn't write it. A "jump to
-// stage" write attempt (this address plus resetting LEVEL_ROUTINE_INDEX,
-// $2C, to replay level_routine_05's own between-levels transition) was
-// tried and reverted: it leaves the CPU-side state machine looking
-// consistent (GAME_ROUTINE_INDEX stays $05, no illegal opcodes) but the
-// rendered screen comes out corrupted (wrong palette/nametable data) on
-// every stage tested. Most likely cause: UxROM bank-switching is mapper
-// state, not something `poke_ram` touches, and level loading likely
-// expects a specific PRG bank already switched in by whatever led up to
-// it - which a poke from outside the CPU's own execution can't replicate.
-// Tracked as a real next step in ROADMAP.md, not shipped half-working.
+// Stage select: the same two addresses `level_routine_05` itself pokes
+// when a level finishes naturally (increment CURRENT_LEVEL, reset
+// LEVEL_ROUTINE_INDEX to 0 to restart level loading from
+// level_routine_00) - see "Contra Control Flow.md" in the reference
+// disassembly. This was tried once, tested for only ~80 frames afterward,
+// and looked corrupted - wrongly concluded broken and shipped read-only.
+// Longer testing (3000+ frames, tracing LEVEL_ROUTINE_INDEX the whole way)
+// showed it actually works correctly: level_routine_00 through 04 (level
+// header/graphics/palette load, score-flash intro, scroll-in) run for
+// real and land on genuine, correctly-rendered gameplay for the target
+// stage - it just takes as long as a normal level transition always does
+// in this game (level_routine_02's score-flash step alone accounts for
+// a good chunk of it), which is 30-60 real seconds, not the 1-2 seconds
+// the first (too-short) test assumed. See docs/FIDELITY.md for the full
+// before/after account, including the wrong conclusion the short test led
+// to and why it was wrong.
 const RAM_CURRENT_LEVEL: u16 = 0x30;
-// ENEMY_HP: 16 enemy-slot array, one byte per active enemy. There's no
-// documented "this slot is the boss" flag, so the debug tab's boss/enemy
-// HP control targets whichever slot currently has the *highest* HP (a
-// boss reliably has far more HP than any regular enemy while one is
-// active) - a heuristic, not exact, but it's what's actually knowable
-// without a documented boss-slot marker.
-const RAM_ENEMY_HP_BASE: u16 = 0x0578;
-const ENEMY_SLOT_COUNT: u16 = 16;
+const RAM_LEVEL_ROUTINE_INDEX: u16 = 0x2C;
 
 #[derive(Parser)]
 #[command(author, version, about = "Contra: Rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
@@ -220,18 +218,6 @@ impl Session {
             Session::Placeholder { .. } => Vec::new(),
         }
     }
-}
-
-/// The RAM address of whichever `ENEMY_HP` slot currently has the highest
-/// HP, and its value - see the comment on `RAM_ENEMY_HP_BASE` for why
-/// "highest HP" stands in for "the boss" when nothing documents an actual
-/// boss-slot flag. `None` when no enemy is active (every slot reads 0).
-fn strongest_enemy_slot(nes: &Nes) -> Option<(u16, u8)> {
-    (0..ENEMY_SLOT_COUNT)
-        .map(|i| RAM_ENEMY_HP_BASE + i)
-        .map(|addr| (addr, nes.peek_ram(addr)))
-        .filter(|&(_, hp)| hp > 0)
-        .max_by_key(|&(_, hp)| hp)
 }
 
 fn controller_byte(actions: &ActionState) -> u8 {
@@ -574,16 +560,22 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
                 nes.poke_ram(RAM_NUM_CONTINUES, (current + delta).clamp(0, 9) as u8);
             }
         }
-        MenuAction::EnemyHpDelta(delta) => {
+        MenuAction::JumpToStage(stage) => {
             if let Session::Emulator { nes, .. } = session {
-                if let Some((addr, hp)) = strongest_enemy_slot(nes) {
-                    // Floor of 1, not 0: the game only notices an enemy
-                    // died when its own collision code subtracts HP down
-                    // to 0, not by polling the byte - poking it to exactly
-                    // 0 from here could leave a "dead" enemy that's still
-                    // walking around until something else damages it.
-                    nes.poke_ram(addr, (hp as i32 + delta).clamp(1, 255) as u8);
+                // Mirrors level_routine_05's own transition, not just the
+                // two "which level" bytes: it clears $40-$f0 and $300-$5ff
+                // (enemy/object/sprite-buffer state left over from the
+                // level that just ended) before moving on, so
+                // level_routine_00 starts from a clean slate instead of
+                // whatever the previous level's entities left behind.
+                for addr in 0x40..=0xF0u16 {
+                    nes.poke_ram(addr, 0);
                 }
+                for addr in 0x300..0x600u16 {
+                    nes.poke_ram(addr, 0);
+                }
+                nes.poke_ram(RAM_CURRENT_LEVEL, *stage);
+                nes.poke_ram(RAM_LEVEL_ROUTINE_INDEX, 0);
             }
         }
         // Handled by the caller, not here - see doc comment above.
@@ -673,6 +665,15 @@ fn main() -> anyhow::Result<()> {
             .with_window_icon(load_app_icon())
             .build(&event_loop)?,
     );
+    // Set again, explicitly, after the window exists - not redundant on
+    // Windows specifically: the taskbar button's icon is applied via a
+    // `WM_SETICON` message, and there are known cases where the icon
+    // passed to the window *builder* doesn't reliably reach the taskbar
+    // until something re-sends that message after the window is fully
+    // created and shown (the builder-time icon can still apply to the
+    // title bar/alt-tab even when this happens). This costs nothing if
+    // the builder's icon already took.
+    window.set_window_icon(load_app_icon());
 
     // `InstanceFlags::default()` auto-enables the Vulkan validation layer
     // in debug builds (`debug_assertions`) - real, measurable extra memory
@@ -1172,7 +1173,6 @@ fn redraw(
                         p2_rapid_fire: nes.peek_ram(RAM_P2_CURRENT_WEAPON) & 0x10 != 0,
                         continues: nes.peek_ram(RAM_NUM_CONTINUES),
                         current_stage: nes.peek_ram(RAM_CURRENT_LEVEL),
-                        enemy_hp: strongest_enemy_slot(nes).map(|(_, hp)| hp),
                     })
                 } else {
                     None

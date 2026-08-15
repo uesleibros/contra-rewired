@@ -165,8 +165,10 @@ fn main() {
 
         if std::env::var("DEBUG_RAM").is_ok() && frame % 10 == 0 {
             eprintln!(
-                "frame={frame} routine=${:02X} ctrl_state=${:02X} ctrl_diff=${:02X} demo=${:02X} mask=${:02X} ctrl=${:02X}",
+                "frame={frame} routine=${:02X} level_routine=${:02X} current_level=${:02X} ctrl_state=${:02X} ctrl_diff=${:02X} demo=${:02X} mask=${:02X} ctrl=${:02X}",
                 nes.bus.ram[0x18],
+                nes.bus.ram[0x2c],
+                nes.bus.ram[0x30],
                 nes.bus.ram[0xf1],
                 nes.bus.ram[0xf5],
                 nes.bus.ram[0x1c],

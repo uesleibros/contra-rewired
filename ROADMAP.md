@@ -185,6 +185,25 @@ is loaded**
       no renderer behind them yet)
 - [x] **True ultrawide** - no longer bounded by `EXTENDED_WIDTH`'s cap, see
       the widescreen section above (`Ppu::tile_cache`)
+- [x] **Widescreen always fills the window now - no blank columns.** The
+      cache-or-blank design above meant genuinely never-explored columns
+      (fresh territory past a maximized/ultrawide window's edge, or right
+      after enabling widescreen with an empty cache) rendered as backdrop,
+      which reads as "not taking up the whole window" - correct by the
+      original "never show possibly-wrong data" standard, but not what was
+      actually wanted: Contra wasn't built for widescreen, so *some* wrong
+      tiles are accepted as a real tradeoff, as long as the screen is
+      never visibly incomplete. `render_background_line` now always
+      renders every column - cache first (reliable, a tile this level has
+      actually shown before), live VRAM read as the fallback for anywhere
+      the cache doesn't have yet (wrapped to whatever real tile happens to
+      land there - not guaranteed correct that far out, but always a real
+      NES tile, never nothing). Only the cache-hit and safe-live-margin
+      paths write to the cache, so a wrapped guess is never remembered -
+      once the level actually shows that position for real, the cache
+      overwrites the guess with the correct tile instead of being stuck
+      wrong forever. Verified against the real ROM at 900px: previously-
+      black columns now show plausible terrain immediately
 - [x] **Fixed: not filling the screen / edge flicker on maximize or
       fullscreen.** `wgpu`'s swapchain (`surface_config`) only got resized
       reactively, inside the `WindowEvent::Resized` handler - but
@@ -308,7 +327,13 @@ is loaded**
       source crop) as the binary's resource icon, plus the product name/
       description metadata Explorer's Details tab reads. Decode/embed
       failure in either path just means no icon there, not a build or
-      launch failure
+      launch failure. Also now set a *second* time, explicitly, right
+      after the window is created (not just via the `WindowBuilder`) -
+      Windows' taskbar button icon is applied via a `WM_SETICON` message,
+      and there are known cases where an icon set only at window-builder
+      time doesn't reliably reach the taskbar until something re-sends
+      that message post-creation. Costs nothing if the builder's icon
+      already took
 - [x] **App name**: "contra-rewired" (the Cargo package/binary name, which
       stays as-is - a valid identifier, not user-facing) was leaking into
       every user-visible string - window title, pause menu title, `--help`
@@ -337,18 +362,27 @@ is loaded**
       low nibble weapon, bit 4 rapid fire), toggled independently of it so
       picking a weapon from the dropdown doesn't silently clear rapid fire
       (a real bug caught while wiring this - `SetWeapon` used to poke the
-      raw weapon id over the whole byte, bit 4 included). Also: a
-      **boss/strongest-enemy HP** +/- stepper (`ENEMY_HP`, `$0578`, a
-      16-slot array with no documented "this one's the boss" flag, so it
-      targets whichever slot currently has the most HP - a heuristic,
-      labeled as one; floored at 1 rather than letting it reach 0, since
-      the game only notices a kill when its own collision code subtracts
-      HP down to 0, not by polling the byte), and a **read-only current
-      stage** display (`CURRENT_LEVEL`, `$30`) - a clickable stage-select
-      was attempted and reverted, see docs/FIDELITY.md for exactly why a
-      simple RAM poke doesn't work for that value the way it does for the
-      others here. Shows "No ROM loaded" instead when there's no real RAM
-      to poke
+      raw weapon id over the whole byte, bit 4 included). An earlier
+      "boss/strongest-enemy HP" stepper (targeting whichever `ENEMY_HP`
+      slot had the most HP, since there's no documented boss-slot flag)
+      was removed after feedback that the heuristic wasn't useful in
+      practice - simpler Debug tab, one less unreliable control. Shows "No
+      ROM loaded" instead when there's no real RAM to poke
+- [x] **Stage select, real and working** - click any of the 8 stages to
+      jump directly to it (`CURRENT_LEVEL`/`LEVEL_ROUTINE_INDEX`, `$30`/
+      `$2C`, plus the same RAM clear `level_routine_05` itself does between
+      levels). This was built, tested too briefly (~80 frames), wrongly
+      concluded broken, and shipped read-only with that (wrong)
+      explanation - then re-tested properly (3000+ frames, tracing
+      `LEVEL_ROUTINE_INDEX` the whole way) and found to work correctly the
+      whole time; the "corruption" was just the normal several-second
+      level-transition intro sequence, which the short test never waited
+      out. See docs/FIDELITY.md for the full account, including why the
+      first test's conclusion was wrong - it's a useful example of *how*
+      to get RAM-tooling verification wrong (not waiting long enough for a
+      naturally slow transition), not just a "fixed a bug" note. The
+      Debug tab labels the 30-60s it takes, since there's no progress
+      indicator
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
       (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array

@@ -402,14 +402,21 @@ impl Ppu {
     /// `width` pixels of background starting `x_offset` pixels to the left
     /// of the normal 256px view (0 for the normal, non-widescreen case).
     ///
-    /// Columns within [`EXTENDED_WIDTH`]'s safe live-read radius sample
-    /// real VRAM directly (as ever) and additionally record what they
-    /// found into [`Self::tile_cache`], keyed by absolute tile position.
-    /// Columns beyond that radius - reachable now that [`Self::wide_width`]
-    /// can go up to [`MAX_WIDE_WIDTH`] - never read VRAM directly (unsafe
-    /// that far out); they look up the cache instead, falling back to the
-    /// backdrop color (not a live/possibly-wrong sample) if this level has
-    /// never actually displayed that column yet.
+    /// Always fills every column - there's no blank/backdrop fallback for
+    /// "don't know yet" columns, by design: a wide window with black gaps
+    /// reads as broken, and Contra was never going to be pixel-perfect
+    /// everywhere in a mode it wasn't built for anyway. Priority order per
+    /// column: (1) [`Self::tile_cache`] - a tile this level has *actually*
+    /// displayed before at this absolute position, the reliable case; (2) a
+    /// live VRAM read using the *current* nametable/attribute data
+    /// wrapped to whatever real tile happens to land there - not
+    /// guaranteed correct that far from the live camera window, but always
+    /// draws *something* real (an actual NES tile, just possibly the wrong
+    /// one) rather than nothing. Only case (1)'s reads get cached; a
+    /// wrapped guess from case (2) is deliberately not remembered, so once
+    /// the level actually shows that position for real, the cache
+    /// overwrites the guess with the correct tile instead of being stuck
+    /// with a wrong cached value.
     fn render_background_line(&mut self, width: usize, x_offset: i32, bg_opaque: &mut [bool], out: &mut [u32]) {
         const SAFE_LIVE_MARGIN: i32 = ((EXTENDED_WIDTH - SCREEN_W) / 2) as i32;
 
@@ -423,9 +430,13 @@ impl Ppu {
         for x in 0..width {
             let total_fine_x = self.fine_x as i32 + x as i32 - x_offset;
             let px_in_tile = total_fine_x.rem_euclid(8) as u8;
-            let live = total_fine_x >= -SAFE_LIVE_MARGIN && total_fine_x < SCREEN_W as i32 + SAFE_LIVE_MARGIN;
+            let in_safe_margin = total_fine_x >= -SAFE_LIVE_MARGIN && total_fine_x < SCREEN_W as i32 + SAFE_LIVE_MARGIN;
+            let abs_tile_col = (self.absolute_scroll_x + total_fine_x as i64).div_euclid(8) as i32;
+            let cached = self.tile_cache.get(&(abs_tile_col, coarse_y as u8)).copied();
 
-            let (tile_index, palette_select) = if live {
+            let (tile_index, palette_select) = if let Some(cached) = cached {
+                cached
+            } else {
                 let tile_offset = total_fine_x.div_euclid(8);
                 let tile_col_raw = coarse_x0 + tile_offset;
                 let tile_col = tile_col_raw.rem_euclid(32) as u16;
@@ -440,18 +451,10 @@ impl Ppu {
                 let quadrant = (((coarse_y % 4) / 2) * 2 + (tile_col % 4) / 2) as u8;
                 let palette_select = (attr_byte >> (quadrant * 2)) & 0x03;
 
-                let abs_tile_col = (self.absolute_scroll_x + total_fine_x as i64).div_euclid(8) as i32;
-                self.tile_cache.insert((abs_tile_col, coarse_y as u8), (tile_index, palette_select));
-                (tile_index, palette_select)
-            } else {
-                let abs_tile_col = (self.absolute_scroll_x + total_fine_x as i64).div_euclid(8) as i32;
-                match self.tile_cache.get(&(abs_tile_col, coarse_y as u8)) {
-                    Some(&cached) => cached,
-                    None => {
-                        out[x] = backdrop;
-                        continue;
-                    }
+                if in_safe_margin {
+                    self.tile_cache.insert((abs_tile_col, coarse_y as u8), (tile_index, palette_select));
                 }
+                (tile_index, palette_select)
             };
 
             let plane0 = self.read_vram(pattern_base + tile_index as u16 * 16 + fine_y);
