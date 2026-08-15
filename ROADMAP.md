@@ -119,36 +119,22 @@ is loaded**
       covering arbitrary in-between widths (not just the max, and not just
       the framebuffer's row stride, which had its own now-fixed bug - see
       docs/FIDELITY.md)
-- [x] **Widescreen extension is direction-biased, not centered.** Used to
-      split the extra width 50/50 left and right of the normal 256px view
-      every frame; an auto-scrolling stage only has valid pre-drawn
-      nametable data on the side it's scrolling *toward* (see
-      `EXTENDED_WIDTH`'s docs), so the trailing 50% could show stale/wrong
-      tiles - the "tile bugs in some stages" widescreen was reported for.
-      `Ppu` now tracks each frame's horizontal scroll direction (sampled
-      below the status bar's own split-scroll region, so the HUD's static
-      scroll doesn't confuse it) and puts ~90% of the extra width on the
-      leading edge, ~10% on the trailing edge, falling back to the old
-      50/50 split when the camera isn't moving (indoor rooms, boss
-      arenas). Presentation-only, same as the rest of widescreen; verified
-      against the real ROM via `dump_frames.rs` and covered by the
-      existing wide-mode regression tests (direction defaults to 0/
-      centered when a test never advances a second frame, so the existing
-      byte-for-byte-center assertion is unaffected)
-- [x] **Fixed: widescreen "teleporting."** The bias above originally
-      *snapped* straight to its target (10%/90%) the instant
-      `frame_scroll_dir` changed sign, which happens on ordinary,
-      frequent things - stopping to shoot, a half-step backward, a single
-      noisy frame-to-frame scroll delta. Every flip visibly jumped the
-      extra columns to the opposite edge, which read as the screen
-      teleporting during normal play, not just on a real direction change.
-      `Ppu::wide_bias_frac` now *eases* toward its target by a capped
-      step per frame (`step_wide_bias`, ~0.33s to cross the full 10%-90%
-      span) instead of snapping, so a genuine direction change pans and a
-      one-frame jitter barely moves it. Verified the CPU's final state is
-      byte-identical with and without widescreen enabled across a 900-frame
-      real-ROM run (`dump_frames.rs`), confirming this still never touches
-      game state - only how gradually the bias itself moves
+- [x] **Widescreen extension is fixed-centered - direction bias was tried
+      and reverted.** A direction-biased extension (putting most of the
+      extra width on the side the camera was scrolling toward, easing
+      between 10%/90% instead of a flat 50/50) was built to dodge stale
+      trailing-edge tiles in some stages. It made a worse problem: since
+      the "normal" 256px window's position within the wide frame moved
+      with the bias, the player's on-screen position visibly drifted left/
+      right as scroll direction changed - reported as "the camera moves
+      more than normal." Reverted entirely (`Ppu::wide_bias_frac`,
+      `frame_scroll_dir`, `step_wide_bias`, `update_frame_scroll_dir` all
+      removed) back to fixed centering (`x_offset = extra / 2`, always),
+      which keeps the player's screen position identical to narrow mode at
+      all times. This isn't reopening the original trailing-edge concern:
+      `EXTENDED_WIDTH` (380px) was already empirically tuned *with* fixed
+      centering (see its docs) and found clean, so centering was the
+      already-verified-safe setup the whole time
 - [ ] **Enemy/bullet spawn-ahead in widescreen** - investigated, not yet
       implemented. The random soldier-generation edges
       (`soldier_generation_01` in the reference disassembly's `bank2.asm`,
@@ -221,13 +207,29 @@ is loaded**
 - [x] **Hitbox overlay, real and wired** (Settings tab / F4): outlines every
       active OAM sprite (`Nes::bus::ppu::oam`, hidden entries at Y≥0xEF
       skipped) in the same screen space the game image is drawn in,
-      including wide mode's live direction bias (`Nes::wide_x_offset`) so
-      the boxes stay lined up under widescreen. This is the *visual*
-      sprite bounding box (8x8 or 8x16 per `PPUCTRL` bit 5), not
-      necessarily Contra's exact per-entity collision box, which the
-      disassembly doesn't document as a single fixed table - a real,
-      honest approximation rather than a guessed-at exact hitbox
-- [ ] Frame advance / slow-motion (25–200%)
+      including wide mode's offset (`Nes::wide_x_offset`) so the boxes
+      stay lined up under widescreen. This is the *visual* sprite bounding
+      box (8x8 or 8x16 per `PPUCTRL` bit 5), not necessarily Contra's exact
+      per-entity collision box, which the disassembly doesn't document as
+      a single fixed table - a real, honest approximation rather than a
+      guessed-at exact hitbox. Verified correct and complete against a
+      headless real-ROM render (`dump_frames.rs`'s new `HITBOXES=1`,
+      draws the same OAM loop directly into the saved PNG) after a report
+      that the overlay looked incomplete in-app - that report coincided
+      with the direction-bias camera-drift bug above, which is the more
+      likely explanation, since the underlying OAM loop itself checks out
+      frame-for-frame against the real ROM
+- [x] **Frame advance and slow motion, both real.** F12 freezes stepping
+      without opening the pause menu (rendering keeps happening, so you
+      can see the frozen frame clearly - unlike `GameRoutine::Paused`,
+      which shows the menu over it); `.` steps exactly one simulated frame
+      while frozen. A Speed slider (25-200%, Settings tab) scales how much
+      real time each simulated frame takes rather than the emulation
+      itself - the game still runs its own unmodified logic one real
+      frame at a time, just paced slower or faster. Both share one
+      `step_gameplay_frame` helper with the normal per-tick path, so
+      freeze/advance/slow-motion behave exactly like a normal frame in
+      every way except *when* they happen
 
 **Menu / UI - v3, real `egui`, real widgets**
 - [x] **Rendering moved off `softbuffer` (raw CPU framebuffer blit) onto
@@ -267,13 +269,22 @@ is loaded**
       "outside the game" the same way the old bitmap-font menu did -
       that part of the design goal didn't change, just how it's built
 - [x] **Debug tab, now both players**: live cheat/trainer controls backed
-      by real CPU RAM pokes (`Nes::peek_ram`/`poke_ram`) - lives and
-      current weapon (cycled with `<`/`>`) for **both P1 and P2**
-      (`$32`/`$33` and `$AA`/`$AB` in the reference disassembly's
-      `ram.asm` - P2 is simply P1's address plus one, confirmed against
-      the real source, not guessed), plus shared continues (`$3A`, single
-      counter for both players, matching the arcade-style continue system).
-      Shows "No ROM loaded" instead when there's no real RAM to poke
+      by real CPU RAM pokes (`Nes::peek_ram`/`poke_ram`) - lives (+/-
+      steppers) and current weapon (a real `egui::ComboBox` dropdown, not
+      a `<`/`>` cycle stepper - pick the weapon directly by name) for
+      **both P1 and P2** (`$32`/`$33` and `$AA`/`$AB` in the reference
+      disassembly's `ram.asm` - P2 is simply P1's address plus one,
+      confirmed against the real source, not guessed), plus shared
+      continues (`$3A`, single counter for both players, matching the
+      arcade-style continue system). Shows "No ROM loaded" instead when
+      there's no real RAM to poke
+- [x] **Stats overlay** (Settings tab / F7): frame count and both players'
+      X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
+      (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array
+      `soldier_generation_01` reads player position from). Gives the
+      "frame counter"/"coordinates" entries in `contra_core::config::
+      PracticeConfig` an actual renderer to draw into - boss HP and spawn
+      markers from that same config struct still don't have one
 - [x] Mod enable/disable UI (Mods tab, click a mod row to toggle) - session
       only for now, resets to all-enabled on next launch; not yet persisted
       to `config.toml`
@@ -287,7 +298,14 @@ is loaded**
       inline instead of failing silently. `contra-core`'s hand-ported
       `PlayerPhysics` still exists as the save-state fallback and
       RAM-tooling reference, it's just never driven or drawn as a
-      "gameplay" screen
+      "gameplay" screen. **Fixed**: `rfd::FileDialog::pick_file()` blocks
+      the whole event loop while its native dialog is open; by the time it
+      returned, `redraw`'s already-captured `egui` frame (built *before*
+      the dialog opened, while still showing the no-ROM screen) was stale
+      - painting it after a successful load showed one frame of "no ROM"
+      over a game that had already loaded. `redraw` now skips painting
+      that stale frame entirely after a pick attempt and requests a fresh
+      one instead, whichever session it ends up being
 - [x] **Hotkeys for every toggleable Settings entry** - F1 Widescreen, F2
       No Sprite Flicker, F3 Pixel Perfect, F4 Show Hitboxes, F8 Mute Audio,
       F11 Fullscreen. Work during gameplay, not just while the menu's open

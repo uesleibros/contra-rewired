@@ -99,35 +99,6 @@ pub struct Ppu {
     /// `wide_width` - never touches game state.
     #[serde(skip)]
     pub unlimited_sprites: bool,
-    /// Presentation-only, wide-mode-only bookkeeping: the playfield's raw
-    /// horizontal scroll position (0..511, wrapping across the two
-    /// nametables) sampled at the *last* visible scanline of the previous
-    /// frame - i.e. below any split-scroll status bar, which usually lives
-    /// in the first several scanlines and has its own, usually-static,
-    /// scroll. Used to bias which side of the screen the extra wide-mode
-    /// columns come from - see [`Self::frame_scroll_dir`].
-    #[serde(skip)]
-    prev_frame_scroll_x: Option<u16>,
-    /// This frame's horizontal auto-scroll direction, updated once per
-    /// frame from the delta between consecutive `prev_frame_scroll_x`
-    /// samples: `> 0` scrolling right (new nametable columns are being
-    /// drawn on the right, so the *left* edge - already scrolled past - is
-    /// the one that can go stale), `< 0` scrolling left (mirrored), `0`
-    /// stationary (indoor rooms, boss arenas) or not yet known. Lags the
-    /// real direction by exactly one frame (it's computed from the delta
-    /// *ending* the previous frame), which is fine for Contra's auto-
-    /// scroll, where direction only reverses a few times per level, never
-    /// frame-to-frame.
-    #[serde(skip)]
-    frame_scroll_dir: i8,
-    /// Fraction (0.0..=1.0) of wide mode's extra width currently placed on
-    /// the *left* margin - `0.5` centered, `0.1` mostly-right (biased
-    /// toward a rightward-scrolling leading edge), `0.9` mostly-left.
-    /// Eased toward `frame_scroll_dir`'s target each frame in
-    /// [`Self::step_wide_bias`] rather than snapping straight to it, so a
-    /// direction change pans instead of visibly jumping.
-    #[serde(skip)]
-    wide_bias_frac: f32,
 }
 
 impl Ppu {
@@ -152,9 +123,6 @@ impl Ppu {
             wide_width: SCREEN_W,
             wide_framebuffer: Vec::new(),
             unlimited_sprites: false,
-            prev_frame_scroll_x: None,
-            frame_scroll_dir: 0,
-            wide_bias_frac: 0.5,
         }
     }
 
@@ -316,24 +284,20 @@ impl Ppu {
         let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
         let wide = width > SCREEN_W;
         let extra = width as i32 - SCREEN_W as i32;
-
-        if y == 0 {
-            self.step_wide_bias();
-        }
-        // Biased, not centered: an auto-scrolling stage has only pre-drawn
-        // nametable data in the direction it's scrolling *toward* (see
-        // `EXTENDED_WIDTH`'s docs) - the trailing edge, behind the camera,
-        // can be stale/wrong. `wide_bias_frac` (see `step_wide_bias`) is
-        // the fraction of `extra` that goes on the left; it's *eased*
-        // toward its target over several frames rather than snapping, so a
-        // frame-to-frame direction flip (a brief pause, a jitter in the
-        // scroll delta) pans the extra columns instead of visibly
-        // teleporting them to the other edge.
-        let x_offset = if wide { (extra as f32 * self.wide_bias_frac).round() as i32 } else { 0 };
-
-        if y == SCREEN_H - 1 {
-            self.update_frame_scroll_dir();
-        }
+        // Always centered: the normal 256px view sits at a fixed position
+        // in the wide frame regardless of scroll direction, so the
+        // player's on-screen position relative to the window never shifts
+        // - matching real Contra's camera framing exactly, wide or not.
+        // (A direction-biased offset was tried here - putting most of the
+        // extra width on the scrolling-toward edge, to dodge stale tiles
+        // on the trailing edge - but it moved the player's apparent
+        // on-screen position as the bias tracked scroll direction, which
+        // read as the camera itself moving differently than normal. Fixed
+        // centering doesn't have that problem, and `EXTENDED_WIDTH` (see
+        // its docs) was already tuned empirically *with* fixed centering
+        // to be clean at 380px, so this isn't reopening the trailing-edge
+        // issue - it's reverting to the setup that was already verified.)
+        let x_offset = if wide { extra / 2 } else { 0 };
 
         let mut line = [0u32; EXTENDED_WIDTH];
         let mut bg_opaque = [false; EXTENDED_WIDTH];
@@ -365,18 +329,18 @@ impl Ppu {
     }
 
     /// How many pixels the wide-mode background/sprites are currently
-    /// shifted right of their normal (narrow-mode) position - `0` when not
+    /// shifted right of their normal (narrow-mode) position - always
+    /// `(width - SCREEN_W) / 2` (fixed centering, not direction-biased -
+    /// see the comment in [`Self::render_scanline`] for why), `0` when not
     /// wide. Public so a front-end overlaying its own screen-space
     /// annotations (e.g. a hitbox viewer) on top of the wide framebuffer
-    /// can line them up with where sprites actually got drawn, including
-    /// the direction bias in [`Self::wide_bias_frac`] (which moves frame
-    /// to frame, so this can't just be computed once from settings).
+    /// can line them up with where sprites actually got drawn.
     pub fn wide_x_offset(&self) -> i32 {
         let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
         if width <= SCREEN_W {
             0
         } else {
-            ((width - SCREEN_W) as f32 * self.wide_bias_frac).round() as i32
+            (width - SCREEN_W) as i32 / 2
         }
     }
 
@@ -389,45 +353,6 @@ impl Ppu {
         } else {
             8
         }
-    }
-
-    /// Eases [`Self::wide_bias_frac`] toward whatever `frame_scroll_dir`
-    /// currently calls for (0.1 scrolling right, 0.9 scrolling left, 0.5
-    /// stationary), by at most `MAX_STEP` per frame instead of snapping.
-    /// Called once per frame (at `y == 0`), before that frame's scanlines
-    /// use `wide_bias_frac` to place the extra wide-mode columns.
-    fn step_wide_bias(&mut self) {
-        const MAX_STEP: f32 = 0.04; // ~0.8 span (0.1<->0.9) over ~20 frames, a third of a second
-        let target = match self.frame_scroll_dir {
-            d if d > 0 => 0.1,
-            d if d < 0 => 0.9,
-            _ => 0.5,
-        };
-        let delta = target - self.wide_bias_frac;
-        self.wide_bias_frac += delta.clamp(-MAX_STEP, MAX_STEP);
-    }
-
-    /// Samples the current raw horizontal scroll (0..511, wrapping across
-    /// the two nametables) and updates [`Self::frame_scroll_dir`] from how
-    /// it moved since the same point last frame. Called once per frame, at
-    /// the last visible scanline - below any split-scroll status bar,
-    /// which typically occupies only the first several scanlines and has
-    /// its own scroll unrelated to camera movement.
-    fn update_frame_scroll_dir(&mut self) {
-        let raw_x = (((self.v >> 10) & 1) as i32) * 256 + ((self.v & 0x1F) as i32) * 8 + self.fine_x as i32;
-        if let Some(prev) = self.prev_frame_scroll_x {
-            let mut delta = raw_x - prev as i32;
-            // Unwrap a nametable-boundary crossing (512px period) to the
-            // shorter signed distance, so direction stays correct right as
-            // scrolling wraps from nametable 1 back to nametable 0.
-            if delta > 256 {
-                delta -= 512;
-            } else if delta < -256 {
-                delta += 512;
-            }
-            self.frame_scroll_dir = delta.signum() as i8;
-        }
-        self.prev_frame_scroll_x = Some(raw_x as u16);
     }
 
     /// `width` pixels of background starting `x_offset` pixels to the left

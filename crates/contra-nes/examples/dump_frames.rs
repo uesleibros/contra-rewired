@@ -17,6 +17,29 @@ use std::io::BufWriter;
 use contra_nes::controller::*;
 use contra_nes::{Mirroring, Nes};
 
+/// Draws a 1px red rectangle outline directly into a copy of the
+/// framebuffer - used by `HITBOXES=1` to visually verify the same OAM
+/// bounding-box math `contra-pc`'s hitbox overlay uses (see
+/// `apps/contra-pc/src/main.rs::redraw`), without needing a GUI.
+fn draw_rect_outline(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, bw: i32, bh: i32, color: u32) {
+    for dx in 0..bw {
+        for &dy in &[0, bh - 1] {
+            let (px, py) = (x + dx, y + dy);
+            if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                buf[py as usize * w + px as usize] = color;
+            }
+        }
+    }
+    for dy in 0..bh {
+        for &dx in &[0, bw - 1] {
+            let (px, py) = (x + dx, y + dy);
+            if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                buf[py as usize * w + px as usize] = color;
+            }
+        }
+    }
+}
+
 fn save_png(path: &std::path::Path, fb: &[u32], w: usize, h: usize) {
     let file = std::fs::File::create(path).unwrap();
     let w_buf = BufWriter::new(file);
@@ -91,11 +114,23 @@ fn main() {
 
         if frame % 30 == 0 || frame == frame_count - 1 {
             let path = std::path::Path::new(out_dir).join(format!("frame_{frame:04}.png"));
-            if nes.wide_width() > contra_nes::SCREEN_W {
-                save_png(&path, nes.wide_framebuffer(), nes.wide_width(), contra_nes::SCREEN_H);
-            } else {
-                save_png(&path, nes.framebuffer(), contra_nes::SCREEN_W, contra_nes::SCREEN_H);
+            let wide = nes.wide_width() > contra_nes::SCREEN_W;
+            let (w, h) = (if wide { nes.wide_width() } else { contra_nes::SCREEN_W }, contra_nes::SCREEN_H);
+            let mut buf = if wide { nes.wide_framebuffer().to_vec() } else { nes.framebuffer().to_vec() };
+            if std::env::var("HITBOXES").is_ok() {
+                let x_offset = nes.wide_x_offset();
+                let height = nes.sprite_height();
+                for i in 0..64 {
+                    let oam_y = nes.bus.ppu.oam[i * 4];
+                    if oam_y >= 0xEF {
+                        continue;
+                    }
+                    let x = nes.bus.ppu.oam[i * 4 + 3] as i32 + x_offset;
+                    let y = oam_y as i32 + 1;
+                    draw_rect_outline(&mut buf, w, h, x, y, 8, height, 0x00FF4040);
+                }
             }
+            save_png(&path, &buf, w, h);
             saved += 1;
         }
 

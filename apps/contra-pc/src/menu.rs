@@ -31,7 +31,7 @@ pub enum Player {
 pub enum MenuAction {
     Resume,
     ToggleMod(usize),
-    WeaponDelta(Player, i32),
+    SetWeapon(Player, u8),
     LivesDelta(Player, i32),
     ContinuesDelta(i32),
     LoadRom,
@@ -75,6 +75,17 @@ pub struct Settings {
     /// approximation without needing to reverse-engineer every entity's
     /// real hitbox from the disassembly.
     pub show_hitboxes: bool,
+    /// Small on-screen overlay: frame count and both players' X/Y
+    /// position, read live from RAM (`SPRITE_X_POS`/`SPRITE_Y_POS`). The
+    /// "frame counter"/"coordinates" entries from `contra_core::config::
+    /// PracticeConfig` finally have a renderer to draw into - see
+    /// ROADMAP.md.
+    pub show_stats: bool,
+    /// Simulation speed, 25-200%: scales how much real time each
+    /// simulated frame takes (`main.rs`'s `frame_duration`), *not* the PPU/
+    /// APU themselves - the game still runs its own unmodified logic one
+    /// real frame at a time, just paced slower or faster.
+    pub sim_speed_percent: i32,
 }
 
 impl Default for Settings {
@@ -87,6 +98,8 @@ impl Default for Settings {
             fullscreen: false,
             audio_muted: false,
             show_hitboxes: false,
+            show_stats: false,
+            sim_speed_percent: 100,
         }
     }
 }
@@ -170,12 +183,18 @@ fn settings_tab(ui: &mut egui::Ui, settings: &mut Settings) {
     ui.checkbox(&mut settings.unlimited_sprites, "No sprite flicker (F2)");
     ui.checkbox(&mut settings.pixel_perfect, "Pixel perfect (F3)");
     ui.checkbox(&mut settings.show_hitboxes, "Show hitboxes (F4)");
+    ui.checkbox(&mut settings.show_stats, "Show stats overlay (F7)");
     ui.checkbox(&mut settings.fullscreen, "Fullscreen (F11)");
     ui.checkbox(&mut settings.audio_muted, "Mute audio (F8)");
     ui.horizontal(|ui| {
         ui.label("Zoom");
         ui.add(egui::Slider::new(&mut settings.zoom_percent, 50..=300).suffix("%"));
     });
+    ui.horizontal(|ui| {
+        ui.label("Speed");
+        ui.add(egui::Slider::new(&mut settings.sim_speed_percent, 25..=200).suffix("%"));
+    });
+    ui.label(egui::RichText::new("F12 freeze, . to step one frame while frozen").weak());
 }
 
 fn mods_tab(ui: &mut egui::Ui, mods: &[ModEntry], actions: &mut Vec<MenuAction>) {
@@ -211,13 +230,16 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
             }
         });
         ui.horizontal(|ui| {
-            ui.label(format!("{label} weapon: {}", weapon_name(weapon)));
-            if ui.small_button("<").clicked() {
-                actions.push(MenuAction::WeaponDelta(player, -1));
-            }
-            if ui.small_button(">").clicked() {
-                actions.push(MenuAction::WeaponDelta(player, 1));
-            }
+            ui.label(format!("{label} weapon"));
+            egui::ComboBox::from_id_source(("weapon-select", label))
+                .selected_text(weapon_name(weapon))
+                .show_ui(ui, |ui| {
+                    for (id, name) in WEAPON_NAMES {
+                        if ui.selectable_label(weapon == id, name).clicked() {
+                            actions.push(MenuAction::SetWeapon(player, id));
+                        }
+                    }
+                });
         });
     }
 

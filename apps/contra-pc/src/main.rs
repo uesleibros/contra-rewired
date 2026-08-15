@@ -32,7 +32,7 @@ use contra_core::state_machine::{GameEvent, GameRoutine};
 use contra_nes::{Mirroring, Nes, NesSnapshot};
 
 use gilrs::{Axis, Button, Gilrs};
-use menu::{DebugInfo, MenuAction, MenuState, ModEntry, Settings, WEAPON_NAMES};
+use menu::{DebugInfo, MenuAction, MenuState, ModEntry, Settings};
 use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -52,6 +52,11 @@ const RAM_P2_NUM_LIVES: u16 = 0x33;
 const RAM_P1_CURRENT_WEAPON: u16 = 0xAA;
 const RAM_P2_CURRENT_WEAPON: u16 = 0xAB;
 const RAM_NUM_CONTINUES: u16 = 0x3A;
+// SPRITE_X_POS/SPRITE_Y_POS: shared position arrays, index 0 = P1, 1 = P2
+// (the same indexing `soldier_generation_01` reads player position with -
+// see docs/FIDELITY.md). Backs the stats overlay's coordinates readout.
+const RAM_SPRITE_X_POS: u16 = 0x0334;
+const RAM_SPRITE_Y_POS: u16 = 0x031A;
 
 #[derive(Parser)]
 #[command(author, version, about = "contra-rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
@@ -433,6 +438,38 @@ fn toggle_mod(mods: &mut [LoadedMod], idx: usize) {
 #[cfg(not(feature = "mods"))]
 fn toggle_mod(_mods: &mut [()], _idx: usize) {}
 
+/// Steps exactly one simulated frame of `Session::Emulator` gameplay -
+/// widescreen/sprite settings, the step itself, mods, and audio. Shared by
+/// the normal per-tick loop and the frame-advance hotkey in `main`'s
+/// `AboutToWait` handler, so freezing/advancing behaves identically to a
+/// normal frame in every way except *when* it happens. No-op for
+/// `Session::Placeholder` - nothing to step.
+fn step_gameplay_frame(
+    session: &mut Session,
+    action_state: &ActionState,
+    rewind_enabled: bool,
+    loaded_mods: &LoadedModsVec,
+    settings: &Settings,
+    audio_output: &Option<audio::AudioOutput>,
+) {
+    let Session::Emulator { nes, .. } = session else {
+        return;
+    };
+    // Widescreen ON always targets the max safe width immediately,
+    // regardless of the current window shape - decoupled from window size
+    // so toggling it has an instant, visible effect.
+    nes.set_wide_width(if settings.widescreen { contra_nes::EXTENDED_WIDTH } else { contra_nes::SCREEN_W });
+    nes.set_unlimited_sprites(settings.unlimited_sprites);
+    session.step(action_state, rewind_enabled);
+    run_mods(loaded_mods, session);
+    let samples = session.drain_audio();
+    if let Some(audio) = audio_output {
+        if !settings.audio_muted {
+            audio.push_samples(&samples);
+        }
+    }
+}
+
 /// Applies the handful of [`MenuAction`]s that need state `menu.rs` doesn't
 /// own (the live `Nes`, the mod list). `Resume` and `LoadRom` are handled
 /// inline where they're produced instead (they need the `GameRoutine`/
@@ -440,16 +477,13 @@ fn toggle_mod(_mods: &mut [()], _idx: usize) {}
 fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &mut LoadedModsVec) {
     match action {
         MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, *idx),
-        MenuAction::WeaponDelta(player, delta) => {
+        MenuAction::SetWeapon(player, id) => {
             if let Session::Emulator { nes, .. } = session {
                 let addr = match player {
                     menu::Player::P1 => RAM_P1_CURRENT_WEAPON,
                     menu::Player::P2 => RAM_P2_CURRENT_WEAPON,
                 };
-                let current = (nes.peek_ram(addr) & 0x0F) as i32;
-                let count = WEAPON_NAMES.len() as i32;
-                let next = (current + delta).rem_euclid(count) as u8;
-                nes.poke_ram(addr, next);
+                nes.poke_ram(addr, *id);
             }
         }
         MenuAction::LivesDelta(player, delta) => {
@@ -604,9 +638,17 @@ fn main() -> anyhow::Result<()> {
         log::warn!("gilrs failed to initialize; gamepad input disabled for this session");
     }
 
-    let frame_duration = Duration::from_secs_f64(1.0 / 60.0);
+    const BASE_FRAME_DURATION: Duration = Duration::from_nanos(1_000_000_000 / 60);
     let mut last_tick = Instant::now();
     let mut accumulator = Duration::ZERO;
+    // Practice tooling: F12 freezes stepping without opening the pause
+    // menu (rendering keeps happening, unlike `GameRoutine::Paused`), and
+    // `.` steps exactly one simulated frame while frozen - real frame
+    // advance, not just slow motion. `sim_speed_percent` (see
+    // `menu::Settings`) scales `BASE_FRAME_DURATION` instead, for the
+    // "keep playing, just slower/faster" case.
+    let mut frozen = false;
+    let mut advance_one_frame = false;
 
     window.request_redraw();
 
@@ -679,8 +721,11 @@ fn main() -> anyhow::Result<()> {
                                         KeyCode::F2 => settings.unlimited_sprites = !settings.unlimited_sprites,
                                         KeyCode::F3 => settings.pixel_perfect = !settings.pixel_perfect,
                                         KeyCode::F4 => settings.show_hitboxes = !settings.show_hitboxes,
+                                        KeyCode::F7 => settings.show_stats = !settings.show_stats,
                                         KeyCode::F8 => settings.audio_muted = !settings.audio_muted,
                                         KeyCode::F11 => settings.fullscreen = !settings.fullscreen,
+                                        KeyCode::F12 => frozen = !frozen,
+                                        KeyCode::Period if frozen => advance_one_frame = true,
                                         _ => {}
                                     }
                                     apply_toggle_side_effects(&settings, &mut prev_widescreen, &mut prev_fullscreen, &window);
@@ -742,46 +787,44 @@ fn main() -> anyhow::Result<()> {
                 accumulator += now.duration_since(last_tick);
                 last_tick = now;
 
-                let mut stepped = false;
-                while accumulator >= frame_duration {
-                    let gp = poll_gamepad(gilrs.as_mut());
-                    if edges.just_pressed("gp_start", gp.start) {
-                        routine = match routine {
-                            GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
-                            GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
-                            other => other,
-                        };
-                    }
-                    update_action_state(&mut action_state, &bindings, &held_keys, &gp);
+                let speed = (settings.sim_speed_percent as f64 / 100.0).max(0.01);
+                let frame_duration = Duration::from_secs_f64(BASE_FRAME_DURATION.as_secs_f64() / speed);
 
-                    if routine == GameRoutine::Paused {
-                        // The menu is egui-driven (see WindowEvent above) -
-                        // nothing to poll here every simulated frame.
-                        // Gameplay input/stepping is simply suspended while
-                        // paused.
-                    } else if routine.accepts_gameplay_input() {
-                        if let Session::Emulator { nes, .. } = &mut session {
-                            // Widescreen ON always targets the max safe
-                            // width immediately, regardless of the current
-                            // window shape - decoupled from window size so
-                            // toggling it has an instant, visible effect.
-                            nes.set_wide_width(if settings.widescreen { contra_nes::EXTENDED_WIDTH } else { contra_nes::SCREEN_W });
-                            nes.set_unlimited_sprites(settings.unlimited_sprites);
-                            session.step(&action_state, rewind_enabled);
-                            run_mods(&loaded_mods, &mut session);
-                            let samples = session.drain_audio();
-                            if let Some(audio) = &audio_output {
-                                if !settings.audio_muted {
-                                    audio.push_samples(&samples);
-                                }
-                            }
-                        }
-                        // Session::Placeholder: no ROM loaded, nothing to
-                        // step - the no-ROM screen is static aside from
-                        // widget hover, which egui redraws on its own.
-                    }
-                    accumulator -= frame_duration;
+                let mut stepped = false;
+
+                if advance_one_frame {
+                    advance_one_frame = false;
+                    let gp = poll_gamepad(gilrs.as_mut());
+                    update_action_state(&mut action_state, &bindings, &held_keys, &gp);
+                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output);
+                    // Frozen again immediately after - a backlog built up
+                    // while frozen shouldn't turn into a burst of extra
+                    // steps the instant `frozen` is cleared.
+                    accumulator = Duration::ZERO;
                     stepped = true;
+                } else if !frozen {
+                    while accumulator >= frame_duration {
+                        let gp = poll_gamepad(gilrs.as_mut());
+                        if edges.just_pressed("gp_start", gp.start) {
+                            routine = match routine {
+                                GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
+                                GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
+                                other => other,
+                            };
+                        }
+                        update_action_state(&mut action_state, &bindings, &held_keys, &gp);
+
+                        if routine == GameRoutine::Paused {
+                            // The menu is egui-driven (see WindowEvent above) -
+                            // nothing to poll here every simulated frame.
+                            // Gameplay input/stepping is simply suspended while
+                            // paused.
+                        } else if routine.accepts_gameplay_input() {
+                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output);
+                        }
+                        accumulator -= frame_duration;
+                        stepped = true;
+                    }
                 }
 
                 if stepped && matches!(session, Session::Emulator { .. }) {
@@ -866,8 +909,9 @@ fn redraw(
 ) {
     let is_placeholder = matches!(session, Session::Placeholder { .. });
     let mut hitboxes: Vec<egui::Rect> = Vec::new();
+    let mut stats_text: Option<String> = None;
 
-    if let Session::Emulator { nes, .. } = session {
+    if let Session::Emulator { nes, frame_count, .. } = session {
         let (fb, w) = if nes.wide_width() > contra_nes::SCREEN_W && !nes.wide_framebuffer().is_empty() {
             (nes.wide_framebuffer(), nes.wide_width())
         } else {
@@ -886,7 +930,7 @@ fn redraw(
             // (see `menu::Settings::show_hitboxes`'s doc comment). `+1` on
             // Y and `+ wide_x_offset()` on X match the same placement math
             // `Ppu::render_sprites_line` actually draws with, so the boxes
-            // line up in both narrow and (biased) wide mode.
+            // line up in both narrow and wide mode.
             let x_offset = nes.wide_x_offset() as f32;
             let height = nes.sprite_height() as f32;
             let oam = &nes.bus.ppu.oam;
@@ -899,6 +943,17 @@ fn redraw(
                 let y = oam_y as f32 + 1.0;
                 hitboxes.push(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(8.0, height)));
             }
+        }
+
+        if settings.show_stats {
+            stats_text = Some(format!(
+                "FRAME {}\nP1  X:{:>3} Y:{:>3}\nP2  X:{:>3} Y:{:>3}",
+                *frame_count,
+                nes.peek_ram(RAM_SPRITE_X_POS),
+                nes.peek_ram(RAM_SPRITE_Y_POS),
+                nes.peek_ram(RAM_SPRITE_X_POS + 1),
+                nes.peek_ram(RAM_SPRITE_Y_POS + 1),
+            ));
         }
     }
 
@@ -925,6 +980,17 @@ fn redraw(
                             hb.size() * scale,
                         );
                         ui.painter().rect_stroke(screen_hb, 0.0, egui::Stroke::new(1.5f32, egui::Color32::from_rgb(255, 64, 64)));
+                    }
+
+                    if let Some(text) = &stats_text {
+                        let pos = rect.min + egui::vec2(6.0, 6.0);
+                        ui.painter().text(
+                            pos,
+                            egui::Align2::LEFT_TOP,
+                            text,
+                            egui::FontId::monospace(13.0),
+                            egui::Color32::from_rgb(255, 224, 128),
+                        );
                     }
                 });
             }
@@ -955,9 +1021,20 @@ fn redraw(
     }
 
     if pending_rom_pick {
+        // Blocks on a native modal dialog - by the time it returns, real
+        // time has passed and `full_output`/`clipped_primitives` below
+        // would still be the *old* frame (built while showing the no-ROM
+        // screen, before `session` potentially just became a real
+        // `Emulator`). Painting that stale tree after a successful load
+        // would show one frame of the no-ROM screen with a game already
+        // loaded behind it - skip painting entirely this pass and let the
+        // very next redraw (requested below) draw the real, current state
+        // instead, whichever session it ends up being.
         if let Some(path) = rfd::FileDialog::new().add_filter("NES ROM", &["nes"]).pick_file() {
             load_rom_into_session(&path, rewind_capacity, audio_sample_rate, session, window, last_load_error, routine);
         }
+        window.request_redraw();
+        return;
     }
 
     apply_toggle_side_effects(settings, prev_widescreen, prev_fullscreen, window);
