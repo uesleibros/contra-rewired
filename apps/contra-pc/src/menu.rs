@@ -35,8 +35,12 @@ pub enum MenuAction {
     ToggleRapidFire(Player),
     LivesDelta(Player, i32),
     ContinuesDelta(i32),
-    JumpToStage(u8),
     LoadRom,
+    /// 0-based stage index to jump to - see `apply_menu_action` in
+    /// `main.rs` and the `RAM_CURRENT_LEVEL` comment for what this pokes
+    /// and why it's safe now (it wasn't, for a while - see
+    /// docs/FIDELITY.md).
+    JumpToStage(u8),
 }
 
 pub struct MenuState {
@@ -282,16 +286,16 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
     });
 
     ui.separator();
-    ui.label("Stage select");
+    ui.label(format!("Current stage: {} / {STAGE_COUNT}", debug.current_stage + 1));
+    ui.label(egui::RichText::new("Jumping fades to a loading screen for a few seconds - that's normal.").weak());
     ui.horizontal_wrapped(|ui| {
         for stage in 0..STAGE_COUNT {
-            let selected = stage == debug.current_stage;
+            let selected = debug.current_stage == stage;
             if ui.selectable_label(selected, format!("{}", stage + 1)).clicked() && !selected {
                 actions.push(MenuAction::JumpToStage(stage));
             }
         }
     });
-    ui.label(egui::RichText::new("Takes 30-60s to load, same as a normal level transition - not stuck").weak());
 }
 
 /// Drawn instead of gameplay when no ROM is loaded - a real "load your

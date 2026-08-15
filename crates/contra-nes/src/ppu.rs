@@ -120,7 +120,8 @@ pub struct Ppu {
     /// game genuinely drew - it can't introduce wrong data, only whether
     /// there's real data available for a given far-off column yet.
     /// Cleared on a detected screen/level transition (see
-    /// [`Self::update_frame_scroll_dir`]).
+    /// [`Self::update_absolute_scroll`] and the mask-off/on handling in
+    /// [`Self::write_register`]).
     #[serde(skip)]
     tile_cache: HashMap<(i32, u8), (u8, u8)>,
     /// This level's cumulative horizontal scroll in pixels, unwrapped
@@ -132,7 +133,7 @@ pub struct Ppu {
     absolute_scroll_x: i64,
     /// Raw 0..511 scroll position sampled at the end of the previous
     /// frame, purely to compute this frame's delta into
-    /// [`Self::absolute_scroll_x`] - see [`Self::update_frame_scroll_dir`].
+    /// [`Self::absolute_scroll_x`] - see [`Self::update_absolute_scroll`].
     #[serde(skip)]
     prev_frame_scroll_x: Option<u16>,
 }
@@ -211,7 +212,32 @@ impl Ppu {
                 self.ctrl = value;
                 self.t = (self.t & !0x0C00) | (((value & CTRL_NT_MASK) as u16) << 10);
             }
-            1 => self.mask = value,
+            1 => {
+                let was_bg_enabled = self.bg_enabled();
+                self.mask = value;
+                if self.bg_enabled() && !was_bg_enabled {
+                    // Background rendering just flipped back on - the
+                    // standard NES tell for "a new screen is ready": title
+                    // screens, game-overs, and Contra's own level-load fade
+                    // all mask rendering off while they rewrite VRAM over
+                    // several frames, then flip it back on once done. Tiles
+                    // cached under the old screen's absolute coordinate
+                    // space are stale here even when the scroll position
+                    // happens to land close to where it used to be (e.g.
+                    // both levels starting at scroll 0) - the previous
+                    // clear-on-big-scroll-delta heuristic alone missed
+                    // exactly that case, which is what let a jumped-to
+                    // stage show persistent colliding/flickering tiles:
+                    // stale cache entries from the old level never got
+                    // invalidated and were never re-read since a cache hit
+                    // is trusted forever. Clearing here doesn't depend on
+                    // scroll math at all, so it also catches every organic
+                    // level transition, not just the debug stage-jump.
+                    self.tile_cache.clear();
+                    self.absolute_scroll_x = 0;
+                    self.prev_frame_scroll_x = None;
+                }
+            }
             3 => self.oam_addr = value,
             4 => {
                 self.oam[self.oam_addr as usize] = value;

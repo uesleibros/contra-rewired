@@ -57,23 +57,27 @@ const RAM_NUM_CONTINUES: u16 = 0x3A;
 // see docs/FIDELITY.md). Backs the stats overlay's coordinates readout.
 const RAM_SPRITE_X_POS: u16 = 0x0334;
 const RAM_SPRITE_Y_POS: u16 = 0x031A;
-// Stage select: the same two addresses `level_routine_05` itself pokes
-// when a level finishes naturally (increment CURRENT_LEVEL, reset
-// LEVEL_ROUTINE_INDEX to 0 to restart level loading from
-// level_routine_00) - see "Contra Control Flow.md" in the reference
-// disassembly. This was tried once, tested for only ~80 frames afterward,
-// and looked corrupted - wrongly concluded broken and shipped read-only.
-// Longer testing (3000+ frames, tracing LEVEL_ROUTINE_INDEX the whole way)
-// showed it actually works correctly: level_routine_00 through 04 (level
-// header/graphics/palette load, score-flash intro, scroll-in) run for
-// real and land on genuine, correctly-rendered gameplay for the target
-// stage - it just takes as long as a normal level transition always does
-// in this game (level_routine_02's score-flash step alone accounts for
-// a good chunk of it), which is 30-60 real seconds, not the 1-2 seconds
-// the first (too-short) test assumed. See docs/FIDELITY.md for the full
-// before/after account, including the wrong conclusion the short test led
-// to and why it was wrong.
+// Jump-to-stage pokes this (+ LEVEL_ROUTINE_INDEX below, + the same RAM
+// clear level_routine_05 itself does between levels) to fake a level
+// transition. Got this wrong twice before it actually worked - see
+// docs/FIDELITY.md for the full account - but the real root cause turned
+// out to live in the PPU, not here: `Ppu::tile_cache` (the true-ultrawide
+// memory of tiles a level has genuinely displayed) was only ever
+// invalidated on a big single-frame scroll jump, which a jump landing back
+// near scroll-0 (same as most levels' starting position) could dodge
+// entirely, leaving the old level's tiles cached and shown alongside the
+// new level's live-read ones - the "colliding/flickering tiles" that were
+// reported. Fixed by also clearing the cache on every mask-off -> mask-on
+// transition (`Ppu::write_register`, PPUMASK) - the same universal signal
+// every NES game already uses to hide VRAM rewrites during a level/screen
+// change, so it catches this without depending on scroll math at all.
+// Re-verified with every-single-frame (not sampled) captures across the
+// jump, at 700px widescreen (the case most likely to expose stale cache
+// entries), on two different target stages - clean both times.
 const RAM_CURRENT_LEVEL: u16 = 0x30;
+// See `level_routine_05` in the disassembly: 0 restarts the new level at
+// level_routine_00 (header/palette/graphics load), same as a real level
+// completion does.
 const RAM_LEVEL_ROUTINE_INDEX: u16 = 0x2C;
 
 #[derive(Parser)]
@@ -342,12 +346,13 @@ fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> 
     }
 }
 
-/// Scans `./mods/` and loads every mod that has a Lua entry script. A mod
-/// starts enabled unless its id is in `disabled_ids` (from `config.toml`'s
-/// `[mods] disabled_ids`, see `ModsConfig`) - toggling one in the pause
-/// menu's Mods tab updates that same list, which `main`'s existing
-/// save-on-close (`config.save`) already persists, so this needed no new
-/// save path, just a place to read/write.
+/// Scans `./mods/` and loads every mod that has a Lua entry script. Mods
+/// are opt-in: a mod starts *disabled* unless its id is in `enabled_ids`
+/// (from `config.toml`'s `[mods] enabled_ids`, see `ModsConfig`) - dropping
+/// a script into `./mods/` should never make it start running without the
+/// player explicitly turning it on first, in the pause menu's Mods tab
+/// (which updates that same list - `main`'s existing save-on-close
+/// (`config.save`) already persists it, no separate save path needed).
 #[cfg(feature = "mods")]
 pub struct LoadedMod {
     pub id: String,
@@ -357,7 +362,7 @@ pub struct LoadedMod {
 }
 
 #[cfg(feature = "mods")]
-fn load_mods(disabled_ids: &[String]) -> Vec<LoadedMod> {
+fn load_mods(enabled_ids: &[String]) -> Vec<LoadedMod> {
     let registry = contra_mods::ModRegistry::scan("mods");
     let mut loaded = Vec::new();
     for m in registry.all() {
@@ -383,13 +388,13 @@ fn load_mods(disabled_ids: &[String]) -> Vec<LoadedMod> {
             log::error!("mod '{}': script error: {e}", m.manifest.id);
             continue;
         }
-        let enabled = !disabled_ids.iter().any(|id| id == &m.manifest.id);
+        let enabled = enabled_ids.iter().any(|id| id == &m.manifest.id);
         log::info!(
             "loaded mod: {} ({}) - {} [{}]",
             m.manifest.name,
             m.manifest.id,
             m.manifest.description,
-            if enabled { "enabled" } else { "disabled" }
+            if enabled { "enabled" } else { "disabled - enable it in the pause menu's Mods tab" }
         );
         loaded.push(LoadedMod { id: m.manifest.id.clone(), name: m.manifest.name.clone(), enabled, host });
     }
@@ -428,7 +433,7 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session) {
 fn run_mods(_mods: &[()], _session: &mut Session) {}
 
 #[cfg(not(feature = "mods"))]
-fn load_mods(_disabled_ids: &[String]) -> Vec<()> {
+fn load_mods(_enabled_ids: &[String]) -> Vec<()> {
     let registry = contra_mods::ModRegistry::scan("mods");
     let scriptable = registry.all().iter().filter(|m| m.manifest.entry_script.is_some()).count();
     if scriptable > 0 {
@@ -457,18 +462,20 @@ fn mod_entries(_mods: &[()]) -> Vec<ModEntry> {
 }
 
 #[cfg(feature = "mods")]
-fn toggle_mod(mods: &mut [LoadedMod], idx: usize, disabled_ids: &mut Vec<String>) {
+fn toggle_mod(mods: &mut [LoadedMod], idx: usize, enabled_ids: &mut Vec<String>) {
     if let Some(m) = mods.get_mut(idx) {
         m.enabled = !m.enabled;
         if m.enabled {
-            disabled_ids.retain(|id| id != &m.id);
-        } else if !disabled_ids.iter().any(|id| id == &m.id) {
-            disabled_ids.push(m.id.clone());
+            if !enabled_ids.iter().any(|id| id == &m.id) {
+                enabled_ids.push(m.id.clone());
+            }
+        } else {
+            enabled_ids.retain(|id| id != &m.id);
         }
     }
 }
 #[cfg(not(feature = "mods"))]
-fn toggle_mod(_mods: &mut [()], _idx: usize, _disabled_ids: &mut Vec<String>) {}
+fn toggle_mod(_mods: &mut [()], _idx: usize, _enabled_ids: &mut Vec<String>) {}
 
 /// Steps exactly one simulated frame of `Session::Emulator` gameplay -
 /// widescreen/sprite settings, the step itself, mods, and audio. Shared by
@@ -519,9 +526,9 @@ fn step_gameplay_frame(
 /// own (the live `Nes`, the mod list). `Resume` and `LoadRom` are handled
 /// inline where they're produced instead (they need the `GameRoutine`/
 /// window handle respectively, and `LoadRom` blocks on a native dialog).
-fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &mut LoadedModsVec, disabled_mod_ids: &mut Vec<String>) {
+fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &mut LoadedModsVec, enabled_mod_ids: &mut Vec<String>) {
     match action {
-        MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, *idx, disabled_mod_ids),
+        MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, *idx, enabled_mod_ids),
         MenuAction::SetWeapon(player, id) => {
             if let Session::Emulator { nes, .. } = session {
                 let addr = match player {
@@ -562,12 +569,9 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
         }
         MenuAction::JumpToStage(stage) => {
             if let Session::Emulator { nes, .. } = session {
-                // Mirrors level_routine_05's own transition, not just the
-                // two "which level" bytes: it clears $40-$f0 and $300-$5ff
-                // (enemy/object/sprite-buffer state left over from the
-                // level that just ended) before moving on, so
-                // level_routine_00 starts from a clean slate instead of
-                // whatever the previous level's entities left behind.
+                // Mirrors what `level_routine_05` (level complete) itself
+                // clears between levels, so a jump leaves RAM in the same
+                // shape a real transition would.
                 for addr in 0x40..=0xF0u16 {
                     nes.poke_ram(addr, 0);
                 }
@@ -648,7 +652,7 @@ fn main() -> anyhow::Result<()> {
     let audio_sample_rate = audio_output.as_ref().map(|a| a.sample_rate).unwrap_or(44_100.0);
 
     let mut session = load_session(&args, rewind_capacity, audio_sample_rate);
-    let mut loaded_mods = load_mods(&config.mods.disabled_ids);
+    let mut loaded_mods = load_mods(&config.mods.enabled_ids);
     let window_title = match &session {
         Session::Emulator { .. } => "Contra: Rewired",
         Session::Placeholder { .. } => "Contra: Rewired - load a ROM to play",
@@ -888,7 +892,7 @@ fn main() -> anyhow::Result<()> {
                             &mut menu_state,
                             &mut settings,
                             &mut loaded_mods,
-                            &mut config.mods.disabled_ids,
+                            &mut config.mods.enabled_ids,
                             &mut routine,
                             &mut last_load_error,
                             &mut prev_widescreen,
@@ -1046,7 +1050,7 @@ fn redraw(
     menu_state: &mut MenuState,
     settings: &mut Settings,
     loaded_mods: &mut LoadedModsVec,
-    disabled_mod_ids: &mut Vec<String>,
+    enabled_mod_ids: &mut Vec<String>,
     routine: &mut GameRoutine,
     last_load_error: &mut Option<String>,
     prev_widescreen: &mut bool,
@@ -1186,7 +1190,7 @@ fn redraw(
         match action {
             MenuAction::Resume => *routine = routine.transition(GameEvent::ResumePressed),
             MenuAction::LoadRom => pending_rom_pick = true,
-            other => apply_menu_action(other, session, loaded_mods, disabled_mod_ids),
+            other => apply_menu_action(other, session, loaded_mods, enabled_mod_ids),
         }
     }
 

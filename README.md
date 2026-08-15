@@ -209,13 +209,13 @@ tabs:
   memory, using the address map the community disassembly documents; see
   docs/MODDING.md): lives, current weapon (dropdown), the "R" rapid-fire
   capsule powerup (independent of weapon, same as the real pickup), shared
-  continues, current boss/strongest-enemy HP, and which stage you're on.
+  continues, and a stage select - click any of the 8 stages to jump
+  straight there (takes the same 30-60s a real level-complete transition
+  always costs, since it's the same code path).
 
 It's a small, honest v1, not a finished options screen - see ROADMAP.md for
 what's still menu-less (CRT filter beyond scanlines, palette swaps,
-in-game keybind remapping, a stage-select that doesn't just show the
-current stage - see docs/FIDELITY.md for why jumping stages by RAM poke
-alone doesn't work cleanly yet).
+in-game keybind remapping).
 
 **No ROM loaded?** `contra-pc` shows a real Load ROM screen instead of a
 placeholder demo - click "Load ROM..." for a native file picker, or drag
@@ -252,14 +252,11 @@ actually makes the game playable:
 - **PPU accuracy** - moving from scanline-granular to per-dot rendering for
   effects that change registers mid-scanline (rare, but real).
 - **More mappers**, if you want other NES games to run on this core too.
-- **RAM-address tooling** - lives/weapon/rapid-fire/continues/boss-HP
-  pokes and a stats overlay are real and working (Debug tab, see
+- **RAM-address tooling** - lives/weapon/rapid-fire/continues pokes, stage
+  select, and a stats overlay are real and working (Debug tab, see
   docs/MODDING.md); a full Custom Difficulty slider set (enemy speed/
-  density/spawn-rate/damage multipliers) needs a per-frame RAM-watch
-  mechanism rather than one-time pokes, and stage select needs the
-  UxROM bank-switch state a level transition depends on, not just the two
-  RAM bytes that record which level is active - see docs/FIDELITY.md for
-  what's been tried and why it's not shipped yet.
+  density/spawn-rate/damage multipliers) still needs a per-frame RAM-watch
+  mechanism rather than one-time pokes - see docs/FIDELITY.md.
 
 See [ROADMAP.md](ROADMAP.md) for the full list.
 

@@ -358,14 +358,15 @@ impl Default for PracticeConfig {
     }
 }
 
-/// Which mods are disabled, persisted across launches. Stores IDs to
-/// *disable* rather than IDs to *enable*, so a newly-added mod (one this
-/// list has never heard of) defaults to enabled, matching the existing
-/// "every discovered mod starts enabled" behavior - this list only ever
-/// grows when the player explicitly turns one off in the Mods tab.
+/// Which mods are enabled, persisted across launches. Stores IDs to
+/// *enable* rather than IDs to *disable*: a mod is opt-in, so a newly-added
+/// mod (one this list has never heard of) defaults to *disabled* until the
+/// player explicitly turns it on in the Mods tab - dropping a `.lua` file
+/// into `./mods/` should never silently start running code without the
+/// player having said yes to it first.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModsConfig {
-    pub disabled_ids: Vec<String>,
+    pub enabled_ids: Vec<String>,
 }
 
 #[cfg(test)]

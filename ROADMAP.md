@@ -371,17 +371,28 @@ is loaded**
 - [x] **Stage select, real and working** - click any of the 8 stages to
       jump directly to it (`CURRENT_LEVEL`/`LEVEL_ROUTINE_INDEX`, `$30`/
       `$2C`, plus the same RAM clear `level_routine_05` itself does between
-      levels). This was built, tested too briefly (~80 frames), wrongly
-      concluded broken, and shipped read-only with that (wrong)
-      explanation - then re-tested properly (3000+ frames, tracing
-      `LEVEL_ROUTINE_INDEX` the whole way) and found to work correctly the
-      whole time; the "corruption" was just the normal several-second
-      level-transition intro sequence, which the short test never waited
-      out. See docs/FIDELITY.md for the full account, including why the
-      first test's conclusion was wrong - it's a useful example of *how*
-      to get RAM-tooling verification wrong (not waiting long enough for a
-      naturally slow transition), not just a "fixed a bug" note. The
-      Debug tab labels the 30-60s it takes, since there's no progress
+      levels). Took three passes to actually get right, and the two wrong
+      ones are worth knowing about: first tested too briefly (~80 frames),
+      wrongly concluded broken (blamed on mapper bank-switching); re-tested
+      properly for CPU state (3000+ frames, tracing `LEVEL_ROUTINE_INDEX`
+      the whole way, confirmed it progresses correctly) but verified
+      rendering only with *sampled* screenshots (every ~200-300 frames),
+      concluded clean, and shipped clickable - then real play found
+      persistent tile flicker/collision after a jump the sampled test
+      never caught. Root cause was in the PPU, not here:
+      `Ppu::tile_cache` (see the true-ultrawide entry below) wasn't cleared
+      when a stage jump landed back near the same scroll position the old
+      level was at, so the old level's cached tiles kept showing alongside
+      the new level's live-read ones. Fixed by also clearing the cache on
+      every PPUMASK background-rendering off-to-on transition (the same
+      signal every NES game already relies on to hide a VRAM rewrite mid-
+      transition), independent of scroll math. Re-verified with
+      every-single-frame captures (not sampled) across the jump, at 700px
+      widescreen, on two different target stages. See docs/FIDELITY.md for
+      the full three-pass account - it's a useful example of how a sampled
+      verification can look clean and still miss real frame-to-frame
+      instability, for the third time on this project. The Debug tab
+      labels the 30-60s the transition takes, since there's no progress
       indicator
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`

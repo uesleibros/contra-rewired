@@ -139,11 +139,17 @@ drawn. That guarantee shaped how true ultrawide got built.
   level has *actually displayed*, keyed by an absolute (never-wrapping)
   tile position, as a side effect of the normal live render. Columns beyond
   the safe live radius look the cached value up instead of reading VRAM
-  directly; a column the level genuinely hasn't shown yet renders as
-  backdrop, never a guess. Since the cache can only ever hold real,
-  previously-displayed data, this can't introduce wrong data - it can only
-  turn "never shown, so blank" into "shown once, so remembered forever this
-  level." `wide_width` can now go up to `MAX_WIDE_WIDTH` (1024px) instead
+  directly. A column the level genuinely hasn't shown yet no longer renders
+  as backdrop - it falls back to a live VRAM read wrapped to whatever real
+  tile happens to land there, which is always *some* actual NES tile, just
+  not necessarily the right one that far from the live camera window (a
+  wide window with black gaps read as more broken than an occasionally-
+  wrong tile does, and Contra was never going to be pixel-perfect in a mode
+  it wasn't built for anyway - see ROADMAP.md). Only cache *hits* and safe-
+  margin live reads get written back to the cache, so a wrapped guess is
+  never remembered; once the level actually shows that position for real,
+  the cache overwrites the guess with the correct tile instead of staying
+  stuck with it. `wide_width` can now go up to `MAX_WIDE_WIDTH` (1024px) instead
   of 380px, and `contra-pc` tracks the window's live aspect ratio to fill
   actual ultrawide monitors (see ROADMAP.md). Verified against the real ROM
   at 700px and 900px: already-explored terrain renders continuously across
@@ -160,9 +166,13 @@ drawn. That guarantee shaped how true ultrawide got built.
     guessing (rejected) or reading its level data independently of what
     it's chosen to draw so far (a much larger undertaking - see below).
   - **What still resets the cache**: an unusually large single-frame scroll
-    delta (much bigger than any real scrolling speed) - a checkpoint,
-    respawn, or level transition - since the absolute coordinate space it's
-    keyed against no longer means anything consistent once that happens.
+    delta (much bigger than any real scrolling speed), since the absolute
+    coordinate space it's keyed against no longer means anything consistent
+    once that happens - *and*, separately, every transition from background
+    rendering off to on (`Ppu::write_register`, PPUMASK), since a scroll
+    delta alone missed the case where a new level starts at roughly the
+    same scroll position the old one ended at (see the stage-select section
+    below for the real bug this gap caused and how it was found).
 - **Enemies/bullets/collision still only activate at the same moment they
   would on real hardware - investigated further, not yet changed.** This is
   a different limitation than the tile one above, and the tile-cache fix
@@ -211,11 +221,12 @@ drawn. That guarantee shaped how true ultrawide got built.
   the active width was smaller. It's now sized and copied to the actual
   per-frame width.
 
-### Stage select: works, but the first verification of it was wrong
+### Stage select: works - but it took three tries to actually verify that
 
-The Debug tab lets you jump directly to any of the 8 stages. It works. That
-wasn't the original conclusion, and the story of the wrong conclusion is
-worth keeping here since the mistake itself is the useful lesson.
+The Debug tab lets you jump directly to any of the 8 stages. It works now.
+Getting to "works" took three separate conclusions, two of them wrong, and
+the story of both wrong ones is worth keeping here since the mistakes
+themselves are the useful lesson.
 
 The reference disassembly's "Contra Control Flow.md" documents that
 `level_routine_05` transitions between levels by incrementing
@@ -252,6 +263,58 @@ level-complete transition always costs in this game (it's the same code
 path, after all) - `contra-pc`'s stage-select buttons don't grey out or
 show a spinner during that stretch, which can look like nothing happened
 if you're not expecting the wait, so the Debug tab labels it explicitly.
+
+That was the second conclusion. It was wrong too - not about the CPU-side
+state machine (that part held up), but about rendering. Shipped as
+clickable on the strength of that verification, real play surfaced
+persistent tile flicker and colliding/overlapping tiles after a jump,
+severe enough to call the game unplayable afterward. The second
+verification's screenshots were correct as far as they went; they just
+weren't frequent enough to go far enough. They were taken every ~200-300
+frames, which is exactly the kind of gap the widescreen direction-bias bug
+above had already burned this project on once: real-time instability that
+only shows up frame-to-frame is invisible to a snapshot every few seconds,
+because each individual snapshot can land on a moment that looks fine.
+Stage select's snapshots kept landing on fine moments. Nothing in between
+them was ever looked at.
+
+A third pass, this time capturing *every* frame (`SAVE_EVERY=1`, no gaps)
+across the jump and well into the stage afterward, with widescreen on at
+700px (the setting most likely to exercise `Ppu::tile_cache`, since that's
+what it exists for), found the real cause: `tile_cache` was only ever
+cleared on a *big single-frame scroll jump* (see the true-ultrawide section
+below). A stage jump landing back near horizontal scroll 0 - which is
+where most Contra levels start, including the one the old level was
+probably also near the start of - doesn't necessarily produce a big scroll
+delta at all, so the old level's cached tiles survived the transition
+untouched. From then on, some screen columns kept showing the *previous*
+level's tiles (served from the stale cache, which is trusted forever once
+populated - a cache hit never gets re-verified against a live read) while
+neighboring columns correctly showed the *new* level's tiles (live-read on
+a cache miss), and which columns fell into which camp shifted as the
+player moved and more cache entries filled in. That's the flicker and the
+"colliding" look: two different levels' geometry, interleaved column by
+column, neither side ever fully winning.
+
+The fix doesn't live in `contra-pc` at all - it's in `Ppu::write_register`
+(PPUMASK, register 1): the cache is now also cleared on every transition
+from background rendering *off* to *on*. That's the standard signal every
+NES game already relies on for hiding a VRAM rewrite mid-transition (title
+screens, game-overs, and Contra's own level-load fade all mask rendering
+off while they rewrite nametables/CHR, then flip it back on once the new
+screen is ready) - so it catches every real screen change, including this
+one, without depending on scroll math guessing right. Re-verified the same
+way afterward: every-frame captures across the jump, widescreen on, two
+different target stages - clean both times, background fully filled with
+no flicker or stale-tile ghosting in either case.
+
+The corrected lesson, again: a spaced-out sample can only tell you the
+moments it happened to land on were fine. It can never tell you the gaps
+were fine too. Anything claiming to fix or verify frame-to-frame rendering
+stability needs every-frame evidence, not sampled evidence - this is now
+the third time that exact gap has produced a wrong "looks fine" conclusion
+on this project (see the widescreen bias bug and the widescreen-not-
+filling-window bug above).
 
 ### Where RAM-based tooling's limits are, in general
 
