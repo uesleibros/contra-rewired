@@ -13,6 +13,13 @@
 //! an `egui` frame, with the pause menu (when open) and the no-ROM screen
 //! as real `egui` widgets on top - see `menu.rs`.
 
+// Release builds on Windows shouldn't pop a console window alongside the
+// game window - that's a `cargo run`/debugging artifact, not something a
+// player who just downloaded the .exe should see. Kept in debug builds so
+// `println!`/`log`/panic output during development still has somewhere to
+// go without redirecting it elsewhere.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod audio;
 mod menu;
 
