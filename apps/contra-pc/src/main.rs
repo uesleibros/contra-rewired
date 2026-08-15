@@ -530,6 +530,23 @@ fn toggle_mod(mods: &mut [LoadedMod], idx: usize, enabled_ids: &mut Vec<String>)
 #[cfg(not(feature = "mods"))]
 fn toggle_mod(_mods: &mut [()], _idx: usize, _enabled_ids: &mut Vec<String>) {}
 
+/// Swaps mod `idx` with its neighbor `idx + delta` - see
+/// `MenuAction::MoveMod`'s doc comment. Only ever called with `delta` `-1`/
+/// `1` from the Mods tab's up/down buttons, which already disable
+/// themselves at the list's boundaries, but `checked_add`/bounds-check
+/// anyway rather than trust the caller.
+#[cfg(feature = "mods")]
+fn move_mod(mods: &mut [LoadedMod], idx: usize, delta: i32) {
+    let Some(other) = idx.checked_add_signed(delta as isize) else {
+        return;
+    };
+    if other < mods.len() {
+        mods.swap(idx, other);
+    }
+}
+#[cfg(not(feature = "mods"))]
+fn move_mod(_mods: &mut [()], _idx: usize, _delta: i32) {}
+
 /// Steps exactly one simulated frame of `Session::Emulator` gameplay -
 /// widescreen/sprite settings, the step itself, mods, and audio. Shared by
 /// the normal per-tick loop and the frame-advance hotkey in `main`'s
@@ -584,6 +601,7 @@ fn step_gameplay_frame(
 fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &mut LoadedModsVec, enabled_mod_ids: &mut Vec<String>) {
     match action {
         MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, *idx, enabled_mod_ids),
+        MenuAction::MoveMod(idx, delta) => move_mod(loaded_mods, *idx, *delta),
         MenuAction::SetWeapon(player, id) => {
             if let Session::Emulator { nes, .. } = session {
                 let addr = match player {
@@ -723,6 +741,44 @@ fn game_image_rect(screen: egui::Rect, internal_w: f32, internal_h: f32, setting
     egui::Rect::from_center_size(screen.center(), size)
 }
 
+/// Builds the pause menu's live [`Settings`] from what was last saved to
+/// `config.toml` (`contra_core::config::PcSettings`) - see that struct's
+/// doc comment for why it's a separate flat mirror instead of reusing
+/// `VideoConfig`/etc directly.
+fn settings_from_pc_config(pc: &contra_core::config::PcSettings) -> Settings {
+    Settings {
+        widescreen: pc.widescreen,
+        unlimited_sprites: pc.unlimited_sprites,
+        pixel_perfect: pc.pixel_perfect,
+        zoom_percent: pc.zoom_percent,
+        fullscreen: pc.fullscreen,
+        audio_muted: pc.audio_muted,
+        show_hitboxes: pc.show_hitboxes,
+        show_stats: pc.show_stats,
+        sim_speed_percent: pc.sim_speed_percent,
+        scanlines: pc.scanlines,
+    }
+}
+
+/// The inverse of [`settings_from_pc_config`] - called just before
+/// `config.save(CONFIG_PATH)` so whatever the player last had set (via
+/// menu clicks or hotkeys, doesn't matter which) is what's there on the
+/// next launch.
+fn pc_config_from_settings(settings: &Settings) -> contra_core::config::PcSettings {
+    contra_core::config::PcSettings {
+        widescreen: settings.widescreen,
+        unlimited_sprites: settings.unlimited_sprites,
+        pixel_perfect: settings.pixel_perfect,
+        zoom_percent: settings.zoom_percent,
+        fullscreen: settings.fullscreen,
+        audio_muted: settings.audio_muted,
+        show_hitboxes: settings.show_hitboxes,
+        show_stats: settings.show_stats,
+        sim_speed_percent: settings.sim_speed_percent,
+        scanlines: settings.scanlines,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
@@ -821,10 +877,18 @@ fn main() -> anyhow::Result<()> {
 
     let mut held_keys: HashSet<String> = HashSet::new();
     let mut edges = EdgeTracker::default();
-    let mut settings = Settings::default();
+    let mut settings = settings_from_pc_config(&config.pc_settings);
     // Tracked outside `redraw` on purpose - see `apply_toggle_side_effects`.
-    let mut prev_widescreen = settings.widescreen;
-    let mut prev_fullscreen = settings.fullscreen;
+    // Deliberately *not* seeded from `settings` itself: the window a fresh
+    // launch actually creates below is windowed and narrow regardless of
+    // what got loaded from config.toml, so starting these at the neutral
+    // ("as if nothing's been toggled yet") state means a persisted
+    // widescreen/fullscreen preference is naturally detected as a pending
+    // change and applied for real on the first `apply_toggle_side_effects`
+    // call - instead of the loaded setting silently disagreeing with the
+    // window that's actually on screen until the player toggles it twice.
+    let mut prev_widescreen = false;
+    let mut prev_fullscreen = false;
     let mut menu_state = MenuState::new();
     let mut last_load_error: Option<String> = None;
     let mut rom_dialog_rx: Option<mpsc::Receiver<Option<PathBuf>>> = None;
@@ -865,6 +929,7 @@ fn main() -> anyhow::Result<()> {
 
                 match event {
                     WindowEvent::CloseRequested => {
+                        config.pc_settings = pc_config_from_settings(&settings);
                         let _ = config.save(CONFIG_PATH);
                         elwt.exit();
                     }

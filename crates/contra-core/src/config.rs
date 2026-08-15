@@ -31,6 +31,11 @@ pub struct Config {
     // config.toml, not just a "mods list resets" one.
     #[serde(default)]
     pub mods: ModsConfig,
+    // Same `serde(default)` reasoning as `mods` above - added after
+    // `mods`, so an existing config.toml missing this section must not
+    // fail to parse and silently reset everything else.
+    #[serde(default)]
+    pub pc_settings: PcSettings,
 }
 
 impl Default for Config {
@@ -44,6 +49,7 @@ impl Default for Config {
             accessibility: AccessibilityConfig::default(),
             practice: PracticeConfig::default(),
             mods: ModsConfig::default(),
+            pc_settings: PcSettings::default(),
         }
     }
 }
@@ -367,6 +373,51 @@ impl Default for PracticeConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModsConfig {
     pub enabled_ids: Vec<String>,
+}
+
+/// A flat mirror of `apps/contra-pc`'s `menu::Settings` - everything the
+/// pause menu's Settings tab controls, persisted across launches the same
+/// way [`ModsConfig`] is. Deliberately its own small struct rather than
+/// shoehorned into [`VideoConfig`]/[`AccessibilityConfig`] above: those are
+/// this crate's aspirational full options schema (see this module's doc
+/// comment) for a config surface no front-end fully implements yet, and
+/// their richer enums (`ScalingMode`, `WidescreenMode`, ...) don't map
+/// cleanly onto what `contra-pc` actually has today (a `widescreen: bool`
+/// that resizes to the monitor, not a 4-way mode enum). This mirrors
+/// `contra-pc`'s *real*, current settings 1:1 instead of forcing a mapping
+/// that would either lose information or silently drift out of sync with
+/// what the front-end actually does. `contra-pc` owns the conversion to/
+/// from `menu::Settings` (see `main.rs`) since `contra-core` can't depend
+/// on `contra-pc`'s `menu` module.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcSettings {
+    pub widescreen: bool,
+    pub unlimited_sprites: bool,
+    pub pixel_perfect: bool,
+    pub zoom_percent: i32,
+    pub fullscreen: bool,
+    pub audio_muted: bool,
+    pub show_hitboxes: bool,
+    pub show_stats: bool,
+    pub sim_speed_percent: i32,
+    pub scanlines: bool,
+}
+
+impl Default for PcSettings {
+    fn default() -> Self {
+        Self {
+            widescreen: false,
+            unlimited_sprites: false,
+            pixel_perfect: false,
+            zoom_percent: 100,
+            fullscreen: false,
+            audio_muted: false,
+            show_hitboxes: false,
+            show_stats: false,
+            sim_speed_percent: 100,
+            scanlines: false,
+        }
+    }
 }
 
 #[cfg(test)]

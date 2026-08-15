@@ -476,18 +476,45 @@ is loaded**
       needs a menu entry; this is the pattern to extend, not a finished
       options screen
 - [x] **Mod enable/disable persisted across launches** - `contra_core::
-      config::ModsConfig` (`[mods] disabled_ids` in `config.toml`) stores
-      which mods are *off*, not which are on, so a newly-added mod this
-      list has never heard of still defaults to enabled. Reuses the
-      existing save-on-close path (`config.save`), no new save mechanism
-      needed. Found and fixed a real bug while adding the field: `Config`'s
+      config::ModsConfig` (`[mods] enabled_ids` in `config.toml`) stores
+      which mods are *on*, not which are off, so a newly-added mod this
+      list has never heard of defaults to *disabled* - a mod is opt-in,
+      dropping a `.lua` file into `./mods/` should never silently start
+      running code the player never agreed to. Reuses the existing
+      save-on-close path (`config.save`), no new save mechanism needed.
+      Found and fixed a real bug while adding the field: `Config`'s
       `load_or_default` silently resets *the entire config* to defaults if
       `toml::from_str` fails for any reason, including "a field that didn't
       exist in an older config.toml" - so the new field needed
       `#[serde(default)]` specifically to avoid discarding an
       already-customized config.toml the first time someone with an old
       one updates
-- [ ] Mod reorder UI
+- [x] **Mod reorder UI** - up/down buttons per mod row in the Mods tab
+      (disabled at the list's own boundaries), reordering `LoadedMod`s in
+      place so `run_mods`' fixed iteration order actually changes - gives
+      two mods that hook the same event and might step on each other's
+      writes a way to pick which one wins, without touching either script.
+      Session-only for now (resets to registry scan order on relaunch) -
+      persisting order needs the same `config.toml` treatment
+      `pc_settings`/`mods.enabled_ids` already got, not yet done
+- [x] **Every Settings-tab toggle persisted across launches** -
+      `contra_core::config::PcSettings` (`[pc_settings]` in `config.toml`)
+      mirrors `menu::Settings` 1:1 rather than reusing `VideoConfig`/
+      `AccessibilityConfig` above: those are this crate's aspirational full
+      options schema and their richer enums (`ScalingMode`, `WidescreenMode`,
+      ...) don't map cleanly onto what `contra-pc` actually implements
+      today. Loaded at launch, written back to `config` right before the
+      existing save-on-close call so however the player left things - menu
+      clicks or hotkeys, doesn't matter - is what's there next time.
+      Widescreen/fullscreen needed one extra fix: `prev_widescreen`/
+      `prev_fullscreen` (the change-detection state `apply_toggle_
+      side_effects` diffs against) used to seed from the loaded setting
+      itself, which meant a persisted "widescreen: true" never actually
+      triggered the resize - the freshly-created window is narrow
+      regardless of what's in `config.toml`, so seeding those at the
+      neutral "nothing's been toggled yet" state instead means a loaded
+      preference is correctly detected as a pending change and applied for
+      real on the first frame, not just after the player toggles it twice
 - [ ] `egui` opens the door CRT/scanline shaders were already waiting on
       (see the widescreen section above) - `egui-wgpu`'s renderer runs
       inside the same `wgpu` device/queue as the game background, so a

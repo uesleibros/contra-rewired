@@ -31,6 +31,13 @@ pub enum Player {
 pub enum MenuAction {
     Resume,
     ToggleMod(usize),
+    /// Swaps mod `idx` with its neighbor `idx + delta` (`delta` is `-1` or
+    /// `1` - "move up"/"move down" in the Mods tab's list). Changes
+    /// execution order only (`run_mods` iterates the list in order every
+    /// frame) - two mods that both hook the same event and step on each
+    /// other's writes now have a way to say which one should win, without
+    /// needing to touch either mod's script.
+    MoveMod(usize, i32),
     SetWeapon(Player, u8),
     ToggleRapidFire(Player),
     LivesDelta(Player, i32),
@@ -233,12 +240,26 @@ fn mods_tab(ui: &mut egui::Ui, mods: &[ModEntry], actions: &mut Vec<MenuAction>)
         ui.label("No mods found in ./mods");
         return;
     }
+    let last = mods.len() - 1;
     for (i, m) in mods.iter().enumerate() {
-        let mut enabled = m.enabled;
-        if ui.checkbox(&mut enabled, &m.name).changed() {
-            actions.push(MenuAction::ToggleMod(i));
-        }
+        ui.horizontal(|ui| {
+            let mut enabled = m.enabled;
+            if ui.checkbox(&mut enabled, &m.name).changed() {
+                actions.push(MenuAction::ToggleMod(i));
+            }
+            ui.add_enabled_ui(i > 0, |ui| {
+                if ui.small_button("^").clicked() {
+                    actions.push(MenuAction::MoveMod(i, -1));
+                }
+            });
+            ui.add_enabled_ui(i < last, |ui| {
+                if ui.small_button("v").clicked() {
+                    actions.push(MenuAction::MoveMod(i, 1));
+                }
+            });
+        });
     }
+    ui.label(egui::RichText::new("Order matters if two mods touch the same thing - top runs first.").weak());
 }
 
 fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<MenuAction>) {
