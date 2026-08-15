@@ -121,81 +121,95 @@ lower-priority one; regression-tested in `ppu.rs`
 Widescreen is presentation-only by design: it never touches CPU RAM, PPU
 registers, or anything else the game logic reads back, so turning it on or
 off can never change gameplay - only how much of the same game state is
-drawn. That guarantee is also exactly what limits it.
+drawn. That guarantee shaped how true ultrawide got built.
 
-- **Why the extra width is capped at `EXTENDED_WIDTH` (380px, i.e. 62px per
-  side beyond the real 256px).** The NES only has two physical nametables in
-  hardware. Contra's own engine only pre-draws the nametable columns in the
-  direction it's currently auto-scrolling toward - the trailing edge (behind
-  the camera) is never kept populated, because the real console never needed
-  it to be. Extending the visible background further than the game has
-  actually drawn reveals that undrawn nametable data as visible garbage on
-  the trailing edge. 380px was found empirically, by rendering real ROM
-  frames with `dump_frames.rs` at several widths (350 / 380 / 420 / 480px)
-  and visually inspecting the trailing edge in each - 380px is clean, 420px
-  is not. This means true ultrawide framing (e.g. 32:9, which would need
-  roughly 854px to fill edge-to-edge without letterboxing) is not achievable
-  without either patching the game's own nametable-fill logic (which would
-  cross the "never touch game state" line every other enhancement here
-  respects) or accepting visible garbage at the edges. `contra-pc` fills any
-  extra space beyond 380px with plain letterboxing rather than doing either.
-- **The extra width is direction-biased, not centered.** Splitting it 50/50
-  around the normal 256px view (the original approach) put half the extra
-  width on whichever side happened to be the *trailing* edge - the one
-  without valid pre-drawn nametable data - on any stage that scrolls mostly
-  one direction, which is most of Contra's outdoor levels. `Ppu` now
-  samples the playfield's raw scroll position once per frame (below the
-  status bar's own split-scroll region, so the HUD's separate, usually-
-  static scroll doesn't get mistaken for camera movement) and compares it
-  to the previous frame's sample to get a direction; ~90% of the extra
-  width goes to the leading edge and ~10% stays on the trailing edge (not
-  100/0, so there's still a small safety margin if the direction read is
-  ever wrong for a frame). Stationary scenes (indoor rooms, boss arenas,
-  or before the first frame) fall back to the original centered 50/50, since
-  neither edge is "trailing" when the camera isn't moving. Verified against
-  the real ROM via `dump_frames.rs`; the existing "center 256px matches
-  narrow mode exactly" test is unaffected because it never advances a
-  second frame, so `frame_scroll_dir` stays at its default (centered).
+- **Why the extra width used to be capped at `EXTENDED_WIDTH` (380px, i.e.
+  62px per side beyond the real 256px) - and why that's now a *radius*, not
+  a ceiling.** The NES only has two physical nametables in hardware.
+  Contra's own engine only pre-draws the nametable columns in the direction
+  it's currently auto-scrolling toward - the trailing edge (behind the
+  camera) is never kept populated, because the real console never needed it
+  to be. Reading VRAM live further than the game has actually drawn reveals
+  that undrawn data as visible garbage. 380px was found empirically, by
+  rendering real ROM frames with `dump_frames.rs` at several widths (350 /
+  380 / 420 / 480px) and visually inspecting the trailing edge in each -
+  380px is clean, 420px is not. That's still true and still enforced
+  (`SAFE_LIVE_MARGIN` in `render_background_line`) - but it's no longer the
+  cap on `wide_width`. `Ppu::tile_cache` remembers every tile/palette this
+  level has *actually displayed*, keyed by an absolute (never-wrapping)
+  tile position, as a side effect of the normal live render. Columns beyond
+  the safe live radius look the cached value up instead of reading VRAM
+  directly; a column the level genuinely hasn't shown yet renders as
+  backdrop, never a guess. Since the cache can only ever hold real,
+  previously-displayed data, this can't introduce wrong data - it can only
+  turn "never shown, so blank" into "shown once, so remembered forever this
+  level." `wide_width` can now go up to `MAX_WIDE_WIDTH` (1024px) instead
+  of 380px, and `contra-pc` tracks the window's live aspect ratio to fill
+  actual ultrawide monitors (see ROADMAP.md). Verified against the real ROM
+  at 700px and 900px: already-explored terrain renders continuously across
+  the full width; the CPU's final state is bit-identical across 380px/700px/
+  900px runs of the same input script, confirming this is still entirely
+  presentation-only.
+  - **Practical effect**: the *trailing* direction (places the camera has
+    already scrolled past) can extend arbitrarily far, since the game has
+    necessarily drawn everything back there already. The *leading*
+    direction (ahead of the camera) is still bounded by the small live
+    pre-buffer margin plus whatever the level has shown before (e.g. by
+    scrolling backward and forward earlier) - there's no way to show
+    correct data for ground the game hasn't drawn yet without either
+    guessing (rejected) or reading its level data independently of what
+    it's chosen to draw so far (a much larger undertaking - see below).
+  - **What still resets the cache**: an unusually large single-frame scroll
+    delta (much bigger than any real scrolling speed) - a checkpoint,
+    respawn, or level transition - since the absolute coordinate space it's
+    keyed against no longer means anything consistent once that happens.
 - **Enemies/bullets/collision still only activate at the same moment they
-  would on real hardware - investigated further, not yet changed.** Tiles
-  are safe to extend because they're re-drawn from nametable data that
-  already exists; enemies are real entities the original code spawns based
-  on the player's *actual* 256px-wide camera position, exactly like on real
-  hardware. Digging into *why* this can't just be "spawn earlier" like the
-  tile bias above: the collision buffer the game itself checks before
-  placing a hard-coded or randomly-generated enemy (`BG_COLLISION_DATA`,
-  `$0680` in the reference disassembly's `ram.asm`) is documented there as
-  covering only the two currently-loaded nametables - the exact same window
-  that bounds the tile extension, not a separately-tracked wider map. There
-  is no "ground truth" collision data further out to spawn correctly
-  against; the NES doesn't keep more than ~2 screens resident in its 2KB of
-  RAM, by design. Making this work for real (not just the random-soldier
-  edge case, which is a scoped, identified patch target -
-  `soldier_generation_01` in `bank2.asm`, constants `#$0a`/`#$fa`) means
-  giving `contra-nes`'s CPU core a real, tested, bank-and-PC-scoped
-  instruction hook - tracked as its own item in ROADMAP.md rather than
-  folded into the presentation-only widescreen work, since it's a
-  fundamentally different kind of change (it *does* touch game state, on
-  purpose, gated behind widescreen being on).
-- **Widescreen not visibly turning on, and not visibly resizing the
-  window.** Two related bugs, fixed in successive rounds. First, the
-  target width used to be computed from the *current window size*
-  (`compute_wide_width`, keyed off `Resized` events), so toggling
-  "Widescreen: ON" without also resizing the window away from its narrow
-  default produced no visible change - the computed target was still
-  ≈256px. Fixed by always targeting the full `EXTENDED_WIDTH` cap the
-  moment it's enabled, independent of window size. That alone still wasn't
-  enough: with the window left at its default size, the wider content just
-  got scaled down to fit by the existing fill-scaling, so turning
-  Widescreen on barely looked different. `contra-pc` now also resizes the
-  window itself the instant the setting changes (matching the per-pixel
-  scale already in effect), the way other NES PC ports grow their window
-  for widescreen. A related buffer bug was fixed alongside the first fix:
-  `wide_framebuffer` was always allocated at `EXTENDED_WIDTH * SCREEN_H`
-  and copied a full `EXTENDED_WIDTH`-wide slice per scanline regardless of
-  the width actually in use that frame, corrupting the buffer's row stride
-  any time the active width was less than the cap. It's now sized and
-  copied to the actual per-frame width.
+  would on real hardware - investigated further, not yet changed.** This is
+  a different limitation than the tile one above, and the tile-cache fix
+  doesn't touch it: enemies are real entities the original code spawns
+  based on the player's *actual* 256px-wide camera position, exactly like
+  on real hardware. Digging into *why* this can't just reuse the same cache
+  trick: the collision buffer the game itself checks before placing a
+  hard-coded or randomly-generated enemy (`BG_COLLISION_DATA`, `$0680` in
+  the reference disassembly's `ram.asm`) is documented there as covering
+  only the two currently-loaded nametables, and isn't something `contra-nes`
+  can passively observe and remember the way tile data can be (spawn
+  decisions happen once, at the moment the game's own code runs them - by
+  the time an area is on-screen and cacheable, any spawn decision for it has
+  already happened or not). There is no "ground truth" collision data
+  further out to spawn correctly against; the NES doesn't keep more than
+  ~2 screens resident in its 2KB of RAM, by design. Making this work for
+  real (not just the random-soldier edge case, which is a scoped, identified
+  patch target - `soldier_generation_01` in `bank2.asm`, constants `#$0a`/
+  `#$fa`) means giving `contra-nes`'s CPU core a real, tested,
+  bank-and-PC-scoped instruction hook - tracked as its own item in
+  ROADMAP.md rather than folded into the presentation-only widescreen work,
+  since it's a fundamentally different kind of change (it *does* touch
+  game state, on purpose, gated behind widescreen being on).
+- **Widescreen not visibly turning on, not visibly resizing the window, and
+  the camera visibly drifting.** Three related bugs, fixed across several
+  rounds. The target width used to be computed only from `Resized` events,
+  so toggling it on without a manual resize did nothing; then it always
+  targeted a fixed cap regardless of window size, which *also* didn't
+  visibly change anything until the window was resized (the fill-scaling
+  just drew the wider content smaller to fit). Both are fixed together now:
+  toggling widescreen on resizes the window to the current monitor's full
+  width, and `target_wide_width` tracks the window's live aspect ratio
+  every frame from then on. Separately, a direction-biased extension (most
+  of the extra width on the side the camera was scrolling toward, to dodge
+  stale trailing-edge tiles) was tried and reverted - it moved the "normal"
+  256px window's position within the wide frame as the bias tracked scroll
+  direction, which made the player's on-screen position visibly drift
+  as if the camera itself moved differently than normal. Reverted back to
+  fixed centering (`x_offset = extra / 2`, always), which keeps the
+  player's screen position identical to narrow mode at all times - and
+  isn't reopening the trailing-edge problem, since the tile cache now
+  handles that instead. A related buffer bug was fixed alongside the first
+  fix: `wide_framebuffer` was always allocated at the old fixed cap and
+  copied a slice of that fixed width per scanline regardless of the width
+  actually in use that frame, corrupting the buffer's row stride whenever
+  the active width was smaller. It's now sized and copied to the actual
+  per-frame width.
 
 ## `contra-core`: hand-ported layer (placeholder demo)
 

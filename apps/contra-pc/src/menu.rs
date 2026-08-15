@@ -32,6 +32,7 @@ pub enum MenuAction {
     Resume,
     ToggleMod(usize),
     SetWeapon(Player, u8),
+    ToggleRapidFire(Player),
     LivesDelta(Player, i32),
     ContinuesDelta(i32),
     LoadRom,
@@ -119,8 +120,10 @@ pub struct ModEntry {
 pub struct DebugInfo {
     pub p1_lives: u8,
     pub p1_weapon: u8,
+    pub p1_rapid_fire: bool,
     pub p2_lives: u8,
     pub p2_weapon: u8,
+    pub p2_rapid_fire: bool,
     pub continues: u8,
 }
 
@@ -216,9 +219,9 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
         return;
     };
 
-    for (player, label, lives, weapon) in [
-        (Player::P1, "P1", debug.p1_lives, debug.p1_weapon),
-        (Player::P2, "P2", debug.p2_lives, debug.p2_weapon),
+    for (player, label, lives, weapon, rapid_fire) in [
+        (Player::P1, "P1", debug.p1_lives, debug.p1_weapon, debug.p1_rapid_fire),
+        (Player::P2, "P2", debug.p2_lives, debug.p2_weapon, debug.p2_rapid_fire),
     ] {
         ui.horizontal(|ui| {
             ui.label(format!("{label} lives: {lives}"));
@@ -240,6 +243,14 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
                         }
                     }
                 });
+            // The "R" capsule powerup - stacks with whatever weapon is
+            // equipped, just fires faster. Same RAM byte as the weapon
+            // (`ram.asm`: low nibble weapon, bit 4 rapid fire), so this is
+            // its own checkbox rather than part of the weapon dropdown.
+            let mut rapid = rapid_fire;
+            if ui.checkbox(&mut rapid, "Rapid fire (R)").changed() {
+                actions.push(MenuAction::ToggleRapidFire(player));
+            }
         });
     }
 

@@ -13,31 +13,41 @@
 //! Assumes CHR-RAM (mapper 2 / UxROM's usual configuration, which is what
 //! Contra (USA) uses) rather than bank-switched CHR-ROM.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const SCREEN_W: usize = 256;
 pub const SCREEN_H: usize = 240;
 
-/// Maximum width the optional "Extended" widescreen presentation (see
-/// `Ppu::wide_width`) can render: instead of 256px, the background can be
-/// rendered up to this many pixels wide, sampling nametable/pattern data
-/// the game has *already* written for smooth scrolling, extended
-/// symmetrically on both sides of the normal view. This never touches game
-/// state (RAM, collision, spawn logic all still operate on the real 256px
-/// camera) - it only changes what gets rendered, so it can't affect
-/// gameplay. See docs/FIDELITY.md.
+/// How far past the normal 256px view is safe to sample *live* nametable/
+/// pattern data from, symmetrically on both sides. This is a real,
+/// hardware-imposed radius, not an arbitrary choice - tuned empirically
+/// against the real US retail ROM: the NES only has 2 physical
+/// nametables, and Contra's engine only pre-draws the direction it
+/// auto-scrolls *toward*, so live-sampling too far past the live window
+/// on the trailing edge shows solid black (undrawn tiles) well before the
+/// leading edge does. 380px total (62px extra on each side) rendered
+/// clean at every scroll position tested; 420px already showed black
+/// creeping into the trailing edge's sky row, and 480px was consistently
+/// broken on the trailing side.
 ///
-/// This is a real, hardware-imposed ceiling, not an arbitrary choice, and
-/// it was tuned empirically against the real US retail ROM rather than
-/// guessed: the NES only has 2 physical nametables, and Contra's engine
-/// only pre-draws the direction it auto-scrolls *toward* - the trailing
-/// edge (behind the camera) isn't kept valid, so extending too far there
-/// shows solid black (undrawn tiles) well before the leading edge does.
-/// 380 (62px extra on each side) rendered clean at every scroll position
-/// tested; 420 already showed black creeping into the trailing edge's sky
-/// row, and 480 was consistently broken on the trailing side. Front-ends
-/// should pillarbox rather than request more than this cap.
+/// This used to also be the hard cap on [`Ppu::wide_width`] - true
+/// ultrawide beyond it wasn't reachable without either accepting that
+/// trailing-edge garbage or touching game state to force it to pre-draw
+/// further. It no longer is: everything past this radius is served from
+/// [`Ppu::tile_cache`] (tiles genuinely displayed at some earlier point
+/// this level, remembered rather than re-guessed) or left blank if never
+/// visited, instead of being read live - see [`Ppu::render_background_line`].
 pub const EXTENDED_WIDTH: usize = 380;
+
+/// Hard ceiling on [`Ppu::wide_width`] now that going past
+/// [`EXTENDED_WIDTH`] is served from [`Ppu::tile_cache`]/blank rather than
+/// a live (and potentially wrong) VRAM read - this is just "wide enough
+/// for any real ultrawide monitor at any reasonable zoom," not a
+/// correctness boundary. 1024px covers 32:9 (needs ~854px at native NES
+/// height) with headroom.
+pub const MAX_WIDE_WIDTH: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mirroring {
@@ -99,6 +109,32 @@ pub struct Ppu {
     /// `wide_width` - never touches game state.
     #[serde(skip)]
     pub unlimited_sprites: bool,
+    /// Presentation-only "true ultrawide" memory: every (tile, palette)
+    /// this level has actually displayed at a given absolute horizontal
+    /// tile column and screen-relative tile row, keyed
+    /// `(abs_tile_col, coarse_y)`. Populated as a side effect of the
+    /// normal live-sampled render (see [`Self::render_background_line`]);
+    /// consulted for wide-mode columns beyond [`EXTENDED_WIDTH`]'s safe
+    /// live-read radius, where sampling live VRAM directly risks showing
+    /// undrawn/wrong data. This only ever remembers what the *unmodified*
+    /// game genuinely drew - it can't introduce wrong data, only whether
+    /// there's real data available for a given far-off column yet.
+    /// Cleared on a detected screen/level transition (see
+    /// [`Self::update_frame_scroll_dir`]).
+    #[serde(skip)]
+    tile_cache: HashMap<(i32, u8), (u8, u8)>,
+    /// This level's cumulative horizontal scroll in pixels, unwrapped
+    /// (unlike the PPU's own 0..511 wrapping scroll) so it can key
+    /// [`Self::tile_cache`] by an ever-increasing absolute position rather
+    /// than one that wraps every 512px. Reset (along with the cache) on a
+    /// detected level/screen transition.
+    #[serde(skip)]
+    absolute_scroll_x: i64,
+    /// Raw 0..511 scroll position sampled at the end of the previous
+    /// frame, purely to compute this frame's delta into
+    /// [`Self::absolute_scroll_x`] - see [`Self::update_frame_scroll_dir`].
+    #[serde(skip)]
+    prev_frame_scroll_x: Option<u16>,
 }
 
 impl Ppu {
@@ -123,6 +159,9 @@ impl Ppu {
             wide_width: SCREEN_W,
             wide_framebuffer: Vec::new(),
             unlimited_sprites: false,
+            tile_cache: HashMap::new(),
+            absolute_scroll_x: 0,
+            prev_frame_scroll_x: None,
         }
     }
 
@@ -281,7 +320,7 @@ impl Ppu {
     /// [`Self::framebuffer`] at [`SCREEN_W`] - see [`EXTENDED_WIDTH`]'s
     /// docs for why this can't affect gameplay.
     pub fn render_scanline(&mut self, y: usize) {
-        let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
+        let width = self.wide_width.clamp(SCREEN_W, MAX_WIDE_WIDTH);
         let wide = width > SCREEN_W;
         let extra = width as i32 - SCREEN_W as i32;
         // Always centered: the normal 256px view sits at a fixed position
@@ -295,12 +334,13 @@ impl Ppu {
         // read as the camera itself moving differently than normal. Fixed
         // centering doesn't have that problem, and `EXTENDED_WIDTH` (see
         // its docs) was already tuned empirically *with* fixed centering
-        // to be clean at 380px, so this isn't reopening the trailing-edge
-        // issue - it's reverting to the setup that was already verified.)
+        // to be clean at 380px within its safe live-read radius, so this
+        // isn't reopening the trailing-edge issue there - and past that
+        // radius, [`Self::tile_cache`] takes over rather than a live read.)
         let x_offset = if wide { extra / 2 } else { 0 };
 
-        let mut line = [0u32; EXTENDED_WIDTH];
-        let mut bg_opaque = [false; EXTENDED_WIDTH];
+        let mut line = [0u32; MAX_WIDE_WIDTH];
+        let mut bg_opaque = [false; MAX_WIDE_WIDTH];
 
         if self.bg_enabled() {
             self.render_background_line(width, x_offset, &mut bg_opaque[..width], &mut line[..width]);
@@ -325,6 +365,10 @@ impl Ppu {
             self.framebuffer[y * SCREEN_W..(y + 1) * SCREEN_W].copy_from_slice(&line[..SCREEN_W]);
         }
 
+        if y == SCREEN_H - 1 {
+            self.update_absolute_scroll();
+        }
+
         self.advance_v_for_next_line();
     }
 
@@ -336,7 +380,7 @@ impl Ppu {
     /// annotations (e.g. a hitbox viewer) on top of the wide framebuffer
     /// can line them up with where sprites actually got drawn.
     pub fn wide_x_offset(&self) -> i32 {
-        let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
+        let width = self.wide_width.clamp(SCREEN_W, MAX_WIDE_WIDTH);
         if width <= SCREEN_W {
             0
         } else {
@@ -357,29 +401,58 @@ impl Ppu {
 
     /// `width` pixels of background starting `x_offset` pixels to the left
     /// of the normal 256px view (0 for the normal, non-widescreen case).
+    ///
+    /// Columns within [`EXTENDED_WIDTH`]'s safe live-read radius sample
+    /// real VRAM directly (as ever) and additionally record what they
+    /// found into [`Self::tile_cache`], keyed by absolute tile position.
+    /// Columns beyond that radius - reachable now that [`Self::wide_width`]
+    /// can go up to [`MAX_WIDE_WIDTH`] - never read VRAM directly (unsafe
+    /// that far out); they look up the cache instead, falling back to the
+    /// backdrop color (not a live/possibly-wrong sample) if this level has
+    /// never actually displayed that column yet.
     fn render_background_line(&mut self, width: usize, x_offset: i32, bg_opaque: &mut [bool], out: &mut [u32]) {
+        const SAFE_LIVE_MARGIN: i32 = ((EXTENDED_WIDTH - SCREEN_W) / 2) as i32;
+
         let base_nt = (self.v >> 10) & 0x03;
         let coarse_x0 = (self.v & 0x1F) as i32;
         let coarse_y = (self.v >> 5) & 0x1F;
         let fine_y = (self.v >> 12) & 0x07;
         let pattern_base: u16 = if self.ctrl & CTRL_BG_PT != 0 { 0x1000 } else { 0x0000 };
+        let backdrop = NES_PALETTE[(self.palette[0] & 0x3F) as usize];
 
         for x in 0..width {
             let total_fine_x = self.fine_x as i32 + x as i32 - x_offset;
-            let tile_offset = total_fine_x.div_euclid(8);
             let px_in_tile = total_fine_x.rem_euclid(8) as u8;
-            let tile_col_raw = coarse_x0 + tile_offset;
-            let tile_col = tile_col_raw.rem_euclid(32) as u16;
-            let nt_h_flip = tile_col_raw.div_euclid(32).rem_euclid(2) == 1;
-            let nt = base_nt ^ (nt_h_flip as u16);
+            let live = total_fine_x >= -SAFE_LIVE_MARGIN && total_fine_x < SCREEN_W as i32 + SAFE_LIVE_MARGIN;
 
-            let nt_addr = 0x2000 + nt * 0x400 + coarse_y * 32 + tile_col;
-            let tile_index = self.read_vram(nt_addr);
+            let (tile_index, palette_select) = if live {
+                let tile_offset = total_fine_x.div_euclid(8);
+                let tile_col_raw = coarse_x0 + tile_offset;
+                let tile_col = tile_col_raw.rem_euclid(32) as u16;
+                let nt_h_flip = tile_col_raw.div_euclid(32).rem_euclid(2) == 1;
+                let nt = base_nt ^ (nt_h_flip as u16);
 
-            let attr_addr = 0x2000 + nt * 0x400 + 0x3C0 + (coarse_y / 4) * 8 + tile_col / 4;
-            let attr_byte = self.read_vram(attr_addr);
-            let quadrant = (((coarse_y % 4) / 2) * 2 + (tile_col % 4) / 2) as u8;
-            let palette_select = (attr_byte >> (quadrant * 2)) & 0x03;
+                let nt_addr = 0x2000 + nt * 0x400 + coarse_y * 32 + tile_col;
+                let tile_index = self.read_vram(nt_addr);
+
+                let attr_addr = 0x2000 + nt * 0x400 + 0x3C0 + (coarse_y / 4) * 8 + tile_col / 4;
+                let attr_byte = self.read_vram(attr_addr);
+                let quadrant = (((coarse_y % 4) / 2) * 2 + (tile_col % 4) / 2) as u8;
+                let palette_select = (attr_byte >> (quadrant * 2)) & 0x03;
+
+                let abs_tile_col = (self.absolute_scroll_x + total_fine_x as i64).div_euclid(8) as i32;
+                self.tile_cache.insert((abs_tile_col, coarse_y as u8), (tile_index, palette_select));
+                (tile_index, palette_select)
+            } else {
+                let abs_tile_col = (self.absolute_scroll_x + total_fine_x as i64).div_euclid(8) as i32;
+                match self.tile_cache.get(&(abs_tile_col, coarse_y as u8)) {
+                    Some(&cached) => cached,
+                    None => {
+                        out[x] = backdrop;
+                        continue;
+                    }
+                }
+            };
 
             let plane0 = self.read_vram(pattern_base + tile_index as u16 * 16 + fine_y);
             let plane1 = self.read_vram(pattern_base + tile_index as u16 * 16 + fine_y + 8);
@@ -387,7 +460,7 @@ impl Ppu {
             let color_index = (((plane1 >> bit) & 1) << 1) | ((plane0 >> bit) & 1);
 
             let color = if color_index == 0 {
-                NES_PALETTE[(self.palette[0] & 0x3F) as usize]
+                backdrop
             } else {
                 bg_opaque[x] = true;
                 let pal = self.read_palette(0x3F00 + (palette_select as u16) * 4 + color_index as u16);
@@ -395,6 +468,35 @@ impl Ppu {
             };
             out[x] = color;
         }
+    }
+
+    /// Updates [`Self::absolute_scroll_x`] from how far the playfield
+    /// scrolled since the same point last frame - sampled at the last
+    /// visible scanline, below any split-scroll status bar (which
+    /// typically occupies only the first several scanlines and has its
+    /// own scroll, unrelated to camera movement). An unusually large
+    /// single-frame delta (much more than any real scrolling speed) means
+    /// a screen/level transition just happened - a checkpoint, respawn, or
+    /// warp - at which point the absolute coordinate space [`Self::
+    /// tile_cache`] is keyed against no longer means anything consistent,
+    /// so the cache is cleared instead of being polluted with entries
+    /// under the wrong key.
+    fn update_absolute_scroll(&mut self) {
+        let raw_x = (((self.v >> 10) & 1) as i32) * 256 + ((self.v & 0x1F) as i32) * 8 + self.fine_x as i32;
+        if let Some(prev) = self.prev_frame_scroll_x {
+            let mut delta = raw_x - prev as i32;
+            if delta > 256 {
+                delta -= 512;
+            } else if delta < -256 {
+                delta += 512;
+            }
+            if delta.abs() > 64 {
+                self.tile_cache.clear();
+            } else {
+                self.absolute_scroll_x += delta as i64;
+            }
+        }
+        self.prev_frame_scroll_x = Some(raw_x as u16);
     }
 
     /// `width`/`x_offset` as in [`Self::render_background_line`]. Sprite
@@ -416,7 +518,7 @@ impl Ppu {
         // shows up as flicker/wrong-part-on-top on any multi-sprite
         // character or overlapping-sprite effect. Track which pixels a
         // higher-priority sprite already claimed this line and skip them.
-        let mut claimed = [false; EXTENDED_WIDTH];
+        let mut claimed = [false; MAX_WIDE_WIDTH];
 
         for i in 0..64 {
             let sprite_y = self.oam[i * 4] as i32 + 1;

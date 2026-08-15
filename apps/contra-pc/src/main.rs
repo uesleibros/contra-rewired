@@ -18,7 +18,7 @@ mod menu;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -444,6 +444,21 @@ fn toggle_mod(_mods: &mut [()], _idx: usize) {}
 /// `AboutToWait` handler, so freezing/advancing behaves identically to a
 /// normal frame in every way except *when* it happens. No-op for
 /// `Session::Placeholder` - nothing to step.
+/// How wide widescreen should render to fill the *current* window - true
+/// ultrawide (see `contra_nes::MAX_WIDE_WIDTH`) means this should actually
+/// track the window's live aspect ratio again, unlike the fixed-cap
+/// approach from when `EXTENDED_WIDTH` (380px) was both the target and the
+/// hard ceiling: rendering 1024px-wide for a narrow window would just be
+/// wasted work, scaled back down by `game_image_rect`'s letterboxing.
+fn target_wide_width(window: &winit::window::Window) -> usize {
+    let size = window.inner_size();
+    if size.height == 0 {
+        return contra_nes::SCREEN_W;
+    }
+    let aspect = size.width as f64 / size.height as f64;
+    ((contra_nes::SCREEN_H as f64 * aspect).round() as usize).clamp(contra_nes::SCREEN_W, contra_nes::MAX_WIDE_WIDTH)
+}
+
 fn step_gameplay_frame(
     session: &mut Session,
     action_state: &ActionState,
@@ -451,14 +466,12 @@ fn step_gameplay_frame(
     loaded_mods: &LoadedModsVec,
     settings: &Settings,
     audio_output: &Option<audio::AudioOutput>,
+    target_wide_width: usize,
 ) {
     let Session::Emulator { nes, .. } = session else {
         return;
     };
-    // Widescreen ON always targets the max safe width immediately,
-    // regardless of the current window shape - decoupled from window size
-    // so toggling it has an instant, visible effect.
-    nes.set_wide_width(if settings.widescreen { contra_nes::EXTENDED_WIDTH } else { contra_nes::SCREEN_W });
+    nes.set_wide_width(if settings.widescreen { target_wide_width } else { contra_nes::SCREEN_W });
     nes.set_unlimited_sprites(settings.unlimited_sprites);
     session.step(action_state, rewind_enabled);
     run_mods(loaded_mods, session);
@@ -483,7 +496,20 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
                     menu::Player::P1 => RAM_P1_CURRENT_WEAPON,
                     menu::Player::P2 => RAM_P2_CURRENT_WEAPON,
                 };
-                nes.poke_ram(addr, *id);
+                // Low nibble is weapon, bit 4 is the "R" rapid-fire flag
+                // (same byte - see `ram.asm`) - preserve whatever rapid
+                // fire is currently set to, only replace the weapon.
+                let rapid_bit = nes.peek_ram(addr) & 0x10;
+                nes.poke_ram(addr, (*id & 0x0F) | rapid_bit);
+            }
+        }
+        MenuAction::ToggleRapidFire(player) => {
+            if let Session::Emulator { nes, .. } = session {
+                let addr = match player {
+                    menu::Player::P1 => RAM_P1_CURRENT_WEAPON,
+                    menu::Player::P2 => RAM_P2_CURRENT_WEAPON,
+                };
+                nes.poke_ram(addr, nes.peek_ram(addr) ^ 0x10);
             }
         }
         MenuAction::LivesDelta(player, delta) => {
@@ -632,6 +658,7 @@ fn main() -> anyhow::Result<()> {
     let mut prev_fullscreen = settings.fullscreen;
     let mut menu_state = MenuState::new();
     let mut last_load_error: Option<String> = None;
+    let mut rom_dialog_rx: Option<mpsc::Receiver<Option<PathBuf>>> = None;
 
     let mut gilrs = Gilrs::new().ok();
     if gilrs.is_none() {
@@ -764,16 +791,30 @@ fn main() -> anyhow::Result<()> {
                             &mut loaded_mods,
                             &mut routine,
                             &mut last_load_error,
-                            rewind_capacity,
-                            audio_sample_rate,
                             &mut prev_widescreen,
                             &mut prev_fullscreen,
+                            &mut rom_dialog_rx,
                         );
                     }
                     _ => {}
                 }
             }
             Event::AboutToWait => {
+                if let Some(rx) = &rom_dialog_rx {
+                    match rx.try_recv() {
+                        Ok(Some(path)) => {
+                            load_rom_into_session(&path, rewind_capacity, audio_sample_rate, &mut session, &window, &mut last_load_error, &mut routine);
+                            rom_dialog_rx = None;
+                            window.request_redraw();
+                        }
+                        Ok(None) => {
+                            rom_dialog_rx = None; // dialog closed with no file picked
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Disconnected) => rom_dialog_rx = None,
+                    }
+                }
+
                 // WaitUntil (not Poll) so this only wakes up when a frame is
                 // actually due, instead of spinning as fast as the OS will
                 // allow. Poll was calling request_redraw() - a full
@@ -789,6 +830,7 @@ fn main() -> anyhow::Result<()> {
 
                 let speed = (settings.sim_speed_percent as f64 / 100.0).max(0.01);
                 let frame_duration = Duration::from_secs_f64(BASE_FRAME_DURATION.as_secs_f64() / speed);
+                let target_wide = target_wide_width(&window);
 
                 let mut stepped = false;
 
@@ -796,7 +838,7 @@ fn main() -> anyhow::Result<()> {
                     advance_one_frame = false;
                     let gp = poll_gamepad(gilrs.as_mut());
                     update_action_state(&mut action_state, &bindings, &held_keys, &gp);
-                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output);
+                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output, target_wide);
                     // Frozen again immediately after - a backlog built up
                     // while frozen shouldn't turn into a burst of extra
                     // steps the instant `frozen` is cleared.
@@ -820,7 +862,7 @@ fn main() -> anyhow::Result<()> {
                             // Gameplay input/stepping is simply suspended while
                             // paused.
                         } else if routine.accepts_gameplay_input() {
-                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output);
+                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output, target_wide);
                         }
                         accumulator -= frame_duration;
                         stepped = true;
@@ -856,26 +898,30 @@ fn apply_toggle_side_effects(settings: &Settings, prev_widescreen: &mut bool, pr
         *prev_fullscreen = settings.fullscreen;
     }
     if settings.widescreen != *prev_widescreen {
-        // Flipping the setting alone changes what `render_scanline` draws,
-        // but if the window is still sized for the narrow 256px view, the
-        // fill-scaling in `game_image_rect` just draws the wider content
-        // smaller to fit - visually a much smaller change than intended.
-        // Resize the window's width to match, at whatever per-pixel scale
-        // is already in effect (so a window the user has already resized/
-        // zoomed keeps that scale, it just gets proportionally wider or
-        // narrower) - the way other NES PC ports grow their window when
-        // widescreen is turned on. No-op in fullscreen, where the
-        // compositor owns the size.
-        let (old_internal_w, new_internal_w) = if settings.widescreen {
-            (contra_nes::SCREEN_W, contra_nes::EXTENDED_WIDTH)
-        } else {
-            (contra_nes::EXTENDED_WIDTH, contra_nes::SCREEN_W)
-        };
+        // Flipping the setting alone changes what `render_scanline` draws
+        // (see `target_wide_width`, which tracks the window's *current*
+        // aspect ratio every frame once widescreen is on), but if the
+        // window is still sized narrow, there's nothing wide *to* track -
+        // toggling on would barely look different. Resize the window
+        // itself here, so there's real width for the live-tracking to
+        // pick up on the very next frame: growing to the current
+        // monitor's full width when turning on (true ultrawide, if the
+        // monitor is one - see `contra_nes::MAX_WIDE_WIDTH`), or back to
+        // the narrow 256px aspect at the current vertical scale when
+        // turning off. No-op in fullscreen, where the compositor owns the
+        // size, and no-op if the monitor size can't be read (rare, but
+        // `request_inner_size` with a nonsense size is worse than doing
+        // nothing).
         let current = window.inner_size();
-        if current.width > 0 {
-            let scale = current.width as f64 / old_internal_w as f64;
-            let new_width = (new_internal_w as f64 * scale).round() as u32;
-            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, current.height));
+        if current.height > 0 {
+            let new_width = if settings.widescreen {
+                window.current_monitor().map(|m| m.size().width)
+            } else {
+                Some((current.height as f64 * contra_nes::SCREEN_W as f64 / contra_nes::SCREEN_H as f64).round() as u32)
+            };
+            if let Some(new_width) = new_width {
+                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, current.height));
+            }
         }
         *prev_widescreen = settings.widescreen;
     }
@@ -902,10 +948,9 @@ fn redraw(
     loaded_mods: &mut LoadedModsVec,
     routine: &mut GameRoutine,
     last_load_error: &mut Option<String>,
-    rewind_capacity: usize,
-    audio_sample_rate: f64,
     prev_widescreen: &mut bool,
     prev_fullscreen: &mut bool,
+    rom_dialog_rx: &mut Option<mpsc::Receiver<Option<PathBuf>>>,
 ) {
     let is_placeholder = matches!(session, Session::Placeholder { .. });
     let mut hitboxes: Vec<egui::Rect> = Vec::new();
@@ -1000,8 +1045,10 @@ fn redraw(
                     Some(DebugInfo {
                         p1_lives: nes.peek_ram(RAM_P1_NUM_LIVES),
                         p1_weapon: nes.peek_ram(RAM_P1_CURRENT_WEAPON) & 0x0F,
+                        p1_rapid_fire: nes.peek_ram(RAM_P1_CURRENT_WEAPON) & 0x10 != 0,
                         p2_lives: nes.peek_ram(RAM_P2_NUM_LIVES),
                         p2_weapon: nes.peek_ram(RAM_P2_CURRENT_WEAPON) & 0x0F,
+                        p2_rapid_fire: nes.peek_ram(RAM_P2_CURRENT_WEAPON) & 0x10 != 0,
                         continues: nes.peek_ram(RAM_NUM_CONTINUES),
                     })
                 } else {
@@ -1020,21 +1067,24 @@ fn redraw(
         }
     }
 
-    if pending_rom_pick {
-        // Blocks on a native modal dialog - by the time it returns, real
-        // time has passed and `full_output`/`clipped_primitives` below
-        // would still be the *old* frame (built while showing the no-ROM
-        // screen, before `session` potentially just became a real
-        // `Emulator`). Painting that stale tree after a successful load
-        // would show one frame of the no-ROM screen with a game already
-        // loaded behind it - skip painting entirely this pass and let the
-        // very next redraw (requested below) draw the real, current state
-        // instead, whichever session it ends up being.
-        if let Some(path) = rfd::FileDialog::new().add_filter("NES ROM", &["nes"]).pick_file() {
-            load_rom_into_session(&path, rewind_capacity, audio_sample_rate, session, window, last_load_error, routine);
-        }
-        window.request_redraw();
-        return;
+    if pending_rom_pick && rom_dialog_rx.is_none() {
+        // `rfd::FileDialog::pick_file()` blocks the calling thread until
+        // the dialog closes. Calling it directly from here blocks the
+        // *whole winit event loop* - on Windows specifically, this is a
+        // known way to get the dialog itself stuck ("Working on it..."
+        // with no files ever listed), because Explorer's shell namespace
+        // enumeration wants the caller's thread to stay responsive while
+        // it populates the list, and a thread that's inside `redraw`
+        // isn't pumping any messages. Run it on its own thread instead and
+        // poll the result (see `Event::AboutToWait` in `main`) - the
+        // dialog gets a thread that's only ever doing this, and our event
+        // loop keeps running normally while it's open.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new().add_filter("NES ROM", &["nes"]).pick_file();
+            let _ = tx.send(path);
+        });
+        *rom_dialog_rx = Some(rx);
     }
 
     apply_toggle_side_effects(settings, prev_widescreen, prev_fullscreen, window);

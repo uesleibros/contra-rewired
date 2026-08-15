@@ -79,7 +79,7 @@ outright: click "LOAD ROM..." for a native file picker, or drag and drop a
 |---|---|
 | **NES emulation core** (`contra-nes`) | |
 | 6502/2A03 CPU | All official opcodes, incl. the JMP-indirect page-boundary bug; 21 unit tests against hand-assembled programs - see `crates/contra-nes/src/cpu.rs` |
-| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, opt-in "Extended" widescreen (fixed safe-width cap, resizes the window the instant it's toggled, extra width direction-biased toward the camera's scroll direction) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
+| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, opt-in "Extended" true-ultrawide widescreen (tracks the monitor's live aspect ratio, already-explored terrain remembered and redrawn via `Ppu::tile_cache`, fixed-centered so the player's on-screen position never shifts) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
 | Mapper 2 (UxROM) | Implemented - PRG bank switching, CHR-RAM |
 | APU | Pulse 1/2, triangle, noise, frame sequencer, real-time playback via `cpal` - **DMC (sample playback) not implemented** |
 | Controller input | Implemented (standard shift-register protocol) |
@@ -155,13 +155,14 @@ cartridge ROM each time (see `contra_nes::Nes::snapshot`/`restore`).
 and the content fills it (fractional "dynamic fill" scaling by default; a
 "Pixel Perfect" toggle in the menu switches to strict integer scaling with
 letterbox bars instead, if you prefer crisp NES pixels over a perfect
-window fill). Toggling Widescreen on immediately resizes the window to the
-hardware-imposed, empirically-tested safe cap (see docs/FIDELITY.md) at
-whatever zoom level you're already at; the extra width is biased toward
-whichever side the camera is actively scrolling into (the side with
-actually-valid, already-drawn tile data), not split evenly, so trailing-
-edge tile glitches in scrolling stages are avoided rather than just
-accepted.
+window fill). Toggling Widescreen on resizes the window to your monitor's
+full width and tracks it live from then on - true ultrawide, not just a
+wider fixed box. Terrain the level has already shown (anything the camera
+has scrolled past) is remembered and redrawn correctly no matter how far
+out you go; terrain it hasn't shown yet renders as clean backdrop instead
+of a guess. See docs/FIDELITY.md for exactly how that works and its one
+real limitation (enemies/bullets still only appear the moment the original
+camera-relative game logic would spawn them).
 
 **Pause menu**: press Escape, Tab, or gamepad Start to open it - built on
 [`egui`](https://github.com/emilk/egui) (real checkboxes, sliders, and

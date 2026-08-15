@@ -97,28 +97,44 @@ is loaded**
       CPU/GPU work that could starve the audio thread and make everything
       feel sluggish, even though pure emulation runs at ~30x real-time (see
       `crates/contra-nes/examples/perf_test.rs`)
-- [x] **"Extended" widescreen mode**, real and working: toggling it on in
-      the pause menu immediately targets the full empirically-tested safe
-      cap (`EXTENDED_WIDTH` = 380px), independent of the current window
-      size - the scale-to-fit blit handles however that ends up displayed.
-      (Fixed two rounds in a row: first, it used to derive its target width
-      from the window's *current* size via a resize-event-driven
-      `compute_wide_width`, so toggling it on without also resizing the
-      window produced no visible change - removed entirely in favor of
-      always targeting the cap. That alone still wasn't enough: with the
-      window left at its narrow default, the wider content just got
-      squeezed back down by the fill-scaling blit, so almost nothing
-      visibly changed. `redraw()` now detects the setting change frame to
-      frame and calls `window.request_inner_size` immediately, growing/
-      shrinking the window's width to match the new content width at
-      whatever per-pixel scale is already in effect - the way other NES PC
-      ports resize when widescreen is turned on. No-op in fullscreen, where
-      the compositor owns the size.) Never touches RAM/collision/spawn
-      logic (presentation-only), verified by a test asserting the center
-      256px exactly matches normal rendering byte-for-byte, plus a test
-      covering arbitrary in-between widths (not just the max, and not just
-      the framebuffer's row stride, which had its own now-fixed bug - see
-      docs/FIDELITY.md)
+- [x] **"Extended" widescreen mode**, real and working: toggling it on
+      resizes the window to the current monitor's full width (via
+      `apply_toggle_side_effects`), and from then on `target_wide_width`
+      tracks the window's live aspect ratio every frame - resize or
+      maximize onto any monitor shape and the render width follows,
+      clamped to `MAX_WIDE_WIDTH`. (Fixed across several rounds: it used to
+      derive its target width from the window's *current* size on
+      `Resized` events only, so toggling it on without a resize did
+      nothing; then it always targeted a fixed cap regardless of window
+      size, which also didn't visibly change anything until the window
+      was resized; now both problems are solved together - the toggle
+      itself grows the window, and the width tracks it continuously after
+      that, the way it originally should have.) Never touches RAM/
+      collision/spawn logic (presentation-only), verified by a test
+      asserting the center 256px exactly matches normal rendering
+      byte-for-byte, plus a test covering arbitrary in-between widths (not
+      just the max, and not just the framebuffer's row stride, which had
+      its own now-fixed bug - see docs/FIDELITY.md)
+- [x] **True ultrawide - not just a bigger safe cap, a memory.** Turned
+      the old hard 380px ceiling (`EXTENDED_WIDTH`, still real - see below)
+      into a *radius* rather than a limit: `Ppu::tile_cache` remembers
+      every `(tile, palette)` this level has actually displayed, keyed by
+      absolute tile position, as a side effect of the normal live-sampled
+      render. Wide-mode columns beyond the safe live-read radius look up
+      the cache instead of reading VRAM directly (unsafe that far out -
+      see docs/FIDELITY.md); columns the level genuinely hasn't shown yet
+      render as backdrop, never as a guess. `wide_width` can now go up to
+      `MAX_WIDE_WIDTH` (1024px, comfortably past what a 32:9 monitor needs
+      at native NES height) instead of 380px. A big single-frame scroll
+      delta (checkpoint, respawn, level transition) clears the cache
+      instead of polluting it under a now-meaningless absolute coordinate.
+      Verified against the real ROM at 700px and 900px
+      (`dump_frames.rs`'s `WIDE_PX`): already-explored terrain renders
+      continuously and correctly across the full width after walking
+      through it once; never-explored columns render as clean backdrop,
+      never garbage; the CPU's final state is bit-identical across 380px/
+      700px/900px runs of the same input script, confirming this is still
+      entirely presentation-only
 - [x] **Widescreen extension is fixed-centered - direction bias was tried
       and reverted.** A direction-biased extension (putting most of the
       extra width on the side the camera was scrolling toward, easing
@@ -276,8 +292,13 @@ is loaded**
       disassembly's `ram.asm` - P2 is simply P1's address plus one,
       confirmed against the real source, not guessed), plus shared
       continues (`$3A`, single counter for both players, matching the
-      arcade-style continue system). Shows "No ROM loaded" instead when
-      there's no real RAM to poke
+      arcade-style continue system), and a **Rapid Fire ("R" capsule)
+      checkbox per player** - same RAM byte as the weapon (`ram.asm`:
+      low nibble weapon, bit 4 rapid fire), toggled independently of it so
+      picking a weapon from the dropdown doesn't silently clear rapid fire
+      (a real bug caught while wiring this - `SetWeapon` used to poke the
+      raw weapon id over the whole byte, bit 4 included). Shows "No ROM
+      loaded" instead when there's no real RAM to poke
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
       (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array
@@ -298,14 +319,21 @@ is loaded**
       inline instead of failing silently. `contra-core`'s hand-ported
       `PlayerPhysics` still exists as the save-state fallback and
       RAM-tooling reference, it's just never driven or drawn as a
-      "gameplay" screen. **Fixed**: `rfd::FileDialog::pick_file()` blocks
-      the whole event loop while its native dialog is open; by the time it
-      returned, `redraw`'s already-captured `egui` frame (built *before*
-      the dialog opened, while still showing the no-ROM screen) was stale
-      - painting it after a successful load showed one frame of "no ROM"
-      over a game that had already loaded. `redraw` now skips painting
-      that stale frame entirely after a pick attempt and requests a fresh
-      one instead, whichever session it ends up being
+      "gameplay" screen. **Fixed twice over**: first, `rfd::FileDialog::
+      pick_file()` called directly from `redraw` blocks the whole event
+      loop until the dialog closes, so painting the `egui` frame captured
+      *before* the dialog opened (still showing the no-ROM screen) after a
+      successful load showed one stale frame before the game appeared.
+      Deeper problem found after that: blocking the event loop's thread
+      with the dialog open is a known way to get the *dialog itself*
+      stuck on Windows ("Working on it..." with no files ever listed) -
+      Explorer's shell enumeration wants the calling thread to stay
+      responsive while it populates the list, and a thread parked inside
+      `redraw` isn't pumping any messages. The dialog now runs on its own
+      thread (`std::thread::spawn`, result sent back over an `mpsc`
+      channel `main`'s `AboutToWait` polls) - the dialog gets a thread
+      that's only ever doing that, and the event loop keeps running
+      normally (no-ROM screen still responsive) while it's open
 - [x] **Hotkeys for every toggleable Settings entry** - F1 Widescreen, F2
       No Sprite Flicker, F3 Pixel Perfect, F4 Show Hitboxes, F8 Mute Audio,
       F11 Fullscreen. Work during gameplay, not just while the menu's open
