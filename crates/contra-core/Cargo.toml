@@ -1,0 +1,16 @@
+[package]
+name = "contra-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engine-agnostic simulation core for contra-rewired: fixed-point physics, RNG, config, input mapping, save states and replays."
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]

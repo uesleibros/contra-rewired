@@ -1,0 +1,18 @@
+[package]
+name = "contra-extract"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI: validates a user-supplied baserom.nes and extracts it into ./assets/ for contra-pc to load."
+
+[[bin]]
+name = "contra-extract"
+path = "src/main.rs"
+
+[dependencies]
+contra-assets = { path = "../../crates/contra-assets" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "contra-assets"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Legal, user-ROM-based asset extraction pipeline. Ships no Konami assets."
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+md-5 = "0.10"

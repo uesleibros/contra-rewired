@@ -1,0 +1,21 @@
+[package]
+name = "contra-pc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Desktop front-end: window, framebuffer presentation, keyboard/gamepad input, config."
+
+[[bin]]
+name = "contra-pc"
+path = "src/main.rs"
+
+[dependencies]
+contra-core = { path = "../../crates/contra-core" }
+winit = "0.29"
+softbuffer = "0.4"
+gilrs = "0.10"
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { workspace = true }
