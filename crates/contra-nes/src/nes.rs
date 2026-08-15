@@ -151,13 +151,13 @@ impl Nes {
     }
 
     fn advance_cpu(&mut self, budget: &mut f64) {
-        self.advance_cpu_inner(budget, &mut |_| {});
+        self.advance_cpu_inner(budget, &mut |_, _| {});
     }
 
-    fn advance_cpu_inner(&mut self, budget: &mut f64, on_pc: &mut dyn FnMut(u16)) {
+    fn advance_cpu_inner(&mut self, budget: &mut f64, hook: &mut dyn FnMut(&mut Cpu, &mut NesBus)) {
         *budget += DOTS_PER_SCANLINE / CPU_DOTS_PER_CYCLE;
         while (self.cpu.cycles as f64) < *budget {
-            on_pc(self.cpu.pc);
+            hook(&mut self.cpu, &mut self.bus);
             let cycles = self.cpu.step(&mut self.bus);
             for _ in 0..cycles {
                 self.bus.apu.step();
@@ -173,41 +173,63 @@ impl Nes {
         }
     }
 
-    /// Same as [`Self::run_frame`], but calls `on_pc` with the CPU's `pc`
-    /// register right before every single instruction executes this frame -
-    /// a debugging aid for the case `run_frame`'s frame-at-a-time
-    /// granularity can't help with: diagnosing *why* a frame produced no
-    /// visible progress (RAM/PPU state identical to the previous frame),
-    /// where the question is "what is the CPU actually doing", not "what
-    /// changed". Tally `on_pc`'s calls into a histogram and the most
-    /// frequent addresses are almost always the body of whatever loop it's
-    /// stuck in - used to help track down the Base 1/Base 2 stage-select
-    /// hang (see docs/FIDELITY.md). Not used by any shipped code path -
-    /// `contra-pc` never needs single-instruction granularity - but kept
-    /// as real, reusable tooling rather than a throwaway diagnostic script,
-    /// the same spirit as `dump_frames.rs`'s various `DEBUG_*` env vars.
-    pub fn run_frame_with_pc_trace(&mut self, on_pc: &mut dyn FnMut(u16)) {
+    /// Same as [`Self::run_frame`], but calls `hook` with mutable access to
+    /// the CPU and bus right before every single instruction executes this
+    /// frame - the "bank-and-PC-scoped instruction hook" tracked in
+    /// ROADMAP.md as a prerequisite for real widescreen-aware enemy
+    /// behavior and a precise `enemy_spawn` mod event. A hook is just a
+    /// closure; scoping it to a specific piece of code is the caller's job
+    /// (check `cpu.pc` - and `bus.mapper.effective_bank(cpu.pc)` if that
+    /// address is bank-switched at all - before doing anything), not
+    /// something this method tracks a registry of. That keeps this the
+    /// same shape as [`Self::run_frame_with_pc_trace`] below (which is now
+    /// just this with a hook that only looks at `pc`) rather than adding
+    /// hook-management state to `Nes` itself - `contra-pc`'s Lua bridge (or
+    /// any other caller) owns *which* addresses matter and what to do when
+    /// they're hit, this only guarantees they'll be asked, once per
+    /// instruction, with real read/write access to make something happen.
+    /// Because the hook can mutate `bus` (RAM, PPU, mapper - anything)
+    /// *before* the instruction reads it, this can do more than observe:
+    /// a hook that pokes a RAM value the about-to-execute instruction is
+    /// about to load genuinely changes what the game does next, not just
+    /// what a mod finds out about afterward.
+    pub fn run_frame_with_hook(&mut self, hook: &mut dyn FnMut(&mut Cpu, &mut NesBus)) {
         let mut budget = self.cpu.cycles as f64;
 
         self.bus.ppu.start_prerender();
-        self.advance_cpu_inner(&mut budget, on_pc);
+        self.advance_cpu_inner(&mut budget, hook);
 
         for y in 0..SCREEN_H {
             self.bus.ppu.render_scanline(y);
-            self.advance_cpu_inner(&mut budget, on_pc);
+            self.advance_cpu_inner(&mut budget, hook);
         }
 
-        self.advance_cpu_inner(&mut budget, on_pc); // post-render line (240): no PPU memory access
+        self.advance_cpu_inner(&mut budget, hook); // post-render line (240): no PPU memory access
 
         let want_nmi = self.bus.ppu.start_vblank();
-        self.advance_cpu_inner(&mut budget, on_pc); // scanline 241: vblank flag becomes visible to the CPU here
+        self.advance_cpu_inner(&mut budget, hook); // scanline 241: vblank flag becomes visible to the CPU here
         if want_nmi {
             self.cpu.nmi(&mut self.bus);
         }
 
         for _ in 0..SCANLINES_AFTER_VBLANK_START {
-            self.advance_cpu_inner(&mut budget, on_pc);
+            self.advance_cpu_inner(&mut budget, hook);
         }
+    }
+
+    /// [`Self::run_frame_with_hook`] with a hook that only ever looks at
+    /// `pc` - a debugging aid for the case `run_frame`'s frame-at-a-time
+    /// granularity can't help with: diagnosing *why* a frame produced no
+    /// visible progress (RAM/PPU state identical to the previous frame),
+    /// where the question is "what is the CPU actually doing", not "what
+    /// changed". Tally `on_pc`'s calls into a histogram and the most
+    /// frequent addresses are almost always the body of whatever loop it's
+    /// stuck in - used to track down the Base 1/Base 2 stage-select hang
+    /// (see docs/FIDELITY.md). Kept as real, reusable tooling rather than a
+    /// throwaway diagnostic script, the same spirit as `dump_frames.rs`'s
+    /// various `DEBUG_*` env vars.
+    pub fn run_frame_with_pc_trace(&mut self, on_pc: &mut dyn FnMut(u16)) {
+        self.run_frame_with_hook(&mut |cpu, _bus| on_pc(cpu.pc));
     }
 
     /// Captures everything that changes at runtime - CPU, RAM, PPU/APU

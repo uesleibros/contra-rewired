@@ -152,6 +152,14 @@ fn main() {
         // RAM/PPU progress, where the question is "what is the CPU
         // actually doing" (see `Nes::run_frame_with_pc_trace`'s doc
         // comment). Used to track down the Base 1/Base 2 stage-select hang.
+        // TRACE_ENEMY_SPAWN=1: verification hook for `apps/contra-pc`'s
+        // `INITIALIZE_ENEMY_PC` - hooks the same address (`$ee47`,
+        // `initialize_enemy`'s entry) and prints the enemy-slot register
+        // plus a same-frame RAM read of that slot's type/position/HP, so
+        // the hook address and the RAM layout it's paired with can both be
+        // checked against real gameplay before trusting them in the actual
+        // `enemy_spawn` mod event.
+        let trace_spawn = std::env::var("TRACE_ENEMY_SPAWN").is_ok();
         if std::env::var("PC_TRACE_FRAME").ok().and_then(|s| s.parse::<u32>().ok()) == Some(frame) {
             let mut hist: HashMap<u16, u32> = HashMap::new();
             nes.run_frame_with_pc_trace(&mut |pc| *hist.entry(pc).or_insert(0) += 1);
@@ -160,6 +168,23 @@ fn main() {
             eprintln!("PC trace for frame {frame} - top addresses by instruction count:");
             for (pc, count) in counts.iter().take(15) {
                 eprintln!("  ${pc:04X}: {count} instructions");
+            }
+        } else if trace_spawn {
+            let mut spawned_slots: Vec<u8> = Vec::new();
+            nes.run_frame_with_hook(&mut |cpu, _bus| {
+                if cpu.pc == 0xEE47 {
+                    spawned_slots.push(cpu.x);
+                }
+            });
+            for slot in spawned_slots {
+                let o = slot as u16;
+                eprintln!(
+                    "frame={frame} enemy_spawn slot={slot} type=${:02X} x={} y={} hp={}",
+                    nes.peek_ram(0x0528 + o),
+                    nes.peek_ram(0x033E + o),
+                    nes.peek_ram(0x0324 + o),
+                    nes.peek_ram(0x0578 + o),
+                );
             }
         } else {
             nes.run_frame();

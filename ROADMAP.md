@@ -151,22 +151,49 @@ is loaded**
       `EXTENDED_WIDTH` (380px) was already empirically tuned *with* fixed
       centering (see its docs) and found clean, so centering was the
       already-verified-safe setup the whole time
-- [ ] **Enemy/bullet spawn-ahead in widescreen** - investigated, not yet
-      implemented. The random soldier-generation edges
-      (`soldier_generation_01` in the reference disassembly's `bank2.asm`,
-      constants `#$0a`/`#$fa`) are a real, scoped patch target once
-      widescreen is on. The blocker: the collision buffer the game checks
-      before spawning (`BG_COLLISION_DATA`, `$0680`) is documented in
-      `ram.asm` as covering only the two currently-loaded nametables -
-      exactly the same window that bounds the visual extension, not a
-      wider always-valid map. Spawning at the wide edge is only safe where
-      that buffer is already populated (the leading-edge bias above should
-      cover it in the scrolling direction); level-specific hard-coded
-      screen enemies and bosses would need their own case-by-case check.
-      Doing this safely means adding a real, tested PC/bank-scoped
-      instruction hook to `contra-nes::Cpu` (currently a clean, general
-      6502 core with no per-game hooks) - a properly scoped follow-up, not
-      a same-pass addition on top of the rendering work above
+- [x] **Real CPU instruction-hook infrastructure** -
+      `Nes::run_frame_with_hook(&mut dyn FnMut(&mut Cpu, &mut NesBus))`,
+      identical to `run_frame` but calls the hook with full read/write
+      access before every single instruction that frame; scoping it to a
+      specific piece of code is the caller's job (check `cpu.pc`, and
+      `bus.mapper.effective_bank(cpu.pc)` - new, since the same address in
+      `$8000-$bfff` means different code depending what's bank-switched in
+      - if that address is bank-switched at all). `run_frame_with_pc_trace`
+      (used to find the Base 1/Base 2 stage-select hang) is now just this
+      with a hook that only looks at `pc`. First real use: hooking
+      `initialize_enemy`'s entry (`$ee47`, found by searching the ROM's raw
+      bytes for its known opening instructions and converting the match to
+      a CPU address - same technique the stage-select hang used) to fire a
+      precise `enemy_spawn` mod event - see the Lua modding section below
+- [ ] **Enemy/bullet spawn-ahead in widescreen** - investigated twice now,
+      still not implemented, and the second investigation ruled out what
+      the first one thought was a scoped fix. The random soldier-generation
+      edges (`soldier_generation_01` in `bank2.asm`, constants `#$0a`/
+      `#$fa`) were flagged as "a real, scoped patch target once widescreen
+      is on" - reading the actual routine this round found that's wrong:
+      those constants (10 and 250) are carried in a single-byte register
+      the rest of the routine reads back through, and they're already
+      about as close to that byte's `0-255` extremes as they can usefully
+      get. There's no room to push them further off the wide-visible area
+      without overflowing the byte - the original game never needed to
+      represent an X position wider than one 256px screen, so it simply
+      doesn't. The CPU hook above makes *intercepting* the spawn logic
+      possible, but interception alone doesn't solve this: the enemy's
+      *ongoing* position (movement, collision, rendering, all of it) is
+      carried in the same single-byte, screen-relative form throughout, not
+      just at the spawn instant, so a real fix needs the coordinate space
+      widened through the enemy's whole lifetime, not one instruction
+      patched - a substantially bigger project than "add a hook", tracked
+      here as its own still-unscoped follow-up. Separately, the collision
+      buffer the game checks before spawning (`BG_COLLISION_DATA`, `$0680`)
+      is documented in `ram.asm` as covering only the two currently-loaded
+      nametables, the same narrow window - so even a widened coordinate
+      space would need a wider source of collision truth to spawn against.
+      See docs/FIDELITY.md's "Enemies/bullets/collision" entry for the full
+      account, including what this *doesn't* affect (level-authored
+      enemies/bosses use real absolute positions already and render
+      correctly in wide mode with no special handling needed - this is
+      specifically about the procedural/infinite soldier generator)
 - [x] **Freely resizable window with dynamic fill scaling** (not
       integer-locked): default behavior now scales fractionally to cover as
       much of the window as possible while preserving aspect ratio - drag
@@ -578,12 +605,17 @@ is loaded**
 - [x] Typed event payloads - `stage_start(stage)`/`stage_clear(stage)` fire
       together whenever `apps/contra-pc` observes `RAM_CURRENT_LEVEL`
       change between frames; `player_hit({player, lives_remaining})` fires
-      when either player's lives count drops (the closest honest proxy for
-      "got hit" without the real disassembly to find an exact flag - see
-      `LuaModHost::fire_player_hit`'s doc comment). `enemy_spawn` is still
-      unwired - unlike the other three there's no RAM byte a host can just
-      watch for it; needs the CPU bank/PC-scoped hook mentioned below, not
-      a RAM-diff
+      when either player's lives count drops (a RAM-diff proxy for "got
+      hit" - see `LuaModHost::fire_player_hit`'s doc comment).
+      `enemy_spawn({slot, enemy_type, x, y, hp})` is wired for real now too,
+      and unlike the other three it isn't a RAM-diff guess: it fires from
+      the CPU instruction-hook infrastructure above, hooked on
+      `initialize_enemy`'s entry (`INITIALIZE_ENEMY_PC`, `$ee47`) - the one
+      routine every enemy type funnels through, so it catches the random
+      soldier generator, level-scripted placements, and bosses alike from a
+      single hook point. Verified against real gameplay before wiring it in
+      (`dump_frames.rs`'s `TRACE_ENEMY_SPAWN=1`): slot/type/position/HP all
+      came back sane and consistent across dozens of real spawns
 - [x] **`contra.draw_text(x, y, text[, {r=, g=, b=}])`** - screen-space text
       overlay, drawn by `contra-pc`'s own `egui` painter (same coordinate
       space as the hitbox overlay - NES pixels, not raw screen pixels, so
@@ -596,6 +628,18 @@ is loaded**
       Unicode besides. Cleared and re-collected every frame in `run_mods`
       (`TextOverlay`, a local mirror of `contra_mods::script::TextDraw` so
       `redraw()` doesn't need its own `#[cfg(feature = "mods")]` split)
+- [x] **`contra.draw_rect(x, y, w, h[, {r=, g=, b=}, filled])`** - same
+      coordinate system, overlay approach, and `RectOverlay`/`TextOverlay`
+      pairing as `draw_text` above, for a rectangle instead. `filled`
+      defaults to `false` (outline, matching the built-in hitbox overlay)
+- [x] **`contra.enemy.*`** - read-only getters (`get_type`/`get_x`/`get_y`/
+      `get_hp`, all by `slot` `0-15`) mirroring `contra.player`'s shape for
+      the enemy-slot array `enemy_spawn` also indexes into. No `set_*`
+      (unlike `player`): an enemy slot's fields only mean something
+      together and change every frame under the game's own logic, so
+      poking one in isolation is far more likely to desync/crash that
+      enemy's state machine than help - `contra.poke_ram` is still there
+      directly for a mod that genuinely needs to
 - [ ] Asset-file-based overrides (`sprite_overrides`/`music_overrides` in
       the manifest schema exist but aren't consumed - see docs/MODDING.md
       for why that's a CHR-RAM-patching problem, not a file-swap one)

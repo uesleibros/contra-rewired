@@ -44,6 +44,22 @@ impl Mapper2 {
         self.bank_select
     }
 
+    /// The bank *actually* mapped at `addr` right now: the switchable
+    /// selection for `$8000-$bfff`, or always the fixed last bank for
+    /// `$c000-$ffff` - regardless of `bank_select`, which only ever
+    /// affects the switchable window. Answers "which physical 16KiB of
+    /// PRG-ROM does this address really point at this instant", not just
+    /// "what's the raw bank-select register value" - the same CPU address
+    /// in `$8000-$bfff` is different code depending on what's switched in,
+    /// so a caller scoping a hook to a specific piece of code (see
+    /// `Nes::run_frame_with_hook`) needs this, not the raw register.
+    pub fn effective_bank(&self, addr: u16) -> u8 {
+        match addr {
+            0x8000..=0xBFFF => (self.bank_select as usize % self.bank_count) as u8,
+            _ => (self.bank_count - 1) as u8,
+        }
+    }
+
     pub fn set_bank_select(&mut self, value: u8) {
         self.bank_select = value;
     }
@@ -77,5 +93,16 @@ mod tests {
         assert_eq!(mapper.read(0x8000), 0);
         // last bank never moves
         assert_eq!(mapper.read(0xC000), 3);
+    }
+
+    #[test]
+    fn effective_bank_tracks_the_switchable_window_but_not_the_fixed_one() {
+        let mut mapper = Mapper2::new(rom_with_banks(4));
+        assert_eq!(mapper.effective_bank(0xC000), 3);
+        assert_eq!(mapper.effective_bank(0xFFFF), 3);
+        mapper.write(0x8000, 2);
+        assert_eq!(mapper.effective_bank(0x8000), 2);
+        assert_eq!(mapper.effective_bank(0xBFFF), 2);
+        assert_eq!(mapper.effective_bank(0xC000), 3); // unaffected by bank_select
     }
 }

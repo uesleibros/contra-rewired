@@ -1,11 +1,14 @@
 # Modding
 
 A mod is a directory: `/mods/<your-mod-id>/mod.toml` plus whatever assets or
-scripts it needs. Drop it in `./mods/` next to the executable; it's picked up
-and enabled by default. Toggle individual mods on/off from the pause menu's
-Mods tab (mouse click on a mod row) - this is session-only for now, it
-resets to all-enabled on the next launch (persisting it to `config.toml` is
-tracked in ROADMAP.md).
+scripts it needs. Drop it in `./mods/` next to the executable and it's
+picked up - but *disabled* by default: a mod is opt-in, so dropping a
+`.lua` file into `./mods/` never silently starts running code the player
+hasn't agreed to. Toggle individual mods on/off, and reorder them (top runs
+first - matters if two mods touch the same thing), from the pause menu's
+Mods tab; both which mods are enabled and their order persist to
+`config.toml` (`contra_core::config::ModsConfig`), so it's a one-time
+choice per install, not per launch.
 
 ## Scripting: Lua, real and working
 
@@ -75,10 +78,21 @@ end)
     exposing an exact "just got hit" flag, so this is really "just lost a
     life" (won't fire for a hit survived on temporary invincibility, if
     Contra even has that).
-  - `enemy_spawn` is defined (see `ModEvent` in `script.rs`) but still not
-    wired to anything - unlike the other three, there's no RAM byte to
-    watch for it; it needs a CPU bank/PC-scoped hook instead (tracked in
-    ROADMAP.md).
+  - `enemy_spawn(fn({slot, enemy_type, x, y, hp}))` - `slot` is `0-15`, the
+    enemy-slot index every `contra.enemy.*` getter below also uses. Unlike
+    the other three events, this one isn't a RAM-diff guess: it fires from
+    a real CPU instruction hook on `initialize_enemy` (`bank7.asm`'s
+    single, universal enemy-slot-init routine - every enemy type funnels
+    through it, from the random soldier generator to a level's scripted
+    placements to bosses), found by searching the ROM's raw bytes for that
+    routine's known opening instructions and converting the match to a CPU
+    address (`apps/contra-pc`'s `INITIALIZE_ENEMY_PC`, `$ee47` - always in
+    UxROM's fixed bank, so no bank-scoping needed to hook it). This is the
+    first real use of `contra_nes::Nes::run_frame_with_hook`, the general
+    "bank-and-PC-scoped instruction hook" infrastructure tracked in
+    ROADMAP.md as a prerequisite for widescreen-aware enemy behavior too
+    (see docs/FIDELITY.md's "Enemies/bullets/collision" entry for why that
+    part is a much bigger, still-open problem than firing an event).
 - `contra.log(msg)` - writes to `contra-pc`'s log output.
 - `contra.frame()` - the current frame count, set by the host once per
   frame. Use it as a clock for time-based effects
@@ -117,6 +131,20 @@ end)
       contra.draw_text(4, 4, "mod loaded", {r = 128, g = 255, b = 128})
   end)
   ```
+- `contra.draw_rect(x, y, w, h[, {r=, g=, b=}, filled])` - same coordinate
+  system and "cleared and requeued every frame" behavior as `draw_text`,
+  for a rectangle instead. `filled` defaults to `false` (outline only,
+  matching the built-in hitbox overlay's look):
+  ```lua
+  contra.on("frame_tick", function()
+      -- outline every enemy slot that's actually populated
+      for slot = 0, 15 do
+          if contra.enemy.get_hp(slot) > 0 then
+              contra.draw_rect(contra.enemy.get_x(slot), contra.enemy.get_y(slot), 16, 16, {r = 255, g = 0, b = 0})
+          end
+      end
+  end)
+  ```
 - `contra.poke_ram(addr, value)` / `contra.peek_ram(addr)` - **low-level,
   gameplay-affecting.** `addr` is a CPU work-RAM offset (`$0000-$07FF`, the
   NES's 2KB of real RAM), the same address space the reference disassembly's
@@ -138,6 +166,19 @@ end)
   - `contra.player.get_continues()` / `.set_continues(n)` - no `idx`, this
     one's a single counter shared between both players (matches the
     arcade-style continue system - see `ram.asm`'s `NUM_CONTINUES`)
+- `contra.enemy` - same idea as `contra.player`, for the 16-slot enemy
+  array (`slot` is `0-15` throughout, same index `enemy_spawn`'s payload
+  uses). **Read-only** - no `set_*`: an enemy slot's fields only mean
+  something together and change every frame under the game's own logic, so
+  poking one in isolation is far more likely to desync or crash that
+  enemy's state machine than do what a mod author actually wants.
+  `contra.poke_ram` is still there directly if you really need it.
+  - `contra.enemy.get_type(slot)` - the enemy type code (matches
+    `enemy_spawn`'s `enemy_type`, and `ENEMY_TYPE` in `ram.asm`)
+  - `contra.enemy.get_x(slot)` / `.get_y(slot)` - screen-space position,
+    same coordinate space `draw_text`/`draw_rect` use
+  - `contra.enemy.get_hp(slot)` - `0` for an inactive/unused slot, so
+    `contra.enemy.get_hp(slot) > 0` is the usual "is anything here" check
 
 Each mod gets its own Lua VM (`LuaModHost::new()`), so a misbehaving script
 can't reach into another mod's globals, and a script error is caught and

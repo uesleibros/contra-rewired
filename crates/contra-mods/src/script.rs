@@ -7,14 +7,14 @@
 //!   `stage_start(stage)` / `stage_clear(stage)` (0-based stage index,
 //!   fired together whenever `apps/contra-pc` observes `CURRENT_LEVEL`
 //!   change between frames), `player_hit({player, lives_remaining})`
-//!   (fired when a player's lives count drops - the closest observable
-//!   proxy for "got hit" without the real disassembly to find an exact
-//!   flag, so it's really "just lost a life"; see `fire_player_hit`'s doc
-//!   comment). `enemy_spawn` is declared but still not wired to anything -
-//!   unlike the other three, there's no RAM byte a host can just watch for
-//!   this one; see docs/FIDELITY.md's "Enemies/bullets/collision" entry for
-//!   why and ROADMAP.md for what real wiring would need (a CPU
-//!   bank-and-PC-scoped hook, not a RAM-diff).
+//!   (fired when a player's lives count drops - a RAM-diff proxy for "got
+//!   hit", so it's really "just lost a life"; see `fire_player_hit`'s doc
+//!   comment), `enemy_spawn({slot, enemy_type, x, y, hp})` (fired from a
+//!   real CPU instruction hook on `initialize_enemy` - the one routine
+//!   every enemy type funnels through - so unlike the other three this one
+//!   isn't a RAM-diff guess, it's the actual spawn moment; see
+//!   `fire_enemy_spawn`'s doc comment and `contra-pc::main::
+//!   INITIALIZE_ENEMY_PC`).
 //! - `contra.log(msg)`.
 //! - `contra.frame()` - the current frame counter, set by the host via
 //!   [`LuaModHost::set_frame`] once per emulated frame. Drives time-based
@@ -36,6 +36,10 @@
 //!   spirit as `write_ppu` but for text a mod wants to show that Contra's
 //!   own font/HUD was never going to render (custom UI, debug readouts,
 //!   messages) - see [`TextDraw`].
+//! - `contra.draw_rect(x, y, w, h[, {r=, g=, b=}, filled])` - screen-space
+//!   rectangle overlay, same coordinate system and reasoning as
+//!   `draw_text`. `filled` defaults to `false` (outline, matching the
+//!   built-in hitbox overlay's look) - see [`RectDraw`].
 //!
 //! **High-level** (`contra.player`, Contra-specific, built entirely on the
 //! low-level primitives above - see the address constants at the top of
@@ -65,6 +69,13 @@ mod ram_addr {
     pub const P_NUM_LIVES: u16 = 0x32; // + player index
     pub const P_CURRENT_WEAPON: u16 = 0xAA; // + player index
     pub const NUM_CONTINUES: u16 = 0x3A;
+    // Enemy slot arrays, one entry per slot (+ slot index, `0-15`) - the
+    // same layout `apps/contra-pc`'s `INITIALIZE_ENEMY_PC` hook reads to
+    // build `enemy_spawn`'s payload.
+    pub const ENEMY_TYPE: u16 = 0x0528;
+    pub const ENEMY_X_POS: u16 = 0x033E;
+    pub const ENEMY_Y_POS: u16 = 0x0324;
+    pub const ENEMY_HP: u16 = 0x0578;
 }
 
 #[derive(Debug, Error)]
@@ -109,6 +120,34 @@ pub struct TextDraw {
     pub color: (u8, u8, u8),
 }
 
+/// One `contra.draw_rect(...)` call queued by a mod - see
+/// [`LuaModHost::take_pending_rect_draws`]. Same screen-space coordinate
+/// system as [`TextDraw`] (top-left origin, NES pixels).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RectDraw {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub color: (u8, u8, u8),
+    pub filled: bool,
+}
+
+/// Reads an optional `{r=, g=, b=}` Lua table into an RGB triple, used by
+/// both `contra.draw_text` and `contra.draw_rect` - a missing table, or any
+/// channel missing from a present one, falls back to `default` rather than
+/// erroring, so a mod that only cares about *some* of the color doesn't
+/// need to spell out the rest.
+fn default_rgb(color: &Option<Table>, default: (u8, u8, u8)) -> LuaResult<(u8, u8, u8)> {
+    let channel = |key: &str, fallback: u8| -> LuaResult<u8> {
+        match color {
+            Some(t) => Ok(t.get::<_, Option<u8>>(key)?.unwrap_or(fallback)),
+            None => Ok(fallback),
+        }
+    };
+    Ok((channel("r", default.0)?, channel("g", default.1)?, channel("b", default.2)?))
+}
+
 /// One loaded mod's Lua VM. Each mod gets its own `Lua` instance so a
 /// misbehaving mod can't reach into another mod's globals.
 pub struct LuaModHost {
@@ -117,6 +156,7 @@ pub struct LuaModHost {
     pending_ppu_writes: Rc<RefCell<Vec<(u16, u8)>>>,
     pending_ram_writes: Rc<RefCell<Vec<(u16, u8)>>>,
     pending_text_draws: Rc<RefCell<Vec<TextDraw>>>,
+    pending_rect_draws: Rc<RefCell<Vec<RectDraw>>>,
     ram_snapshot: Rc<RefCell<Vec<u8>>>,
 }
 
@@ -127,6 +167,7 @@ impl LuaModHost {
         let pending_ppu_writes: Rc<RefCell<Vec<(u16, u8)>>> = Rc::new(RefCell::new(Vec::new()));
         let pending_ram_writes: Rc<RefCell<Vec<(u16, u8)>>> = Rc::new(RefCell::new(Vec::new()));
         let pending_text_draws: Rc<RefCell<Vec<TextDraw>>> = Rc::new(RefCell::new(Vec::new()));
+        let pending_rect_draws: Rc<RefCell<Vec<RectDraw>>> = Rc::new(RefCell::new(Vec::new()));
         let ram_snapshot: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(vec![0; 0x800]));
 
         let contra_table = lua.create_table()?;
@@ -181,17 +222,25 @@ impl LuaModHost {
         // still gets something readable.
         let text_draws_for_queue = pending_text_draws.clone();
         let draw_text_fn = lua.create_function(move |_, (x, y, text, color): (i32, i32, String, Option<Table>)| {
-            let channel = |c: &Option<Table>, key: &str, default: u8| -> LuaResult<u8> {
-                match c {
-                    Some(t) => Ok(t.get::<_, Option<u8>>(key)?.unwrap_or(default)),
-                    None => Ok(default),
-                }
-            };
-            let rgb = (channel(&color, "r", 255)?, channel(&color, "g", 224)?, channel(&color, "b", 128)?);
+            let rgb = default_rgb(&color, (255, 224, 128))?;
             text_draws_for_queue.borrow_mut().push(TextDraw { x, y, text, color: rgb });
             Ok(())
         })?;
         contra_table.set("draw_text", draw_text_fn)?;
+
+        // Screen-space rectangle overlay - same coordinate system and
+        // reasoning as `draw_text` above (host UI, not the PPU): a mod
+        // visualizing hitboxes, spawn zones, or any other rectangular
+        // region of interest doesn't need to fight the nametable or patch
+        // CHR-RAM for it. `filled` defaults to `false` (outline only,
+        // matching the built-in hitbox overlay's own look) if omitted.
+        let rect_draws_for_queue = pending_rect_draws.clone();
+        let draw_rect_fn = lua.create_function(move |_, (x, y, w, h, color, filled): (i32, i32, i32, i32, Option<Table>, Option<bool>)| {
+            let rgb = default_rgb(&color, (255, 64, 64))?;
+            rect_draws_for_queue.borrow_mut().push(RectDraw { x, y, w, h, color: rgb, filled: filled.unwrap_or(false) });
+            Ok(())
+        })?;
+        contra_table.set("draw_rect", draw_rect_fn)?;
 
         let ram_writes_for_queue = pending_ram_writes.clone();
         let poke_ram_fn = lua.create_function(move |_, (addr, value): (u16, u8)| {
@@ -264,8 +313,35 @@ impl LuaModHost {
 
         contra_table.set("player", player_table)?;
 
+        // `contra.enemy.*` - read-only (no `set_*`, unlike `player`: an
+        // enemy slot's fields are only meaningful together and change
+        // constantly as the game's own logic runs, so poking one in
+        // isolation is far more likely to desync/crash the enemy's own
+        // state machine than do something a mod author actually wants -
+        // `contra.poke_ram` is still there directly for anyone who
+        // genuinely needs it). `slot` is `0-15`, the same index
+        // `enemy_spawn`'s payload uses.
+        let enemy_table = lua.create_table()?;
+        macro_rules! enemy_getter {
+            ($name:literal, $addr:expr) => {
+                let r = ram_snapshot.clone();
+                enemy_table.set(
+                    $name,
+                    lua.create_function(move |_, slot: u16| {
+                        let ram = r.borrow();
+                        Ok(ram.get((($addr + slot) & 0x07FF) as usize).copied().unwrap_or(0))
+                    })?,
+                )?;
+            };
+        }
+        enemy_getter!("get_type", ram_addr::ENEMY_TYPE);
+        enemy_getter!("get_x", ram_addr::ENEMY_X_POS);
+        enemy_getter!("get_y", ram_addr::ENEMY_Y_POS);
+        enemy_getter!("get_hp", ram_addr::ENEMY_HP);
+        contra_table.set("enemy", enemy_table)?;
+
         lua.globals().set("contra", contra_table)?;
-        Ok(Self { lua, frame, pending_ppu_writes, pending_ram_writes, pending_text_draws, ram_snapshot })
+        Ok(Self { lua, frame, pending_ppu_writes, pending_ram_writes, pending_text_draws, pending_rect_draws, ram_snapshot })
     }
 
     pub fn load_script(&self, source: &str, chunk_name: &str) -> Result<(), ScriptError> {
@@ -342,6 +418,24 @@ impl LuaModHost {
         self.fire_with(ModEvent::PlayerHit, payload)
     }
 
+    /// Fires [`ModEvent::EnemySpawn`] with a `{slot, enemy_type, x, y, hp}`
+    /// table. `slot` is `0-15`, the same enemy-slot index every
+    /// `ENEMY_*,x`-indexed RAM array (`ENEMY_TYPE`, `ENEMY_HP`, ...) uses -
+    /// unlike [`Self::fire_player_hit`], this one *is* precise: the host
+    /// triggers it from a real CPU instruction hook on `initialize_enemy`
+    /// (the single routine every enemy type funnels through to populate a
+    /// freshly-claimed slot - see `INITIALIZE_ENEMY_PC` in `contra-pc`'s
+    /// `main.rs`), not a RAM-diff guessing at what probably just happened.
+    pub fn fire_enemy_spawn(&self, slot: u8, enemy_type: u8, x: u8, y: u8, hp: u8) -> Result<(), ScriptError> {
+        let payload = self.lua.create_table()?;
+        payload.set("slot", slot)?;
+        payload.set("enemy_type", enemy_type)?;
+        payload.set("x", x)?;
+        payload.set("y", y)?;
+        payload.set("hp", hp)?;
+        self.fire_with(ModEvent::EnemySpawn, payload)
+    }
+
     /// Drains every `contra.write_ppu(addr, value)` call queued since the
     /// last drain, for the host to actually apply to the running emulator.
     pub fn take_pending_ppu_writes(&self) -> Vec<(u16, u8)> {
@@ -360,11 +454,95 @@ impl LuaModHost {
     pub fn take_pending_text_draws(&self) -> Vec<TextDraw> {
         std::mem::take(&mut *self.pending_text_draws.borrow_mut())
     }
+
+    /// Drains every `contra.draw_rect(...)` call queued since the last
+    /// drain, for the host to render as a screen-space overlay this frame
+    /// (see [`RectDraw`]'s doc comment).
+    pub fn take_pending_rect_draws(&self) -> Vec<RectDraw> {
+        std::mem::take(&mut *self.pending_rect_draws.borrow_mut())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enemy_getters_read_the_shared_snapshot_by_slot() {
+        let host = LuaModHost::new().unwrap();
+        let mut ram = vec![0u8; 0x800];
+        ram[(ram_addr::ENEMY_TYPE + 3) as usize] = 0x0a;
+        ram[(ram_addr::ENEMY_X_POS + 3) as usize] = 200;
+        ram[(ram_addr::ENEMY_Y_POS + 3) as usize] = 100;
+        ram[(ram_addr::ENEMY_HP + 3) as usize] = 2;
+        host.set_ram_snapshot(&ram);
+        host.load_script(
+            r#"
+                seen = {}
+                contra.on("frame_tick", function()
+                    seen.type = contra.enemy.get_type(3)
+                    seen.x = contra.enemy.get_x(3)
+                    seen.y = contra.enemy.get_y(3)
+                    seen.hp = contra.enemy.get_hp(3)
+                end)
+            "#,
+            "enemy_reader",
+        )
+        .unwrap();
+        host.fire(ModEvent::FrameTick).unwrap();
+        let seen: Table = host.lua.globals().get("seen").unwrap();
+        assert_eq!(seen.get::<_, u8>("type").unwrap(), 0x0a);
+        assert_eq!(seen.get::<_, u8>("x").unwrap(), 200);
+        assert_eq!(seen.get::<_, u8>("y").unwrap(), 100);
+        assert_eq!(seen.get::<_, u8>("hp").unwrap(), 2);
+    }
+
+    #[test]
+    fn fire_enemy_spawn_delivers_full_payload_to_handlers() {
+        let host = LuaModHost::new().unwrap();
+        host.load_script(
+            r#"
+                seen = nil
+                contra.on("enemy_spawn", function(e)
+                    seen = e
+                end)
+            "#,
+            "enemy_tracker",
+        )
+        .unwrap();
+        host.fire_enemy_spawn(3, 0x0a, 100, 50, 4).unwrap();
+        let seen: Table = host.lua.globals().get("seen").unwrap();
+        assert_eq!(seen.get::<_, u8>("slot").unwrap(), 3);
+        assert_eq!(seen.get::<_, u8>("enemy_type").unwrap(), 0x0a);
+        assert_eq!(seen.get::<_, u8>("x").unwrap(), 100);
+        assert_eq!(seen.get::<_, u8>("y").unwrap(), 50);
+        assert_eq!(seen.get::<_, u8>("hp").unwrap(), 4);
+    }
+
+    #[test]
+    fn draw_rect_queues_with_defaulted_color_and_fill_and_drains_once() {
+        let host = LuaModHost::new().unwrap();
+        host.load_script(
+            r#"
+                contra.on("frame_tick", function()
+                    contra.draw_rect(10, 20, 16, 16)
+                    contra.draw_rect(1, 2, 8, 8, {r = 0, g = 255, b = 0}, true)
+                end)
+            "#,
+            "rect_mod",
+        )
+        .unwrap();
+        host.fire(ModEvent::FrameTick).unwrap();
+        let draws = host.take_pending_rect_draws();
+        assert_eq!(
+            draws,
+            vec![
+                RectDraw { x: 10, y: 20, w: 16, h: 16, color: (255, 64, 64), filled: false },
+                RectDraw { x: 1, y: 2, w: 8, h: 8, color: (0, 255, 0), filled: true },
+            ]
+        );
+        assert!(host.take_pending_rect_draws().is_empty());
+    }
 
     #[test]
     fn draw_text_queues_with_defaulted_color_and_drains_once() {

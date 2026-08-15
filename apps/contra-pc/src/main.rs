@@ -86,6 +86,34 @@ const RAM_CURRENT_LEVEL: u16 = 0x30;
 // level_routine_00 (header/palette/graphics load), same as a real level
 // completion does.
 const RAM_LEVEL_ROUTINE_INDEX: u16 = 0x2C;
+// Enemy slot arrays ($0000-$07FF, one entry per slot 0-15, indexed by the
+// same slot number the 6502 `x` register holds throughout `initialize_enemy`
+// - see `INITIALIZE_ENEMY_PC` below and `ram.asm`.
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+const RAM_ENEMY_TYPE: u16 = 0x0528;
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+const RAM_ENEMY_X_POS: u16 = 0x033E;
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+const RAM_ENEMY_Y_POS: u16 = 0x0324;
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+const RAM_ENEMY_HP: u16 = 0x0578;
+// Entry point of `initialize_enemy` (bank7.asm) - the single routine every
+// enemy type (soldiers, turrets, weapon boxes, bullets, ...) is funneled
+// through to populate a freshly-claimed slot's `ENEMY_TYPE`/`ENEMY_HP`/etc,
+// making it the one true "an enemy was just spawned" moment in the whole
+// game, regardless of which of the many spawn *paths* (random soldier
+// generation, a level's scripted placements, a boss's own logic) led here.
+// Found empirically, not documented in the disassembly with an address:
+// searched the ROM's raw bytes for this routine's known opening
+// instructions (`lda #$01; sta ENEMY_ROUTINE,x; sta ENEMY_SPRITES,x; ...`,
+// unique enough to only match once) and converted the file offset to a CPU
+// address knowing UxROM's fixed bank is the ROM's last 16KiB, mapped to
+// `$c000-$ffff` - the same technique `Nes::run_frame_with_pc_trace` used to
+// find the Base 1/Base 2 hang (see docs/FIDELITY.md). Always in the fixed
+// bank regardless of `bank_select`, so no bank-scoping needed to hook it -
+// see `Nes::run_frame_with_hook`'s doc comment for why that matters in
+// general even though it doesn't here.
+const INITIALIZE_ENEMY_PC: u16 = 0xEE47;
 
 #[derive(Parser)]
 #[command(author, version, about = "Contra: Rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
@@ -143,11 +171,20 @@ enum Session {
 }
 
 impl Session {
-    fn step(&mut self, actions: &ActionState, rewind_enabled: bool) {
+    /// Steps one frame. `spawned_enemy_slots` is cleared, then filled with
+    /// the 0-15 slot index of every enemy `initialize_enemy` populated this
+    /// frame (see `INITIALIZE_ENEMY_PC`) - empty for the placeholder
+    /// session, which has no such concept.
+    fn step(&mut self, actions: &ActionState, rewind_enabled: bool, spawned_enemy_slots: &mut Vec<u8>) {
+        spawned_enemy_slots.clear();
         match self {
             Session::Emulator { nes, save_mgr, frame_count } => {
                 nes.set_controller(0, controller_byte(actions));
-                nes.run_frame();
+                nes.run_frame_with_hook(&mut |cpu, _bus| {
+                    if cpu.pc == INITIALIZE_ENEMY_PC {
+                        spawned_enemy_slots.push(cpu.x);
+                    }
+                });
                 *frame_count += 1;
                 if rewind_enabled {
                     save_mgr.push_rewind_frame(nes.snapshot());
@@ -453,17 +490,40 @@ struct TextOverlay {
     color: (u8, u8, u8),
 }
 
+/// Local mirror of `contra_mods::script::RectDraw` - see [`TextOverlay`]'s
+/// doc comment for why this isn't just the `contra_mods` type directly.
+struct RectOverlay {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: (u8, u8, u8),
+    filled: bool,
+}
+
 /// Fires `frame_tick` on every loaded mod, plus `stage_start`/`stage_clear`
-/// (when `RAM_CURRENT_LEVEL` changes between frames) and `player_hit`
-/// (when either player's lives count drops), and applies whatever PPU/RAM
-/// writes got queued in response, collecting any `contra.draw_text(...)`
-/// calls into `text_overlays` (cleared first - these are this-frame-only,
-/// not cumulative) for `redraw` to actually draw (see
+/// (when `RAM_CURRENT_LEVEL` changes between frames), `player_hit` (when
+/// either player's lives count drops), and `enemy_spawn` (once per slot
+/// index in `spawned_enemy_slots` - see `Session::step`'s `run_frame_with_
+/// hook` call and `INITIALIZE_ENEMY_PC` - reading that slot's fresh
+/// `ENEMY_TYPE`/`ENEMY_X_POS`/`ENEMY_Y_POS`/`ENEMY_HP` to build the real
+/// payload). Applies whatever PPU/RAM writes got queued in response, and
+/// collects any `contra.draw_text(...)`/`contra.draw_rect(...)` calls into
+/// `text_overlays`/`rect_overlays` (both cleared first - these are
+/// this-frame-only, not cumulative) for `redraw` to actually draw (see
 /// `contra_mods::script::LuaModHost`). No-op for the placeholder session
 /// (no `Nes` to poke) or if `mods` wasn't enabled at build time.
 #[cfg(feature = "mods")]
-fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTracker, text_overlays: &mut Vec<TextOverlay>) {
+fn run_mods(
+    mods: &[LoadedMod],
+    session: &mut Session,
+    tracker: &mut ModEventTracker,
+    text_overlays: &mut Vec<TextOverlay>,
+    rect_overlays: &mut Vec<RectOverlay>,
+    spawned_enemy_slots: &[u8],
+) {
     text_overlays.clear();
+    rect_overlays.clear();
     let Session::Emulator { nes, frame_count, .. } = session else {
         return;
     };
@@ -500,6 +560,16 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTra
             if p2_hit {
                 m.host.fire_player_hit(1, p2_lives)?;
             }
+            for &slot in spawned_enemy_slots {
+                let offset = slot as u16;
+                m.host.fire_enemy_spawn(
+                    slot,
+                    nes.peek_ram(RAM_ENEMY_TYPE + offset),
+                    nes.peek_ram(RAM_ENEMY_X_POS + offset),
+                    nes.peek_ram(RAM_ENEMY_Y_POS + offset),
+                    nes.peek_ram(RAM_ENEMY_HP + offset),
+                )?;
+            }
             Ok::<(), contra_mods::script::ScriptError>(())
         })();
         if let Err(e) = fire_result {
@@ -515,12 +585,23 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTra
         for d in m.host.take_pending_text_draws() {
             text_overlays.push(TextOverlay { x: d.x, y: d.y, text: d.text, color: d.color });
         }
+        for d in m.host.take_pending_rect_draws() {
+            rect_overlays.push(RectOverlay { x: d.x, y: d.y, w: d.w, h: d.h, color: d.color, filled: d.filled });
+        }
     }
 }
 
 #[cfg(not(feature = "mods"))]
-fn run_mods(_mods: &[()], _session: &mut Session, _tracker: &mut ModEventTracker, text_overlays: &mut Vec<TextOverlay>) {
+fn run_mods(
+    _mods: &[()],
+    _session: &mut Session,
+    _tracker: &mut ModEventTracker,
+    text_overlays: &mut Vec<TextOverlay>,
+    rect_overlays: &mut Vec<RectOverlay>,
+    _spawned_enemy_slots: &[u8],
+) {
     text_overlays.clear();
+    rect_overlays.clear();
 }
 
 /// The inverse of [`apply_mod_order`] - captures the current execution
@@ -629,6 +710,8 @@ fn step_gameplay_frame(
     loaded_mods: &LoadedModsVec,
     mod_event_tracker: &mut ModEventTracker,
     text_overlays: &mut Vec<TextOverlay>,
+    rect_overlays: &mut Vec<RectOverlay>,
+    spawned_enemy_slots: &mut Vec<u8>,
     settings: &Settings,
     audio_output: &Option<audio::AudioOutput>,
     target_wide_width: usize,
@@ -638,8 +721,8 @@ fn step_gameplay_frame(
     };
     nes.set_wide_width(if settings.widescreen { target_wide_width } else { contra_nes::SCREEN_W });
     nes.set_unlimited_sprites(settings.unlimited_sprites);
-    session.step(action_state, rewind_enabled);
-    run_mods(loaded_mods, session, mod_event_tracker, text_overlays);
+    session.step(action_state, rewind_enabled, spawned_enemy_slots);
+    run_mods(loaded_mods, session, mod_event_tracker, text_overlays, rect_overlays, spawned_enemy_slots);
     let samples = session.drain_audio();
     if let Some(audio) = audio_output {
         if !settings.audio_muted {
@@ -989,6 +1072,8 @@ fn main() -> anyhow::Result<()> {
     let mut advance_one_frame = false;
     let mut mod_event_tracker = ModEventTracker::default();
     let mut text_overlays: Vec<TextOverlay> = Vec::new();
+    let mut rect_overlays: Vec<RectOverlay> = Vec::new();
+    let mut spawned_enemy_slots: Vec<u8> = Vec::new();
 
     window.request_redraw();
 
@@ -1153,6 +1238,7 @@ fn main() -> anyhow::Result<()> {
                             &mut prev_fullscreen,
                             &mut rom_dialog_rx,
                             &text_overlays,
+                            &rect_overlays,
                         );
                     }
                     _ => {}
@@ -1197,7 +1283,7 @@ fn main() -> anyhow::Result<()> {
                     advance_one_frame = false;
                     let gp = poll_gamepad(gilrs.as_mut());
                     update_action_state(&mut action_state, &bindings, &held_keys, &gp);
-                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &mut text_overlays, &settings, &audio_output, target_wide);
+                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &mut text_overlays, &mut rect_overlays, &mut spawned_enemy_slots, &settings, &audio_output, target_wide);
                     // Frozen again immediately after - a backlog built up
                     // while frozen shouldn't turn into a burst of extra
                     // steps the instant `frozen` is cleared.
@@ -1221,7 +1307,7 @@ fn main() -> anyhow::Result<()> {
                             // Gameplay input/stepping is simply suspended while
                             // paused.
                         } else if routine.accepts_gameplay_input() {
-                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &mut text_overlays, &settings, &audio_output, target_wide);
+                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &mut text_overlays, &mut rect_overlays, &mut spawned_enemy_slots, &settings, &audio_output, target_wide);
                         }
                         accumulator -= frame_duration;
                         stepped = true;
@@ -1312,6 +1398,7 @@ fn redraw(
     prev_fullscreen: &mut bool,
     rom_dialog_rx: &mut Option<mpsc::Receiver<Option<PathBuf>>>,
     text_overlays: &[TextOverlay],
+    rect_overlays: &[RectOverlay],
 ) {
     let is_placeholder = matches!(session, Session::Placeholder { .. });
     let mut hitboxes: Vec<egui::Rect> = Vec::new();
@@ -1413,6 +1500,22 @@ fn redraw(
                             egui::FontId::monospace((13.0 * scale).max(8.0)),
                             egui::Color32::from_rgb(overlay.color.0, overlay.color.1, overlay.color.2),
                         );
+                    }
+
+                    // Mod-drawn rectangles (`contra.draw_rect(...)`) - same
+                    // NES-pixel coordinate space and scaling as the text
+                    // overlays and hitboxes above.
+                    for overlay in rect_overlays {
+                        let screen_rect = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(overlay.x as f32, overlay.y as f32) * scale,
+                            egui::vec2(overlay.w as f32, overlay.h as f32) * scale,
+                        );
+                        let color = egui::Color32::from_rgb(overlay.color.0, overlay.color.1, overlay.color.2);
+                        if overlay.filled {
+                            ui.painter().rect_filled(screen_rect, 0.0, color);
+                        } else {
+                            ui.painter().rect_stroke(screen_rect, 0.0, egui::Stroke::new(1.5f32, color));
+                        }
                     }
 
                     if settings.scanlines {
