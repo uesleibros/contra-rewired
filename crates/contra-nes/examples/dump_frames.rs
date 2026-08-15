@@ -5,7 +5,10 @@
 //! without a GUI. `DEBUG_RAM=1` additionally traces a few well-known RAM
 //! addresses every 10 frames (game routine index, controller state/diff,
 //! demo-mode flag, PPU mask/ctrl); `DEBUG_OAM=1` dumps OAM occupancy every
-//! 30 frames. Not built or run in CI; invoked manually during development:
+//! 30 frames; `RAM_DUMP_FRAME=N` writes the full 2KB RAM to `ram_NNNN.bin`
+//! in `out_dir` at that frame, for diffing two runs byte-for-byte (`cmp -l`)
+//! when a RAM trace alone can't localize what's actually different. Not
+//! built or run in CI; invoked manually during development:
 //!
 //! ```text
 //! cargo run -p contra-nes --release --example dump_frames -- <rom> <out_dir> [frames] [start_after]
@@ -175,6 +178,11 @@ fn main() {
                 nes.bus.ppu.mask,
                 nes.bus.ppu.ctrl,
             );
+        }
+        if let Ok(target) = std::env::var("RAM_DUMP_FRAME") {
+            if frame == target.parse().unwrap() {
+                std::fs::write(std::path::Path::new(out_dir).join(format!("ram_{frame:04}.bin")), &nes.bus.ram[..]).unwrap();
+            }
         }
         if std::env::var("DEBUG_OAM").is_ok() && frame % 30 == 0 {
             let mut visible = 0;

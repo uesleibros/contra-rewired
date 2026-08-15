@@ -401,22 +401,68 @@ fn load_mods(enabled_ids: &[String]) -> Vec<LoadedMod> {
     loaded
 }
 
-/// Fires `frame_tick` on every loaded mod and applies whatever PPU writes
-/// it queued (see `contra_mods::script::LuaModHost`). No-op for the
-/// placeholder session (no `Nes` to poke) or if `mods` wasn't enabled at
-/// build time.
+/// Cross-frame state purely to detect the *moments* `run_mods` fires
+/// `stage_start`/`stage_clear`/`player_hit` from - a single RAM read only
+/// ever says "this is the value right now", never "this just changed", so
+/// the previous frame's values have to be remembered somewhere. `None`
+/// means "not observed yet" (the very first frame after a ROM loads),
+/// which intentionally suppresses firing anything - there's no real
+/// transition to report yet, just an initial value.
+#[derive(Default)]
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+struct ModEventTracker {
+    stage: Option<u8>,
+    p1_lives: Option<u8>,
+    p2_lives: Option<u8>,
+}
+
+/// Fires `frame_tick` on every loaded mod, plus `stage_start`/`stage_clear`
+/// (when `RAM_CURRENT_LEVEL` changes between frames) and `player_hit`
+/// (when either player's lives count drops), and applies whatever PPU/RAM
+/// writes got queued in response (see `contra_mods::script::LuaModHost`).
+/// No-op for the placeholder session (no `Nes` to poke) or if `mods` wasn't
+/// enabled at build time.
 #[cfg(feature = "mods")]
-fn run_mods(mods: &[LoadedMod], session: &mut Session) {
+fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTracker) {
     let Session::Emulator { nes, frame_count, .. } = session else {
         return;
     };
+    let stage = nes.peek_ram(RAM_CURRENT_LEVEL);
+    let p1_lives = nes.peek_ram(RAM_P1_NUM_LIVES);
+    let p2_lives = nes.peek_ram(RAM_P2_NUM_LIVES);
+    let stage_changed = tracker.stage.is_some_and(|prev| prev != stage);
+    let prev_stage = tracker.stage;
+    let p1_hit = tracker.p1_lives.is_some_and(|prev| p1_lives < prev);
+    let p2_hit = tracker.p2_lives.is_some_and(|prev| p2_lives < prev);
+    tracker.stage = Some(stage);
+    tracker.p1_lives = Some(p1_lives);
+    tracker.p2_lives = Some(p2_lives);
+
     for m in mods {
         if !m.enabled {
             continue;
         }
         m.host.set_frame(*frame_count);
         m.host.set_ram_snapshot(nes.ram());
-        if let Err(e) = m.host.fire(contra_mods::script::ModEvent::FrameTick) {
+        let fire_result = (|| {
+            m.host.fire(contra_mods::script::ModEvent::FrameTick)?;
+            if stage_changed {
+                // Both fire from the same "CURRENT_LEVEL changed"
+                // observation - see `LuaModHost::fire_stage_clear`'s doc
+                // comment for why there's no separate "you cleared it"
+                // signal to tell them apart.
+                m.host.fire_stage_clear(prev_stage.unwrap_or(stage))?;
+                m.host.fire_stage_start(stage)?;
+            }
+            if p1_hit {
+                m.host.fire_player_hit(0, p1_lives)?;
+            }
+            if p2_hit {
+                m.host.fire_player_hit(1, p2_lives)?;
+            }
+            Ok::<(), contra_mods::script::ScriptError>(())
+        })();
+        if let Err(e) = fire_result {
             log::error!("mod '{}': runtime error: {e}", m.id);
             continue;
         }
@@ -430,7 +476,7 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session) {
 }
 
 #[cfg(not(feature = "mods"))]
-fn run_mods(_mods: &[()], _session: &mut Session) {}
+fn run_mods(_mods: &[()], _session: &mut Session, _tracker: &mut ModEventTracker) {}
 
 #[cfg(not(feature = "mods"))]
 fn load_mods(_enabled_ids: &[String]) -> Vec<()> {
@@ -498,11 +544,13 @@ fn target_wide_width(window: &winit::window::Window) -> usize {
     ((contra_nes::SCREEN_H as f64 * aspect).round() as usize).clamp(contra_nes::SCREEN_W, contra_nes::MAX_WIDE_WIDTH)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn step_gameplay_frame(
     session: &mut Session,
     action_state: &ActionState,
     rewind_enabled: bool,
     loaded_mods: &LoadedModsVec,
+    mod_event_tracker: &mut ModEventTracker,
     settings: &Settings,
     audio_output: &Option<audio::AudioOutput>,
     target_wide_width: usize,
@@ -513,7 +561,7 @@ fn step_gameplay_frame(
     nes.set_wide_width(if settings.widescreen { target_wide_width } else { contra_nes::SCREEN_W });
     nes.set_unlimited_sprites(settings.unlimited_sprites);
     session.step(action_state, rewind_enabled);
-    run_mods(loaded_mods, session);
+    run_mods(loaded_mods, session, mod_event_tracker);
     let samples = session.drain_audio();
     if let Some(audio) = audio_output {
         if !settings.audio_muted {
@@ -755,6 +803,7 @@ fn main() -> anyhow::Result<()> {
     // "keep playing, just slower/faster" case.
     let mut frozen = false;
     let mut advance_one_frame = false;
+    let mut mod_event_tracker = ModEventTracker::default();
 
     window.request_redraw();
 
@@ -942,7 +991,7 @@ fn main() -> anyhow::Result<()> {
                     advance_one_frame = false;
                     let gp = poll_gamepad(gilrs.as_mut());
                     update_action_state(&mut action_state, &bindings, &held_keys, &gp);
-                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output, target_wide);
+                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &settings, &audio_output, target_wide);
                     // Frozen again immediately after - a backlog built up
                     // while frozen shouldn't turn into a burst of extra
                     // steps the instant `frozen` is cleared.
@@ -966,7 +1015,7 @@ fn main() -> anyhow::Result<()> {
                             // Gameplay input/stepping is simply suspended while
                             // paused.
                         } else if routine.accepts_gameplay_input() {
-                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &settings, &audio_output, target_wide);
+                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &settings, &audio_output, target_wide);
                         }
                         accumulator -= frame_duration;
                         stepped = true;

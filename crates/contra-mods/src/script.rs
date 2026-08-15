@@ -3,9 +3,18 @@
 //! Host API today - two layers, both real:
 //!
 //! **Low-level** (general NES/6502 concepts, work on any game in principle):
-//! - `contra.on(eventName, fn)` / events fired: `frame_tick`, `stage_start`,
-//!   `stage_clear`, `player_hit`, `enemy_spawn` (the last three not wired to
-//!   any real emulator signal yet - see ROADMAP.md).
+//! - `contra.on(eventName, fn)` / events fired: `frame_tick` (no payload),
+//!   `stage_start(stage)` / `stage_clear(stage)` (0-based stage index,
+//!   fired together whenever `apps/contra-pc` observes `CURRENT_LEVEL`
+//!   change between frames), `player_hit({player, lives_remaining})`
+//!   (fired when a player's lives count drops - the closest observable
+//!   proxy for "got hit" without the real disassembly to find an exact
+//!   flag, so it's really "just lost a life"; see `fire_player_hit`'s doc
+//!   comment). `enemy_spawn` is declared but still not wired to anything -
+//!   unlike the other three, there's no RAM byte a host can just watch for
+//!   this one; see docs/FIDELITY.md's "Enemies/bullets/collision" entry for
+//!   why and ROADMAP.md for what real wiring would need (a CPU
+//!   bank-and-PC-scoped hook, not a RAM-diff).
 //! - `contra.log(msg)`.
 //! - `contra.frame()` - the current frame counter, set by the host via
 //!   [`LuaModHost::set_frame`] once per emulated frame. Drives time-based
@@ -228,17 +237,59 @@ impl LuaModHost {
         snap.extend_from_slice(ram);
     }
 
-    /// Fires an event with no arguments; extend as real gameplay hooks
-    /// need typed payloads (enemy id, damage amount, etc).
-    pub fn fire(&self, event: ModEvent) -> Result<(), ScriptError> {
+    /// Calls every handler registered for `event` with `args` (`()` for no
+    /// payload). Shared by [`Self::fire`] and the typed `fire_*` helpers
+    /// below - the only difference between them is what they pass here.
+    fn fire_with<'lua, A>(&'lua self, event: ModEvent, args: A) -> Result<(), ScriptError>
+    where
+        A: mlua::IntoLuaMulti<'lua> + Clone,
+    {
         let contra: Table = self.lua.globals().get("contra")?;
         let handlers: Table = contra.get("_handlers")?;
         if let Some(bucket) = handlers.get::<_, Option<Table>>(event.lua_name())? {
             for pair in bucket.sequence_values::<mlua::Function>() {
-                pair?.call::<_, ()>(())?;
+                pair?.call::<_, ()>(args.clone())?;
             }
         }
         Ok(())
+    }
+
+    /// Fires an event with no payload - only [`ModEvent::FrameTick`] uses
+    /// this; the others carry real data via the typed helpers below.
+    pub fn fire(&self, event: ModEvent) -> Result<(), ScriptError> {
+        self.fire_with(event, ())
+    }
+
+    /// Fires [`ModEvent::StageStart`] with the 0-based stage index a script
+    /// receives as its handler's first argument
+    /// (`contra.on("stage_start", function(stage) ... end)`).
+    pub fn fire_stage_start(&self, stage: u8) -> Result<(), ScriptError> {
+        self.fire_with(ModEvent::StageStart, stage)
+    }
+
+    /// Fires [`ModEvent::StageClear`] with the 0-based stage index that was
+    /// just cleared - the host calls this immediately before
+    /// [`Self::fire_stage_start`] with the new one, since both fire from
+    /// the same "`CURRENT_LEVEL` changed" observation (see
+    /// `apps/contra-pc/src/main.rs`) with no separate "you cleared it"
+    /// signal to tell them apart otherwise.
+    pub fn fire_stage_clear(&self, stage: u8) -> Result<(), ScriptError> {
+        self.fire_with(ModEvent::StageClear, stage)
+    }
+
+    /// Fires [`ModEvent::PlayerHit`] with a `{player, lives_remaining}`
+    /// table (`player` is `0`/`1` for P1/P2, matching every other
+    /// `contra.player.*` index). Triggered by the host observing that
+    /// player's lives count go down between frames - the closest signal
+    /// this project can read without the actual disassembly to find a
+    /// precise "just got hit" flag, so it's really "just lost a life",
+    /// which won't fire for a hit survived on a shield/invincibility frame.
+    /// Documented as such rather than claimed more precise than it is.
+    pub fn fire_player_hit(&self, player_idx: u8, lives_remaining: u8) -> Result<(), ScriptError> {
+        let payload = self.lua.create_table()?;
+        payload.set("player", player_idx)?;
+        payload.set("lives_remaining", lives_remaining)?;
+        self.fire_with(ModEvent::PlayerHit, payload)
     }
 
     /// Drains every `contra.write_ppu(addr, value)` call queued since the

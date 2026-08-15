@@ -368,32 +368,37 @@ is loaded**
       was removed after feedback that the heuristic wasn't useful in
       practice - simpler Debug tab, one less unreliable control. Shows "No
       ROM loaded" instead when there's no real RAM to poke
-- [x] **Stage select, real and working** - click any of the 8 stages to
-      jump directly to it (`CURRENT_LEVEL`/`LEVEL_ROUTINE_INDEX`, `$30`/
-      `$2C`, plus the same RAM clear `level_routine_05` itself does between
-      levels). Took three passes to actually get right, and the two wrong
-      ones are worth knowing about: first tested too briefly (~80 frames),
-      wrongly concluded broken (blamed on mapper bank-switching); re-tested
-      properly for CPU state (3000+ frames, tracing `LEVEL_ROUTINE_INDEX`
-      the whole way, confirmed it progresses correctly) but verified
-      rendering only with *sampled* screenshots (every ~200-300 frames),
-      concluded clean, and shipped clickable - then real play found
-      persistent tile flicker/collision after a jump the sampled test
-      never caught. Root cause was in the PPU, not here:
-      `Ppu::tile_cache` (see the true-ultrawide entry below) wasn't cleared
-      when a stage jump landed back near the same scroll position the old
-      level was at, so the old level's cached tiles kept showing alongside
-      the new level's live-read ones. Fixed by also clearing the cache on
-      every PPUMASK background-rendering off-to-on transition (the same
-      signal every NES game already relies on to hide a VRAM rewrite mid-
-      transition), independent of scroll math. Re-verified with
-      every-single-frame captures (not sampled) across the jump, at 700px
-      widescreen, on two different target stages. See docs/FIDELITY.md for
-      the full three-pass account - it's a useful example of how a sampled
-      verification can look clean and still miss real frame-to-frame
-      instability, for the third time on this project. The Debug tab
-      labels the 30-60s the transition takes, since there's no progress
-      indicator
+- [x] **Stage select, real and working for 6 of the 8 stages** - click any
+      enabled stage to jump directly to it (`CURRENT_LEVEL`/
+      `LEVEL_ROUTINE_INDEX`, `$30`/`$2C`, plus the same RAM clear
+      `level_routine_05` itself does between levels). Took three passes to
+      get the tile-cache side of this right: first tested too briefly
+      (~80 frames), wrongly concluded broken (blamed on mapper
+      bank-switching); re-tested properly for CPU state (3000+ frames,
+      tracing `LEVEL_ROUTINE_INDEX` the whole way) but verified rendering
+      only with *sampled* screenshots (every ~200-300 frames), concluded
+      clean, and shipped clickable - then real play found persistent tile
+      flicker/collision after a jump the sampled test never caught. Root
+      cause was in the PPU, not here: `Ppu::tile_cache` (see the
+      true-ultrawide entry below) wasn't cleared when a stage jump landed
+      back near the same scroll position the old level was at, so the old
+      level's cached tiles kept showing alongside the new level's
+      live-read ones. Fixed by also clearing the cache on every PPUMASK
+      background-rendering off-to-on transition, independent of scroll
+      math, and re-verified with every-single-frame captures across the
+      jump at 700px widescreen. See docs/FIDELITY.md for the full
+      three-pass account - a useful example of how a sampled verification
+      can look clean and still miss real frame-to-frame instability.
+      **Separately**, broadening verification to all 8 stages (not just the
+      two spot-checked above) found stages 2 and 4 ("Base 1"/"Base 2")
+      hang on the loading screen forever when jumped to - confirmed via
+      RAM diffing (`RAM_DUMP_FRAME`, new debug hook) that the CPU is
+      genuinely parked in an infinite loop, not just slow. Root cause not
+      found without the actual disassembly to read (not vendored in this
+      repo); those two stage buttons are disabled in the Debug tab
+      (`menu::JUMP_BREAKS_STAGE`) with an honest tooltip rather than shipped
+      broken. The Debug tab labels the 30-60s the transition takes for the
+      six that do work, since there's no progress indicator
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
       (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array

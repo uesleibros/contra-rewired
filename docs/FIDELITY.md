@@ -316,6 +316,53 @@ the third time that exact gap has produced a wrong "looks fine" conclusion
 on this project (see the widescreen bias bug and the widescreen-not-
 filling-window bug above).
 
+### Stage select: Base 1 and Base 2 hang, and it's not the tile-cache bug
+
+Broadening verification after the tile-cache fix (checking every stage, not
+just the two that had been spot-checked) found a second, unrelated problem:
+jumping to stage 2 or stage 4 (1-indexed - "Base 1"/"Base 2" in-game, index
+`1`/`3` internally) doesn't render wrong, it never renders *at all*. The
+game sits on the loading screen (background rendering off, plain backdrop
+color) forever - not slow, not eventually-recovers, actually forever: RAM
+was traced 700+ frames past the jump and stayed on `level_routine=$02`
+throughout, `PPUMASK` never flipped rendering back on again. Every other
+stage (0, 2, 4, 5, 6, 7 - now all individually confirmed) reaches real,
+correctly-rendered gameplay within a few hundred frames of the jump, same
+as the two originally verified.
+
+Diagnosing this without a local disassembly to read went as far as: added
+`RAM_DUMP_FRAME=N` to `dump_frames.rs` (writes the full 2KB RAM to a
+`.bin` file at a given frame, for byte-for-byte diffing two runs with
+`cmp -l` when a RAM trace alone can't localize what's different) and
+compared a stuck run's own RAM at frame 900 against the same run at frame
+1590 - 690 frames, well over 11 real seconds, apart. Every byte in
+`$0000-$00FF` and `$0300-$07FF` was bit-identical between the two
+snapshots; the *only* difference anywhere in RAM was call-depth noise in
+the `$0100-$01FF` hardware stack. That rules out a slow-moving counter or
+timer stalling somewhere in the cleared range - the CPU isn't waiting on
+anything that increments, it's parked in a genuine infinite loop that
+touches no RAM outside the stack, meaning whatever condition it's spinning
+on either lives outside the ranges this jump clears/sets, or depends on
+something a `poke_ram` can't establish at all (mapper/bank state tied to
+that specific level's data, most likely, though unconfirmed). A follow-up
+binary search - re-running the jump four times, each time *skipping* the
+RAM clear over one quarter of `$0040-$00F0` to see if preserving that
+quarter's old contents was the missing piece - came back negative on all
+four quarters, ruling out "one leftover byte in the range we already
+clear" as the cause too.
+
+Past that, further narrowing needs either the actual disassembly (not
+present anywhere in this repo - the RAM-address comments elsewhere in this
+codebase come from general knowledge of the community disassembly, not a
+vendored copy of it) or a real CPU trace/debugger step-through of the
+frozen loop's PC, neither of which `dump_frames.rs`'s black-box RAM-diffing
+approach can do. Rather than ship a stage-select that can hard-freeze the
+game for 2 of its 8 stages, `contra-pc`'s Debug tab disables (greys out,
+with an honest tooltip) jumping to stage 2 or 4 specifically -
+`menu::JUMP_BREAKS_STAGE` - while the other six remain real and working.
+This is a known gap, not a silently-accepted one; revisit if the
+disassembly ever becomes available to consult directly.
+
 ### Where RAM-based tooling's limits are, in general
 
 The Debug tab's lives/weapon/rapid-fire/continues controls poke a value

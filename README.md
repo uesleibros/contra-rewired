@@ -209,9 +209,10 @@ tabs:
   memory, using the address map the community disassembly documents; see
   docs/MODDING.md): lives, current weapon (dropdown), the "R" rapid-fire
   capsule powerup (independent of weapon, same as the real pickup), shared
-  continues, and a stage select - click any of the 8 stages to jump
+  continues, and a stage select - click any of 6 of the 8 stages to jump
   straight there (takes the same 30-60s a real level-complete transition
-  always costs, since it's the same code path).
+  always costs, since it's the same code path; Base 1 and Base 2 are
+  disabled for now - jumping to them hangs the game, see docs/FIDELITY.md).
 
 It's a small, honest v1, not a finished options screen - see ROADMAP.md for
 what's still menu-less (CRT filter beyond scanlines, palette swaps,
