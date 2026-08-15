@@ -79,13 +79,13 @@ outright: click "LOAD ROM..." for a native file picker, or drag and drop a
 |---|---|
 | **NES emulation core** (`contra-nes`) | |
 | 6502/2A03 CPU | All official opcodes, incl. the JMP-indirect page-boundary bug; 21 unit tests against hand-assembled programs - see `crates/contra-nes/src/cpu.rs` |
-| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, opt-in "Extended" widescreen (fixed safe-width cap, resizes the window the instant it's toggled) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
+| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, opt-in "Extended" widescreen (fixed safe-width cap, resizes the window the instant it's toggled, extra width direction-biased toward the camera's scroll direction) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
 | Mapper 2 (UxROM) | Implemented - PRG bank switching, CHR-RAM |
 | APU | Pulse 1/2, triangle, noise, frame sequencer, real-time playback via `cpal` - **DMC (sample playback) not implemented** |
 | Controller input | Implemented (standard shift-register protocol) |
 | Save states | Full emulator snapshots (CPU+RAM+PPU+APU), excluding the static PRG-ROM - real quick save/load/rewind wired in `contra-pc` |
 | **Hand-ported simulation layer** (`contra-core`) | |
-| Fixed-point vertical physics, walk/jump velocity | Ported from the disassembly for the placeholder demo - see FIDELITY.md |
+| Fixed-point vertical physics, walk/jump velocity | Ported from the disassembly, used as the save-state fallback before a ROM is loaded and as a RAM-tooling reference - see FIDELITY.md |
 | Config (video/audio/input/gameplay/accessibility/practice) | Full schema, round-trips through `config.toml` |
 | Rebindable input, hold/toggle fire | Implemented; keyboard **and gamepad** (`gilrs`) both wired in `contra-pc` |
 | Difficulty presets + Custom Difficulty + shareable codes | Implemented, tested |
@@ -93,6 +93,7 @@ outright: click "LOAD ROM..." for a native file picker, or drag and drop a
 | **Everything else** | |
 | ROM loading + identity check | Implemented (`contra-assets`) |
 | Mod manifest, registry, Lua host | **Working end-to-end**: `contra-pc --features mods` loads scripts from `./mods/` and applies their PPU writes live every frame - see `mods/rgb-character/` and docs/MODDING.md |
+| Menu / UI | Built on `egui` + `wgpu` (mouse-driven pause menu with Settings/Mods/Debug tabs, real Load ROM screen with native file picker + drag-and-drop) - see "Controls" above |
 | Level editor, randomizer, netcode, roguelike, etc. | Not started - see ROADMAP.md |
 
 See [ROADMAP.md](ROADMAP.md) for the full three-phase plan, with every item
@@ -154,21 +155,30 @@ cartridge ROM each time (see `contra_nes::Nes::snapshot`/`restore`).
 and the content fills it (fractional "dynamic fill" scaling by default; a
 "Pixel Perfect" toggle in the menu switches to strict integer scaling with
 letterbox bars instead, if you prefer crisp NES pixels over a perfect
-window fill). Widescreen mode tracks the live window aspect ratio frame by
-frame, so maximizing onto an ultrawide monitor immediately shows more of
-the level - up to a hardware-imposed, empirically-tested safe cap (see
-docs/FIDELITY.md); beyond that it pillarbox rather than show wrapped/wrong
-data.
+window fill). Toggling Widescreen on immediately resizes the window to the
+hardware-imposed, empirically-tested safe cap (see docs/FIDELITY.md) at
+whatever zoom level you're already at; the extra width is biased toward
+whichever side the camera is actively scrolling into (the side with
+actually-valid, already-drawn tile data), not split evenly, so trailing-
+edge tile glitches in scrolling stages are avoided rather than just
+accepted.
 
-**Pause menu**: press Escape, Tab, or Start to open it - it renders as a
-crisp overlay at the window's native resolution, not blocky upscaled NES
-pixels. Up/Down to navigate, Jump/X to toggle, Left/Right to adjust Zoom,
-Pause again to resume. Real, working toggles: Widescreen, No Sprite Flicker
-(lifts the real hardware's 8-sprites-per-scanline limit, an accuracy break
-that's off by default so `Original` mode stays hardware-accurate), Pixel
-Perfect, Zoom (50-300%), Fullscreen, and Audio Mute. It's a small, honest
-v1, not a finished options screen - see ROADMAP.md for what's still
-menu-less.
+**Pause menu**: press Escape, Tab, or gamepad Start to open it - built on
+[`egui`](https://github.com/emilk/egui) (real checkboxes, sliders, and
+buttons, not a hand-rolled bitmap font), rendered via `wgpu` as a crisp
+overlay at the window's native resolution, not blocky upscaled NES pixels.
+Mouse-driven. Three tabs: **Settings** (Widescreen, No Sprite Flicker -
+lifts the real hardware's 8-sprites-per-scanline limit, an accuracy break
+that's off by default so `Original` mode stays hardware-accurate - Pixel
+Perfect, Zoom 50-300%, Fullscreen, Audio Mute), **Mods** (click to enable/
+disable any mod found in `./mods/`), and **Debug** (live lives/weapon
+cheats for *both* players plus continues, backed by real CPU RAM pokes -
+see docs/MODDING.md). It's a small, honest v1, not a finished options
+screen - see ROADMAP.md for what's still menu-less.
+
+**No ROM loaded?** `contra-pc` shows a real Load ROM screen instead of a
+placeholder demo - click "Load ROM..." for a native file picker, or drag
+and drop a `.nes` file onto the window.
 
 Fully rebindable via `contra_core::input::Bindings` - an in-game rebinding
 UI isn't built yet; edit `config.toml` after first run, or see

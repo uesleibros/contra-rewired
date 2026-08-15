@@ -25,6 +25,11 @@ log = { workspace = true }
 env_logger = { workspace = true }
 clap = { workspace = true }
 rfd = "0.14"
+egui = "0.28"
+egui-winit = "0.28"
+egui-wgpu = "0.28"
+wgpu = "0.20"
+pollster = "0.3"
 
 [features]
 # Lua mod scripting. Off by default: mlua's vendored build needs a C

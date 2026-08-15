@@ -99,11 +99,14 @@ end)
 - `contra.player` - a high-level convenience layer built entirely on
   `poke_ram`/`peek_ram`, for mod authors who'd rather not memorize RAM
   addresses:
-  - `contra.player.set_lives(n)` / `contra.player.get_lives()`
-  - `contra.player.set_weapon(id)` / `contra.player.get_weapon()` - `id` is
+  - `contra.player.get_lives(idx)` / `.set_lives(idx, n)` - `idx` is 0 for
+    P1, 1 for P2
+  - `contra.player.get_weapon(idx)` / `.set_weapon(idx, id)` - `id` is
     0=Standard, 1=Machine Gun, 2=Fire, 3=Spread, 4=Laser (matches the
     Debug tab's weapon list and `bank6.asm`'s weapon IDs)
-  - `contra.player.set_continues(n)` / `contra.player.get_continues()`
+  - `contra.player.get_continues()` / `.set_continues(n)` - no `idx`, this
+    one's a single counter shared between both players (matches the
+    arcade-style continue system - see `ram.asm`'s `NUM_CONTINUES`)
 
 Each mod gets its own Lua VM (`LuaModHost::new()`), so a misbehaving script
 can't reach into another mod's globals, and a script error is caught and

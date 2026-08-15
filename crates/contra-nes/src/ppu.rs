@@ -99,6 +99,27 @@ pub struct Ppu {
     /// `wide_width` - never touches game state.
     #[serde(skip)]
     pub unlimited_sprites: bool,
+    /// Presentation-only, wide-mode-only bookkeeping: the playfield's raw
+    /// horizontal scroll position (0..511, wrapping across the two
+    /// nametables) sampled at the *last* visible scanline of the previous
+    /// frame - i.e. below any split-scroll status bar, which usually lives
+    /// in the first several scanlines and has its own, usually-static,
+    /// scroll. Used to bias which side of the screen the extra wide-mode
+    /// columns come from - see [`Self::frame_scroll_dir`].
+    #[serde(skip)]
+    prev_frame_scroll_x: Option<u16>,
+    /// This frame's horizontal auto-scroll direction, updated once per
+    /// frame from the delta between consecutive `prev_frame_scroll_x`
+    /// samples: `> 0` scrolling right (new nametable columns are being
+    /// drawn on the right, so the *left* edge - already scrolled past - is
+    /// the one that can go stale), `< 0` scrolling left (mirrored), `0`
+    /// stationary (indoor rooms, boss arenas) or not yet known. Lags the
+    /// real direction by exactly one frame (it's computed from the delta
+    /// *ending* the previous frame), which is fine for Contra's auto-
+    /// scroll, where direction only reverses a few times per level, never
+    /// frame-to-frame.
+    #[serde(skip)]
+    frame_scroll_dir: i8,
 }
 
 impl Ppu {
@@ -123,6 +144,8 @@ impl Ppu {
             wide_width: SCREEN_W,
             wide_framebuffer: Vec::new(),
             unlimited_sprites: false,
+            prev_frame_scroll_x: None,
+            frame_scroll_dir: 0,
         }
     }
 
@@ -283,7 +306,30 @@ impl Ppu {
     pub fn render_scanline(&mut self, y: usize) {
         let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
         let wide = width > SCREEN_W;
-        let x_offset = if wide { (width as i32 - SCREEN_W as i32) / 2 } else { 0 };
+        let extra = width as i32 - SCREEN_W as i32;
+        // Biased, not centered: an auto-scrolling stage has only pre-drawn
+        // nametable data in the direction it's scrolling *toward* (see
+        // `EXTENDED_WIDTH`'s docs) - the trailing edge, behind the camera,
+        // can be stale/wrong. Put (almost) all the extra width on the
+        // leading edge instead of splitting it 50/50, so wide mode uses
+        // real drawn tiles from the direction that has them instead of
+        // showing half of a strip that's known-bad. Stationary scenes
+        // (`frame_scroll_dir == 0`: indoor rooms, boss arenas, before the
+        // first frame) keep the old centered split, since neither edge is
+        // "trailing" there.
+        let x_offset = if !wide {
+            0
+        } else {
+            match self.frame_scroll_dir {
+                d if d > 0 => (extra as f32 * 0.1).round() as i32, // scrolling right: trailing edge is on the left
+                d if d < 0 => (extra as f32 * 0.9).round() as i32, // scrolling left: trailing edge is on the right
+                _ => extra / 2,
+            }
+        };
+
+        if y == SCREEN_H - 1 {
+            self.update_frame_scroll_dir();
+        }
 
         let mut line = [0u32; EXTENDED_WIDTH];
         let mut bg_opaque = [false; EXTENDED_WIDTH];
@@ -312,6 +358,29 @@ impl Ppu {
         }
 
         self.advance_v_for_next_line();
+    }
+
+    /// Samples the current raw horizontal scroll (0..511, wrapping across
+    /// the two nametables) and updates [`Self::frame_scroll_dir`] from how
+    /// it moved since the same point last frame. Called once per frame, at
+    /// the last visible scanline - below any split-scroll status bar,
+    /// which typically occupies only the first several scanlines and has
+    /// its own scroll unrelated to camera movement.
+    fn update_frame_scroll_dir(&mut self) {
+        let raw_x = (((self.v >> 10) & 1) as i32) * 256 + ((self.v & 0x1F) as i32) * 8 + self.fine_x as i32;
+        if let Some(prev) = self.prev_frame_scroll_x {
+            let mut delta = raw_x - prev as i32;
+            // Unwrap a nametable-boundary crossing (512px period) to the
+            // shorter signed distance, so direction stays correct right as
+            // scrolling wraps from nametable 1 back to nametable 0.
+            if delta > 256 {
+                delta -= 512;
+            } else if delta < -256 {
+                delta += 512;
+            }
+            self.frame_scroll_dir = delta.signum() as i8;
+        }
+        self.prev_frame_scroll_x = Some(raw_x as u16);
     }
 
     /// `width` pixels of background starting `x_offset` pixels to the left

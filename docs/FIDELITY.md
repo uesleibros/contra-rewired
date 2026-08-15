@@ -139,33 +139,63 @@ drawn. That guarantee is also exactly what limits it.
   cross the "never touch game state" line every other enhancement here
   respects) or accepting visible garbage at the edges. `contra-pc` fills any
   extra space beyond 380px with plain letterboxing rather than doing either.
-- **Enemies still "pop in" at the same moment they would on real hardware.**
-  Extending the background is safe because tiles are just re-drawn from
-  nametable data that already exists. Enemies are not tiles - they're real
-  entities the original, unmodified game code spawns based on the player's
-  *actual* 256px-wide camera position, exactly like on real hardware. Making
-  an enemy appear before that code decides to spawn it would mean running
-  game logic differently depending on a purely visual setting, which is the
-  one thing widescreen mode is built to never do. So in Extended mode, an
-  enemy that would be just off-screen on real hardware is now visibly
-  *further* off-screen (inside the extra 62px), and still won't render until
-  the original spawn check fires - it's more noticeable than on a 256px
-  screen, but not a new or different bug; the alternative would require
-  widescreen to become a gameplay-affecting cheat rather than a presentation
-  option.
-- **Fixed this round: widescreen not visibly turning on.** The target width
-  used to be computed from the *current window size* (`compute_wide_width`,
-  keyed off `Resized` events), so toggling "Widescreen: ON" without also
-  resizing the window away from its narrow default produced no visible
-  change - the computed target was still ≈256px. Widescreen now always
-  targets the full `EXTENDED_WIDTH` cap the moment it's enabled, independent
-  of window size; the existing scale-to-fit blit handles whatever window
-  size the extra pixels end up displayed at. A related buffer bug was fixed
-  alongside it: `wide_framebuffer` was always allocated at
-  `EXTENDED_WIDTH * SCREEN_H` and copied a full `EXTENDED_WIDTH`-wide slice
-  per scanline regardless of the width actually in use that frame, which
-  corrupted the buffer's row stride any time the active width was less than
-  the cap. It's now sized and copied to the actual per-frame width.
+- **The extra width is direction-biased, not centered.** Splitting it 50/50
+  around the normal 256px view (the original approach) put half the extra
+  width on whichever side happened to be the *trailing* edge - the one
+  without valid pre-drawn nametable data - on any stage that scrolls mostly
+  one direction, which is most of Contra's outdoor levels. `Ppu` now
+  samples the playfield's raw scroll position once per frame (below the
+  status bar's own split-scroll region, so the HUD's separate, usually-
+  static scroll doesn't get mistaken for camera movement) and compares it
+  to the previous frame's sample to get a direction; ~90% of the extra
+  width goes to the leading edge and ~10% stays on the trailing edge (not
+  100/0, so there's still a small safety margin if the direction read is
+  ever wrong for a frame). Stationary scenes (indoor rooms, boss arenas,
+  or before the first frame) fall back to the original centered 50/50, since
+  neither edge is "trailing" when the camera isn't moving. Verified against
+  the real ROM via `dump_frames.rs`; the existing "center 256px matches
+  narrow mode exactly" test is unaffected because it never advances a
+  second frame, so `frame_scroll_dir` stays at its default (centered).
+- **Enemies/bullets/collision still only activate at the same moment they
+  would on real hardware - investigated further, not yet changed.** Tiles
+  are safe to extend because they're re-drawn from nametable data that
+  already exists; enemies are real entities the original code spawns based
+  on the player's *actual* 256px-wide camera position, exactly like on real
+  hardware. Digging into *why* this can't just be "spawn earlier" like the
+  tile bias above: the collision buffer the game itself checks before
+  placing a hard-coded or randomly-generated enemy (`BG_COLLISION_DATA`,
+  `$0680` in the reference disassembly's `ram.asm`) is documented there as
+  covering only the two currently-loaded nametables - the exact same window
+  that bounds the tile extension, not a separately-tracked wider map. There
+  is no "ground truth" collision data further out to spawn correctly
+  against; the NES doesn't keep more than ~2 screens resident in its 2KB of
+  RAM, by design. Making this work for real (not just the random-soldier
+  edge case, which is a scoped, identified patch target -
+  `soldier_generation_01` in `bank2.asm`, constants `#$0a`/`#$fa`) means
+  giving `contra-nes`'s CPU core a real, tested, bank-and-PC-scoped
+  instruction hook - tracked as its own item in ROADMAP.md rather than
+  folded into the presentation-only widescreen work, since it's a
+  fundamentally different kind of change (it *does* touch game state, on
+  purpose, gated behind widescreen being on).
+- **Widescreen not visibly turning on, and not visibly resizing the
+  window.** Two related bugs, fixed in successive rounds. First, the
+  target width used to be computed from the *current window size*
+  (`compute_wide_width`, keyed off `Resized` events), so toggling
+  "Widescreen: ON" without also resizing the window away from its narrow
+  default produced no visible change - the computed target was still
+  ≈256px. Fixed by always targeting the full `EXTENDED_WIDTH` cap the
+  moment it's enabled, independent of window size. That alone still wasn't
+  enough: with the window left at its default size, the wider content just
+  got scaled down to fit by the existing fill-scaling, so turning
+  Widescreen on barely looked different. `contra-pc` now also resizes the
+  window itself the instant the setting changes (matching the per-pixel
+  scale already in effect), the way other NES PC ports grow their window
+  for widescreen. A related buffer bug was fixed alongside the first fix:
+  `wide_framebuffer` was always allocated at `EXTENDED_WIDTH * SCREEN_H`
+  and copied a full `EXTENDED_WIDTH`-wide slice per scanline regardless of
+  the width actually in use that frame, corrupting the buffer's row stride
+  any time the active width was less than the cap. It's now sized and
+  copied to the actual per-frame width.
 
 ## `contra-core`: hand-ported layer (placeholder demo)
 

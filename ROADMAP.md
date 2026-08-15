@@ -108,21 +108,49 @@ is loaded**
       always targeting the cap. That alone still wasn't enough: with the
       window left at its narrow default, the wider content just got
       squeezed back down by the fill-scaling blit, so almost nothing
-      visibly changed. `apply_menu_action`'s `ToggleWidescreen` arm now
-      also calls `window.request_inner_size` immediately, growing/shrinking
-      the window's width to match the new content width at whatever
-      per-pixel scale is already in effect - the way other NES PC ports
-      resize when widescreen is turned on. No-op in fullscreen, where the
-      compositor owns the size.) Never touches RAM/collision/spawn logic
-      (presentation-only), verified by a test asserting the center 256px
-      exactly matches normal rendering byte-for-byte, plus a test covering
-      arbitrary in-between widths (not just the max, and not just the
-      framebuffer's row stride, which had its own now-fixed bug - see
-      docs/FIDELITY.md). Known limitation: enemies still only appear the
-      moment the original 256px-camera spawn logic decides to spawn them,
-      same as real hardware - see docs/FIDELITY.md, "Widescreen ... what it
-      can and can't do", for why that's inherent to keeping widescreen
-      presentation-only rather than a fixable bug
+      visibly changed. `redraw()` now detects the setting change frame to
+      frame and calls `window.request_inner_size` immediately, growing/
+      shrinking the window's width to match the new content width at
+      whatever per-pixel scale is already in effect - the way other NES PC
+      ports resize when widescreen is turned on. No-op in fullscreen, where
+      the compositor owns the size.) Never touches RAM/collision/spawn
+      logic (presentation-only), verified by a test asserting the center
+      256px exactly matches normal rendering byte-for-byte, plus a test
+      covering arbitrary in-between widths (not just the max, and not just
+      the framebuffer's row stride, which had its own now-fixed bug - see
+      docs/FIDELITY.md)
+- [x] **Widescreen extension is direction-biased, not centered.** Used to
+      split the extra width 50/50 left and right of the normal 256px view
+      every frame; an auto-scrolling stage only has valid pre-drawn
+      nametable data on the side it's scrolling *toward* (see
+      `EXTENDED_WIDTH`'s docs), so the trailing 50% could show stale/wrong
+      tiles - the "tile bugs in some stages" widescreen was reported for.
+      `Ppu` now tracks each frame's horizontal scroll direction (sampled
+      below the status bar's own split-scroll region, so the HUD's static
+      scroll doesn't confuse it) and puts ~90% of the extra width on the
+      leading edge, ~10% on the trailing edge, falling back to the old
+      50/50 split when the camera isn't moving (indoor rooms, boss
+      arenas). Presentation-only, same as the rest of widescreen; verified
+      against the real ROM via `dump_frames.rs` and covered by the
+      existing wide-mode regression tests (direction defaults to 0/
+      centered when a test never advances a second frame, so the existing
+      byte-for-byte-center assertion is unaffected)
+- [ ] **Enemy/bullet spawn-ahead in widescreen** - investigated, not yet
+      implemented. The random soldier-generation edges
+      (`soldier_generation_01` in the reference disassembly's `bank2.asm`,
+      constants `#$0a`/`#$fa`) are a real, scoped patch target once
+      widescreen is on. The blocker: the collision buffer the game checks
+      before spawning (`BG_COLLISION_DATA`, `$0680`) is documented in
+      `ram.asm` as covering only the two currently-loaded nametables -
+      exactly the same window that bounds the visual extension, not a
+      wider always-valid map. Spawning at the wide edge is only safe where
+      that buffer is already populated (the leading-edge bias above should
+      cover it in the scrolling direction); level-specific hard-coded
+      screen enemies and bosses would need their own case-by-case check.
+      Doing this safely means adding a real, tested PC/bank-scoped
+      instruction hook to `contra-nes::Cpu` (currently a clean, general
+      6502 core with no per-game hooks) - a properly scoped follow-up, not
+      a same-pass addition on top of the rendering work above
 - [x] **Freely resizable window with dynamic fill scaling** (not
       integer-locked): default behavior now scales fractionally to cover as
       much of the window as possible while preserving aspect ratio - drag
@@ -179,52 +207,62 @@ is loaded**
 - [ ] Actually wired to a renderer/simulation once one exists
 - [ ] Frame advance / slow-motion (25–200%)
 
-**Menu / UI - v2, mouse-driven, tabbed**
-- [x] Built-in 5x7 bitmap font + text renderer, no external font/asset
-      dependency (`apps/contra-pc/src/menu.rs`), visually verified by
-      rendering full A-Z/0-9/symbol and full-menu samples to PNGs
-- [x] Pause menu rebuilt as **mouse-only**, not directional-nav: `draw_menu`
-      builds a `MenuLayout` (a list of clickable rects) as it draws, and
-      that *same* layout is hit-tested against real `CursorMoved`/
-      `MouseInput` events - so the drawn layout and the clickable layout can
-      never drift apart, by construction. No keyboard/gamepad menu
-      navigation remains. Opens with Tab or Escape or Start. Renders as a
-      crisp overlay at the window's *native* resolution (drawn after
-      scaling, onto the softbuffer output directly) rather than blocky
-      upscaled low-res NES pixels - reads as "outside the game," closer to
-      how e.g. Ship of Harkinian's menu sits apart from the emulated
-      picture
-- [x] Three tabs - **Settings** (Widescreen, No Sprite Flicker, Pixel
-      Perfect, Zoom with +/- steppers, Fullscreen, Audio Mute), **Mods**
-      (every discovered mod listed with a click-to-toggle enabled state),
-      **Debug** (see below) - plus a Resume button, all mouse-clickable
-- [x] **Debug tab**: live, clickable cheat/trainer controls backed by real
-      CPU RAM pokes (`Nes::peek_ram`/`poke_ram`) - lives and continues as
-      +/- steppers (clamped 0-99 / 0-9), current weapon as five
-      click-to-select rows (Standard/Machine Gun/Fire/Spread/Laser, RAM
-      addresses from the reference disassembly's `ram.asm`). Shows "NO ROM
-      LOADED" instead when no ROM is loaded, since there's no real RAM to
-      poke
+**Menu / UI - v3, real `egui`, real widgets**
+- [x] **Rendering moved off `softbuffer` (raw CPU framebuffer blit) onto
+      `wgpu` + `egui`**, the standard Rust answer to "I want Dear ImGui":
+      immediate-mode widgets (checkboxes, sliders, scroll areas, buttons)
+      with retained interaction state, instead of a hand-rolled 5x7 bitmap
+      font and manual click-rect hit-testing. The NES framebuffer is
+      uploaded as a GPU texture (`egui::TextureHandle`, `NEAREST` filtering
+      for crisp NES pixels, no blur) and painted as the background of an
+      `egui` frame each redraw (`apps/contra-pc/src/main.rs::redraw`); the
+      pause menu and Load ROM screen are real `egui::Window`/
+      `egui::CentralPanel` content drawn on top (`apps/contra-pc/src/
+      menu.rs`). `menu.rs` shrank from ~500 lines of manual layout/hit-
+      testing to widgets bound directly to `Settings` fields - a checkbox
+      *is* the toggle now, no separate action-dispatch layer for anything
+      that's just a plain value flip
+- [x] Pause menu: two tabs plus Debug - **Settings** (Widescreen, No
+      Sprite Flicker, Pixel Perfect, Zoom slider, Fullscreen, Audio Mute -
+      all direct `egui::Checkbox`/`egui::Slider` bindings), **Mods** (every
+      discovered mod as a click-to-toggle checkbox), **Debug** (see below).
+      Opens with Tab or Escape; egui owns mouse/keyboard focus while it's
+      open (`egui_winit::State::on_window_event`'s `consumed` flag gates
+      whether gameplay input handling sees the event at all), and reads as
+      "outside the game" the same way the old bitmap-font menu did -
+      that part of the design goal didn't change, just how it's built
+- [x] **Debug tab, now both players**: live cheat/trainer controls backed
+      by real CPU RAM pokes (`Nes::peek_ram`/`poke_ram`) - lives and
+      current weapon (cycled with `<`/`>`) for **both P1 and P2**
+      (`$32`/`$33` and `$AA`/`$AB` in the reference disassembly's
+      `ram.asm` - P2 is simply P1's address plus one, confirmed against
+      the real source, not guessed), plus shared continues (`$3A`, single
+      counter for both players, matching the arcade-style continue system).
+      Shows "No ROM loaded" instead when there's no real RAM to poke
 - [x] Mod enable/disable UI (Mods tab, click a mod row to toggle) - session
       only for now, resets to all-enabled on next launch; not yet persisted
       to `config.toml`
-- [x] **Real "Load ROM" screen**, not the old engine-only physics demo:
-      shown whenever there's no ROM loaded (missing/invalid/wrong-mapper),
-      with a click-to-open native file picker (`rfd`, filtered to `.nes`)
-      and drag-and-drop support (`WindowEvent::DroppedFile`) - both go
-      through the same `try_load_rom` validation path as the CLI arg /
+- [x] **Real "Load ROM" screen**, not an engine-only physics demo: shown
+      whenever there's no ROM loaded (missing/invalid/wrong-mapper), with a
+      click-to-open native file picker (`rfd`, filtered to `.nes`) and
+      drag-and-drop support (`WindowEvent::DroppedFile`) - both go through
+      the same `try_load_rom` validation path as the CLI arg /
       `./baserom.nes`, so a ROM picked at runtime is checked exactly the
       same way. A failed load (wrong mapper, bad file) shows the reason
-      inline instead of failing silently. The old walking-placeholder demo
-      (`render_placeholder`) is gone from `contra-pc`; `contra-core`'s
-      hand-ported `PlayerPhysics` still exists as the save-state fallback
-      and RAM-tooling reference, it's just not driven or drawn as a
-      "gameplay" screen anymore.
+      inline instead of failing silently. `contra-core`'s hand-ported
+      `PlayerPhysics` still exists as the save-state fallback and
+      RAM-tooling reference, it's just never driven or drawn as a
+      "gameplay" screen
 - [ ] Everything else from the config surface (CRT filter, scanlines,
       palette, keybind remapping, difficulty, checkpoint mode, ...) still
       needs a menu entry; this is the pattern to extend, not a finished
       options screen
 - [ ] Mod reorder UI, mod enable/disable persisted across launches
+- [ ] `egui` opens the door CRT/scanline shaders were already waiting on
+      (see the widescreen section above) - `egui-wgpu`'s renderer runs
+      inside the same `wgpu` device/queue as the game background, so a
+      post-process pass over the NES texture is now a shader away instead
+      of needing its own GPU context from scratch
 
 **Modding - Lua scripting, high-level and low-level APIs**
 - [x] Low-level host API (`crates/contra-mods/src/script.rs`):
