@@ -105,6 +105,12 @@ pub struct Settings {
     /// `pixel_perfect`: an accuracy-flavored preference, not a gameplay
     /// setting.
     pub scanlines: bool,
+    /// Soft vignette (darkened edges/corners) over the game image,
+    /// egui-painter-side same as `scanlines` - no shader/render-pipeline
+    /// change needed, see `redraw`'s caller. Independent of `scanlines`
+    /// (a real CRT has both, but they're separate toggles here since
+    /// either alone is a legitimate preference).
+    pub crt_filter: bool,
 }
 
 impl Default for Settings {
@@ -120,6 +126,7 @@ impl Default for Settings {
             show_stats: false,
             sim_speed_percent: 100,
             scanlines: false,
+            crt_filter: false,
         }
     }
 }
@@ -223,6 +230,7 @@ fn settings_tab(ui: &mut egui::Ui, settings: &mut Settings) {
     ui.checkbox(&mut settings.show_stats, "Show stats overlay (F7)");
     ui.checkbox(&mut settings.fullscreen, "Fullscreen (F11)");
     ui.checkbox(&mut settings.scanlines, "Scanlines (F6)");
+    ui.checkbox(&mut settings.crt_filter, "CRT filter / vignette (F10)");
     ui.checkbox(&mut settings.audio_muted, "Mute audio (F8)");
     ui.horizontal(|ui| {
         ui.label("Zoom");

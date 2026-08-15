@@ -181,8 +181,15 @@ is loaded**
       emulated scanline, drawn by the `egui` painter directly on top of the
       game image (no shader/render-pipeline change needed) - see below,
       this is what `egui`+`wgpu` made easy that wasn't before
-- [ ] CRT/composite shaders beyond scanlines (currently config fields with
-      no renderer behind them yet)
+- [x] **CRT filter / vignette** (Settings tab / F10): soft darkened
+      edges/corners, same `egui`-painter-overlay technique as scanlines
+      above - concentric border strokes fading in alpha from the edge
+      inward, approximating curved-glass/off-axis-phosphor falloff without
+      an actual radial-gradient shader. Independent toggle from scanlines
+      (real CRTs have both, but either alone is a legitimate preference
+      here). Full composite-artifact simulation (`composite_artifact_sim`/
+      `tv_ghosting` in `VideoConfig`) is a bigger, genuinely shader-shaped
+      job and still has no renderer behind it
 - [x] **True ultrawide** - no longer bounded by `EXTENDED_WIDTH`'s cap, see
       the widescreen section above (`Ppu::tile_cache`)
 - [x] **Widescreen always fills the window now - no blank columns.** The
@@ -471,9 +478,10 @@ is loaded**
       change was invisible to `redraw`'s own before/after diff, since by
       the time `redraw` ran the change had already happened). Not yet
       user-rebindable - same honest gap as gameplay `Bindings` remapping
-- [ ] Everything else from the config surface (CRT filter, scanlines,
-      palette, keybind remapping, difficulty, checkpoint mode, ...) still
-      needs a menu entry; this is the pattern to extend, not a finished
+- [ ] Everything else from the config surface (composite-artifact
+      simulation, TV ghosting, palette swaps, keybind remapping,
+      difficulty, checkpoint mode, ...) still needs a menu entry; scanlines
+      and the CRT filter above are the pattern to extend, not a finished
       options screen
 - [x] **Mod enable/disable persisted across launches** - `contra_core::
       config::ModsConfig` (`[mods] enabled_ids` in `config.toml`) stores
@@ -494,9 +502,13 @@ is loaded**
       place so `run_mods`' fixed iteration order actually changes - gives
       two mods that hook the same event and might step on each other's
       writes a way to pick which one wins, without touching either script.
-      Session-only for now (resets to registry scan order on relaunch) -
-      persisting order needs the same `config.toml` treatment
-      `pc_settings`/`mods.enabled_ids` already got, not yet done
+      Persisted the same way `mods.enabled_ids`/`pc_settings` are -
+      `ModsConfig::order` stores just the IDs the player has actually
+      moved, in their chosen order; `apply_mod_order` splices those to the
+      front of the registry-scan list at load and leaves every mod it
+      doesn't mention (new install, or simply never reordered) in its
+      natural scan-relative position after them, so the list never needs
+      to be exhaustive or kept in sync with what's actually on disk
 - [x] **Every Settings-tab toggle persisted across launches** -
       `contra_core::config::PcSettings` (`[pc_settings]` in `config.toml`)
       mirrors `menu::Settings` 1:1 rather than reusing `VideoConfig`/

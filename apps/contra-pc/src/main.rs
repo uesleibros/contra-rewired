@@ -368,6 +368,25 @@ pub struct LoadedMod {
     host: contra_mods::script::LuaModHost,
 }
 
+/// Reorders `loaded` in place to match `order` (a list of mod IDs, top to
+/// bottom - see `ModsConfig::order`'s doc comment): any ID in `order` that
+/// `loaded` actually has moves to the front, in `order`'s sequence; every
+/// other mod (new install, or simply never reordered) keeps its natural
+/// registry-scan position relative to the others like it. `order` doesn't
+/// need to be exhaustive or even valid - IDs it lists that no longer exist
+/// are silently ignored.
+#[cfg(feature = "mods")]
+fn apply_mod_order(loaded: &mut Vec<LoadedMod>, order: &[String]) {
+    let mut reordered = Vec::with_capacity(loaded.len());
+    for id in order {
+        if let Some(pos) = loaded.iter().position(|m| &m.id == id) {
+            reordered.push(loaded.remove(pos));
+        }
+    }
+    reordered.append(loaded);
+    *loaded = reordered;
+}
+
 #[cfg(feature = "mods")]
 fn load_mods(enabled_ids: &[String]) -> Vec<LoadedMod> {
     let registry = contra_mods::ModRegistry::scan("mods");
@@ -484,6 +503,21 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTra
 
 #[cfg(not(feature = "mods"))]
 fn run_mods(_mods: &[()], _session: &mut Session, _tracker: &mut ModEventTracker) {}
+
+/// The inverse of [`apply_mod_order`] - captures the current execution
+/// order as a list of IDs, for `config.mods.order` right before the
+/// existing save-on-close call.
+#[cfg(feature = "mods")]
+fn mod_order(loaded: &[LoadedMod]) -> Vec<String> {
+    loaded.iter().map(|m| m.id.clone()).collect()
+}
+#[cfg(not(feature = "mods"))]
+fn mod_order(_loaded: &[()]) -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(not(feature = "mods"))]
+fn apply_mod_order(_loaded: &mut Vec<()>, _order: &[String]) {}
 
 #[cfg(not(feature = "mods"))]
 fn load_mods(_enabled_ids: &[String]) -> Vec<()> {
@@ -757,6 +791,7 @@ fn settings_from_pc_config(pc: &contra_core::config::PcSettings) -> Settings {
         show_stats: pc.show_stats,
         sim_speed_percent: pc.sim_speed_percent,
         scanlines: pc.scanlines,
+        crt_filter: pc.crt_filter,
     }
 }
 
@@ -776,6 +811,7 @@ fn pc_config_from_settings(settings: &Settings) -> contra_core::config::PcSettin
         show_stats: settings.show_stats,
         sim_speed_percent: settings.sim_speed_percent,
         scanlines: settings.scanlines,
+        crt_filter: settings.crt_filter,
     }
 }
 
@@ -799,6 +835,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut session = load_session(&args, rewind_capacity, audio_sample_rate);
     let mut loaded_mods = load_mods(&config.mods.enabled_ids);
+    apply_mod_order(&mut loaded_mods, &config.mods.order);
     let window_title = match &session {
         Session::Emulator { .. } => "Contra: Rewired",
         Session::Placeholder { .. } => "Contra: Rewired - load a ROM to play",
@@ -930,6 +967,7 @@ fn main() -> anyhow::Result<()> {
                 match event {
                     WindowEvent::CloseRequested => {
                         config.pc_settings = pc_config_from_settings(&settings);
+                        config.mods.order = mod_order(&loaded_mods);
                         let _ = config.save(CONFIG_PATH);
                         elwt.exit();
                     }
@@ -984,6 +1022,7 @@ fn main() -> anyhow::Result<()> {
                                         KeyCode::F3 => settings.pixel_perfect = !settings.pixel_perfect,
                                         KeyCode::F4 => settings.show_hitboxes = !settings.show_hitboxes,
                                         KeyCode::F6 => settings.scanlines = !settings.scanlines,
+                                        KeyCode::F10 => settings.crt_filter = !settings.crt_filter,
                                         KeyCode::F7 => settings.show_stats = !settings.show_stats,
                                         KeyCode::F8 => settings.audio_muted = !settings.audio_muted,
                                         KeyCode::F11 => settings.fullscreen = !settings.fullscreen,
@@ -1317,6 +1356,34 @@ fn redraw(
                             );
                             ui.painter().rect_filled(line_rect, 0.0, line_color);
                             y += 2;
+                        }
+                    }
+
+                    if settings.crt_filter {
+                        // Soft vignette: concentric border strokes fading
+                        // from the edge inward, same painter-overlay
+                        // technique as scanlines above (no shader/render-
+                        // pipeline change). Approximates a curved-glass/
+                        // off-axis-phosphor falloff well enough at typical
+                        // window sizes without the cost or complexity of an
+                        // actual radial-gradient shader.
+                        let depth = (rect.width().min(rect.height()) * 0.08).max(4.0);
+                        let steps = 12;
+                        for i in 0..steps {
+                            let t = i as f32 / steps as f32;
+                            let alpha = (50.0 * (1.0 - t)) as u8;
+                            if alpha == 0 {
+                                continue;
+                            }
+                            let inset = depth * t;
+                            if rect.width() - 2.0 * inset <= 0.0 || rect.height() - 2.0 * inset <= 0.0 {
+                                break;
+                            }
+                            ui.painter().rect_stroke(
+                                rect.shrink(inset),
+                                0.0,
+                                egui::Stroke::new(depth / steps as f32 + 0.75, egui::Color32::from_black_alpha(alpha)),
+                            );
                         }
                     }
                 });

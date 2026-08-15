@@ -171,6 +171,7 @@ don't have to open the menu mid-fight:
 | F6 | Scanlines |
 | F7 | Stats overlay |
 | F8 | Mute audio |
+| F10 | CRT filter / vignette |
 | F11 | Fullscreen |
 | F12 | Freeze (frame advance with `.`) |
 
@@ -199,7 +200,7 @@ tabs:
   `Original` mode stays hardware-accurate), Pixel Perfect, Hitbox overlay
   (outlines every active sprite - the *visual* bounding box, see
   docs/FIDELITY.md for why it's not necessarily Contra's exact collision
-  box), Scanlines, Stats overlay (frame count + both players' live X/Y),
+  box), Scanlines, CRT filter (soft vignette), Stats overlay (frame count + both players' live X/Y),
   Zoom (50-300%), Speed (25-200%, real slow motion - the game still runs
   its own logic one real frame at a time, just paced differently),
   Fullscreen, Audio Mute.

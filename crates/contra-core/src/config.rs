@@ -373,6 +373,16 @@ impl Default for PracticeConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModsConfig {
     pub enabled_ids: Vec<String>,
+    /// Mod IDs in the player's chosen execution order (top-to-bottom in
+    /// the Mods tab, front-to-back in `run_mods`'s per-frame iteration) -
+    /// see the Mods tab's up/down reorder buttons. Only IDs the player has
+    /// actually reordered need to appear here; `contra-pc` appends any mod
+    /// this list has never heard of (new install, or simply never moved)
+    /// after the ones it does know about, in whatever order the mod
+    /// registry scan found them - so this list never needs to be
+    /// exhaustive or kept in sync with what's on disk.
+    #[serde(default)]
+    pub order: Vec<String>,
 }
 
 /// A flat mirror of `apps/contra-pc`'s `menu::Settings` - everything the
@@ -401,6 +411,7 @@ pub struct PcSettings {
     pub show_stats: bool,
     pub sim_speed_percent: i32,
     pub scanlines: bool,
+    pub crt_filter: bool,
 }
 
 impl Default for PcSettings {
@@ -416,6 +427,7 @@ impl Default for PcSettings {
             show_stats: false,
             sim_speed_percent: 100,
             scanlines: false,
+            crt_filter: false,
         }
     }
 }
