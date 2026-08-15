@@ -42,6 +42,27 @@ everything else is an opt-in layered on top, never a replacement.
       non-linear mixing formula, real-time playback via `cpal` in
       `contra-pc` (`apu.rs`, 27 tests) - **DMC (sample playback) not
       implemented**, registers accepted but silent
+- [x] Fixed audible audio delay: the playback ring buffer was capped at 2
+      full seconds, so once production briefly outran consumption the
+      buffer would fill and *stay* nearly 2 seconds behind, since draining
+      only removed from the front at real-time speed. Capped at 150ms
+      (`apps/contra-pc/src/audio.rs`) and set to drop the *oldest* samples
+      past that cap, so playback actively catches back up to low latency
+      instead of accumulating a permanent backlog
+- [x] Opt-in "no sprite flicker" mode: lifts the real 8-sprites-per-scanline
+      hardware limit up to all 64 OAM sprites, off by default (`Original`
+      mode stays hardware-accurate); the overflow status flag is still
+      reported even when not enforced, so code polling it sees the same
+      thing a real cartridge would (`unlimited_sprites`, tested)
+- [x] Live "Extended" widescreen: render width can change every frame (not
+      just on/off) to track a resizable window's aspect ratio, up to a
+      safe cap. The cap was **empirically tuned against the real ROM**,
+      not guessed: 380px (62px/side) renders clean at every scroll
+      position tested; 420px already showed black (undrawn nametable data)
+      creeping into the trailing edge; Contra's engine only pre-draws the
+      direction it auto-scrolls *toward*, so the trailing edge runs out of
+      valid data before the leading edge does. Front-ends should pillarbox
+      rather than request more (`wide_width`, `EXTENDED_WIDTH`, tested)
 - [ ] Per-dot PPU timing for mid-scanline register-change effects
 - [ ] Additional mappers, if a future ROM needs one (Contra only needs UxROM)
 - [ ] Undocumented/illegal 6502 opcodes (currently a recorded no-op; add
@@ -70,9 +91,38 @@ is loaded**
       overscan, CRT filter, scanlines, composite/ghosting sim, palette
       swaps, NTSC/PAL, widescreen borders, windowed/borderless/fullscreen
 - [x] Real window + integer-scaled framebuffer presentation (`contra-pc`)
+- [x] Event loop switched from `ControlFlow::Poll` (busy-spin, redraws
+      hundreds of thousands of times/sec) to `ControlFlow::WaitUntil` paced
+      to the actual 60Hz frame boundary - this was real, measurable wasted
+      CPU/GPU work that could starve the audio thread and make everything
+      feel sluggish, even though pure emulation runs at ~30x real-time (see
+      `crates/contra-nes/examples/perf_test.rs`)
+- [x] **"Extended" widescreen mode**, real and working, and now *live*: the
+      render width tracks the window's actual aspect ratio every frame (see
+      `compute_wide_width` in `main.rs`), so resizing the window or
+      maximizing onto an ultrawide monitor is reflected immediately, up to
+      the empirically-tested safe cap (`EXTENDED_WIDTH` = 380px). Never
+      touches RAM/collision/spawn logic (presentation-only), verified by a
+      test asserting the center 256px exactly matches normal rendering
+      byte-for-byte, plus a test covering arbitrary in-between widths (not
+      just the max). Toggle it from the pause menu. Known limitation:
+      sprite-0-hit timing can differ from real hardware while active (an
+      accepted tradeoff for an opt-in mode - see docs/FIDELITY.md)
+- [x] **Freely resizable window with dynamic fill scaling** (not
+      integer-locked): default behavior now scales fractionally to cover as
+      much of the window as possible while preserving aspect ratio - drag
+      the window to any size, or maximize onto any monitor shape, and the
+      content fills it, the way the Switch Pokemon/Link's Awakening ports
+      handle a resizable/dockable display. A "Pixel Perfect" toggle in the
+      pause menu switches back to strict integer scaling (crisp NES pixels,
+      possible letterbox bars) for players who prefer that instead
+- [x] **Zoom** (50-300%), adjustable from the pause menu, layered on top of
+      either scaling mode
 - [ ] CRT/scanline/composite shaders (currently config fields with no
       renderer behind them yet)
-- [ ] "Extended" widescreen mode with camera/spawn-safe extra world space
+- [ ] True ultrawide (32:9 and beyond) is bounded by `EXTENDED_WIDTH`'s
+      hardware-imposed cap, not a software limitation - see docs/FIDELITY.md
+      for why going further shows wrong data, not just an arbitrary block
 
 **Controls**
 - [x] Fully rebindable action system (`input.rs`), hold/toggle fire modes
@@ -84,6 +134,7 @@ is loaded**
 - [x] Gamepad support via `gilrs` (`contra-pc`): d-pad + left stick with
       deadzone for movement, south/east face buttons for shoot/jump, Start
       for pause - works alongside keyboard, first connected pad only
+- [x] Tab as an alternate pause/menu key alongside Escape/Start
 - [ ] Per-controller-type button glyphs (DualSense/Switch Pro/Xbox), full
       `Bindings`-driven gamepad rebinding (today it's a fixed mapping, not
       yet routed through the `PhysicalInput::GamepadButton/Axis` bindings)
@@ -112,6 +163,48 @@ is loaded**
       overlays, fixed RNG seed)
 - [ ] Actually wired to a renderer/simulation once one exists
 - [ ] Frame advance / slow-motion (25–200%)
+
+**Menu / UI - v1, real but small**
+- [x] Built-in 5x7 bitmap font + text renderer, no external font/asset
+      dependency (`apps/contra-pc/src/menu.rs`), visually verified by
+      rendering full A-Z/0-9/symbol and full-menu samples to PNGs
+- [x] Pause menu: appears on Escape/Tab/Start, Up/Down to navigate, Jump/X
+      to toggle, Left/Right to adjust Zoom. Renders as a crisp overlay at
+      the window's *native* resolution (drawn after scaling, onto the
+      softbuffer output directly) rather than blocky upscaled low-res NES
+      pixels - reads as "outside the game," closer to how e.g. Ship of
+      Harkinian's menu sits apart from the emulated picture. Seven real
+      working toggles: Widescreen, No Sprite Flicker, Pixel Perfect, Zoom,
+      Fullscreen (`window.set_fullscreen`), Audio Mute, Resume
+- [ ] Everything else from the config surface (CRT filter, scanlines,
+      palette, keybind remapping, difficulty, checkpoint mode, ...) still
+      needs a menu entry; this is the pattern to extend, not a finished
+      options screen
+- [ ] Main menu / title screen UI (currently boots straight into gameplay
+      with no menu shown before Playing)
+- [ ] Gamepad button glyphs instead of a fixed "X" prompt
+- [ ] Mod enable/disable/reorder UI (every mod with a valid `mod.toml` in
+      `./mods/` currently auto-runs - see the Modding section below)
+
+**Modding - Lua scripting is real and wired to the emulator**
+- [x] `contra.write_ppu(addr, value)` / `contra.frame()` / `contra.on(...)`
+      / `contra.log(...)` host API (`crates/contra-mods/src/script.rs`, 8
+      tests incl. one that runs a full frame-by-frame color-cycling script
+      and asserts >10 distinct colors appear over 200 simulated frames)
+- [x] `contra-pc --features mods` scans `./mods/`, loads every mod with an
+      `entry_script` into its own Lua VM, fires `frame_tick` once per
+      emulated frame, and applies queued PPU writes to the live `Nes` -
+      verified against the real ROM (log-confirmed mod load, no runtime
+      errors over 300+ frames)
+- [x] `mods/rgb-character/` - a complete, working example mod (cycles every
+      sprite palette through the NES's 64-color range every frame)
+- [ ] RAM (CPU-side) peek/poke, not just PPU - needed for gameplay-affecting
+      mods, not just visual ones
+- [ ] Typed event payloads for `enemy_spawn`/`player_hit`/etc. (only
+      `frame_tick` carries real data today)
+- [ ] Asset-file-based overrides (`sprite_overrides`/`music_overrides` in
+      the manifest schema exist but aren't consumed - see docs/MODDING.md
+      for why that's a CHR-RAM-patching problem, not a file-swap one)
 
 **Android**
 - [ ] Not started. `contra-core`/`contra-assets` are already

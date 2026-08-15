@@ -12,8 +12,11 @@ opt-in layer instead of a replacement.**
 > real US retail ROM: title screen, stage intro, and in-level gameplay
 > (player, enemies, item drops) all render correctly - see
 > [docs/FIDELITY.md](docs/FIDELITY.md) for exactly what was checked. It has
-> real audio too now (pulse/triangle/noise synthesis, played back live via
-> `cpal`; DMC sample playback is the one channel still missing). See
+> real audio (pulse/triangle/noise synthesis via `cpal`; DMC is the one
+> channel still missing), a freely resizable window that fills whatever
+> shape it's dragged to, live widescreen that tracks the window's aspect
+> ratio, an opt-in "no sprite flicker" mode, and working Lua mod scripting
+> (see `mods/rgb-character/` for a real, running example). See
 > [Project status](#project-status) and [ROADMAP.md](ROADMAP.md) for exactly
 > what's real today versus planned.
 
@@ -75,7 +78,7 @@ instead of failing outright.
 |---|---|
 | **NES emulation core** (`contra-nes`) | |
 | 6502/2A03 CPU | All official opcodes, incl. the JMP-indirect page-boundary bug; 21 unit tests against hand-assembled programs - see `crates/contra-nes/src/cpu.rs` |
-| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
+| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, live widescreen (window-aspect-tracking) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
 | Mapper 2 (UxROM) | Implemented - PRG bank switching, CHR-RAM |
 | APU | Pulse 1/2, triangle, noise, frame sequencer, real-time playback via `cpal` - **DMC (sample playback) not implemented** |
 | Controller input | Implemented (standard shift-register protocol) |
@@ -88,7 +91,7 @@ instead of failing outright.
 | Replay format (input log, "Take Control" handoff) | Format implemented; no recording/playback loop yet |
 | **Everything else** | |
 | ROM loading + identity check | Implemented (`contra-assets`) |
-| Mod manifest, registry, Lua host | Implemented (`contra-mods`); not yet wired to the emulator |
+| Mod manifest, registry, Lua host | **Working end-to-end**: `contra-pc --features mods` loads scripts from `./mods/` and applies their PPU writes live every frame - see `mods/rgb-character/` and docs/MODDING.md |
 | Level editor, randomizer, netcode, roguelike, etc. | Not started - see ROADMAP.md |
 
 See [ROADMAP.md](ROADMAP.md) for the full three-phase plan, with every item
@@ -105,7 +108,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-60 tests, all green, no ROM or window required - the emulator core is
+64 tests, all green, no ROM or window required - the emulator core is
 validated with small original hand-assembled 6502 programs (see
 `crates/contra-nes/src/cpu.rs` and `nes.rs`), not against Contra itself.
 
@@ -115,13 +118,17 @@ Validate a ROM without launching the window:
 cargo run -p contra-extract -- path\to\your\baserom.nes
 ```
 
-Lua modding support requires a C toolchain (MSVC Build Tools on Windows,
-`gcc`/`clang` elsewhere) because `mlua`'s vendored build compiles Lua from
-source:
+Lua mod scripting is off by default and needs a C toolchain (MSVC Build
+Tools on Windows, `gcc`/`clang` elsewhere) because `mlua`'s vendored build
+compiles Lua from source:
 
 ```sh
-cargo build --features contra-mods/lua
+cargo build -p contra-pc --release --features mods
 ```
+
+See [docs/MODDING.md](docs/MODDING.md) for the Windows MSVC-environment
+setup if `cl.exe` isn't already on `PATH`, and for the full scripting API -
+`mods/rgb-character/` in this repo is a complete, working example mod.
 
 ## Controls
 
@@ -131,7 +138,7 @@ cargo build --features contra-mods/lua
 | Jump (A) | X | East face button (B/Circle) |
 | Shoot (B) | Z | South face button (A/Cross) |
 | Start / Select | Enter / Right Shift | Start / Select |
-| Pause | Escape | Start |
+| Pause / menu | Escape or Tab | Start |
 | Quick save / load | F5 / F9 | - |
 | Rewind | Backspace | - |
 
@@ -142,6 +149,26 @@ only does anything if `gameplay.rewind_enabled = true` in `config.toml`
 emulator's state - CPU, RAM, PPU, APU - captured without copying the
 cartridge ROM each time (see `contra_nes::Nes::snapshot`/`restore`).
 
+**Window**: freely resizable, no fixed aspect ratio - drag it to any size
+and the content fills it (fractional "dynamic fill" scaling by default; a
+"Pixel Perfect" toggle in the menu switches to strict integer scaling with
+letterbox bars instead, if you prefer crisp NES pixels over a perfect
+window fill). Widescreen mode tracks the live window aspect ratio frame by
+frame, so maximizing onto an ultrawide monitor immediately shows more of
+the level - up to a hardware-imposed, empirically-tested safe cap (see
+docs/FIDELITY.md); beyond that it pillarbox rather than show wrapped/wrong
+data.
+
+**Pause menu**: press Escape, Tab, or Start to open it - it renders as a
+crisp overlay at the window's native resolution, not blocky upscaled NES
+pixels. Up/Down to navigate, Jump/X to toggle, Left/Right to adjust Zoom,
+Pause again to resume. Real, working toggles: Widescreen, No Sprite Flicker
+(lifts the real hardware's 8-sprites-per-scanline limit, an accuracy break
+that's off by default so `Original` mode stays hardware-accurate), Pixel
+Perfect, Zoom (50-300%), Fullscreen, and Audio Mute. It's a small, honest
+v1, not a finished options screen - see ROADMAP.md for what's still
+menu-less.
+
 Fully rebindable via `contra_core::input::Bindings` - an in-game rebinding
 UI isn't built yet; edit `config.toml` after first run, or see
 `crates/contra-core/src/input.rs`.
@@ -149,17 +176,20 @@ UI isn't built yet; edit `config.toml` after first run, or see
 ## Repository layout
 
 ```
-crates/contra-nes/      NES emulation core: 6502 CPU, 2C02 PPU, mapper 2/UxROM,
-                         APU stub, controller - the "play the real ROM" path
+crates/contra-nes/      NES emulation core: 6502 CPU, 2C02 PPU (incl. live
+                         widescreen + unlimited-sprites presentation modes),
+                         real APU, mapper 2/UxROM, controller
 crates/contra-core/     hand-ported simulation: physics, RNG, config, input,
                          save states, replays, difficulty, checkpoints
 crates/contra-assets/   legal ROM loading/validation
-crates/contra-mods/     mod manifest/registry + optional Lua host
-apps/contra-pc/         desktop shell: loads a ROM into contra-nes (falling back
-                         to the contra-core placeholder demo), window, input
+crates/contra-mods/     mod manifest/registry + working Lua host (`lua` feature)
+apps/contra-pc/         desktop shell: window/input/audio/pause-menu, loads a
+                         ROM into contra-nes (falling back to the contra-core
+                         placeholder demo) and mods into contra-mods
 apps/contra-extract/    ROM validation CLI
 docs/                   architecture, fidelity notes, asset pipeline, modding
-mods/                   drop community mods here (gitignored)
+mods/                   drop mods here (gitignored) - see mods/rgb-character/
+                         for a real, working example
 ```
 
 ## Contributing

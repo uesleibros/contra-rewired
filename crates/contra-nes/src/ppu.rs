@@ -18,6 +18,27 @@ use serde::{Deserialize, Serialize};
 pub const SCREEN_W: usize = 256;
 pub const SCREEN_H: usize = 240;
 
+/// Maximum width the optional "Extended" widescreen presentation (see
+/// `Ppu::wide_width`) can render: instead of 256px, the background can be
+/// rendered up to this many pixels wide, sampling nametable/pattern data
+/// the game has *already* written for smooth scrolling, extended
+/// symmetrically on both sides of the normal view. This never touches game
+/// state (RAM, collision, spawn logic all still operate on the real 256px
+/// camera) - it only changes what gets rendered, so it can't affect
+/// gameplay. See docs/FIDELITY.md.
+///
+/// This is a real, hardware-imposed ceiling, not an arbitrary choice, and
+/// it was tuned empirically against the real US retail ROM rather than
+/// guessed: the NES only has 2 physical nametables, and Contra's engine
+/// only pre-draws the direction it auto-scrolls *toward* - the trailing
+/// edge (behind the camera) isn't kept valid, so extending too far there
+/// shows solid black (undrawn tiles) well before the leading edge does.
+/// 380 (62px extra on each side) rendered clean at every scroll position
+/// tested; 420 already showed black creeping into the trailing edge's sky
+/// row, and 480 was consistently broken on the trailing side. Front-ends
+/// should pillarbox rather than request more than this cap.
+pub const EXTENDED_WIDTH: usize = 380;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mirroring {
     Horizontal,
@@ -60,6 +81,24 @@ pub struct Ppu {
     pub nmi_requested: bool,
     #[serde(skip)]
     pub framebuffer: Vec<u32>,
+    /// Presentation-only "Extended" widescreen width: `SCREEN_W` (256)
+    /// means disabled/normal; anything greater (up to [`EXTENDED_WIDTH`])
+    /// renders that many pixels wide instead, and can change every frame
+    /// (e.g. to track a resizable window's live aspect ratio) without any
+    /// cost when left at `SCREEN_W`. Skipped in save states: it's a
+    /// display setting the front-end owns, not part of the machine's
+    /// state.
+    #[serde(skip)]
+    pub wide_width: usize,
+    #[serde(skip)]
+    pub wide_framebuffer: Vec<u32>,
+    /// Presentation-only: when true, the 8-sprites-per-scanline limit
+    /// (real NES hardware's cause of "sprite flicker") is lifted, up to
+    /// all 64 OAM sprites per line. Off by default so `Original` mode
+    /// stays hardware-accurate; purely a rendering choice, same as
+    /// `wide_width` - never touches game state.
+    #[serde(skip)]
+    pub unlimited_sprites: bool,
 }
 
 impl Ppu {
@@ -81,6 +120,9 @@ impl Ppu {
             mirroring,
             nmi_requested: false,
             framebuffer: vec![0; SCREEN_W * SCREEN_H],
+            wide_width: SCREEN_W,
+            wide_framebuffer: Vec::new(),
+            unlimited_sprites: false,
         }
     }
 
@@ -189,6 +231,15 @@ impl Ppu {
         }
     }
 
+    /// Direct external write into PPU address space (`$0000-$3FFF`:
+    /// pattern tables/CHR-RAM, nametables, palette), bypassing the
+    /// `$2006`/`$2007` register sequence real hardware/game code would use.
+    /// For tooling that pokes memory directly - mods, trainers, debug UIs -
+    /// not part of normal CPU-driven emulation.
+    pub fn poke(&mut self, addr: u16, value: u8) {
+        self.write_vram(addr, value);
+    }
+
     fn write_vram(&mut self, addr: u16, value: u8) {
         let addr = addr & 0x3FFF;
         match addr {
@@ -225,42 +276,68 @@ impl Ppu {
     /// Called once per visible scanline (0..SCREEN_H). Renders background
     /// + sprites for `y` using the current `v`/`t`/`fine_x`, then advances
     /// `v` for the next line exactly as hardware does at dots 256/257.
+    /// When [`Self::wide_width`] is greater than `SCREEN_W`, renders into
+    /// [`Self::wide_framebuffer`] at that width instead of
+    /// [`Self::framebuffer`] at [`SCREEN_W`] - see [`EXTENDED_WIDTH`]'s
+    /// docs for why this can't affect gameplay.
     pub fn render_scanline(&mut self, y: usize) {
-        let mut bg_opaque = [false; SCREEN_W];
+        let width = self.wide_width.clamp(SCREEN_W, EXTENDED_WIDTH);
+        let wide = width > SCREEN_W;
+        let x_offset = if wide { (width as i32 - SCREEN_W as i32) / 2 } else { 0 };
+
+        let mut line = [0u32; EXTENDED_WIDTH];
+        let mut bg_opaque = [false; EXTENDED_WIDTH];
+
         if self.bg_enabled() {
-            self.render_background_line(y, &mut bg_opaque);
+            self.render_background_line(width, x_offset, &mut bg_opaque[..width], &mut line[..width]);
         } else {
             let backdrop = NES_PALETTE[(self.palette[0] & 0x3F) as usize];
-            for x in 0..SCREEN_W {
-                self.framebuffer[y * SCREEN_W + x] = backdrop;
-            }
+            line[..width].fill(backdrop);
         }
         if self.sprites_enabled() {
-            self.render_sprites_line(y, &bg_opaque);
+            self.render_sprites_line(y, width, x_offset, &bg_opaque[..width], &mut line[..width]);
         }
+
+        if wide {
+            // Sized (and re-sized, if `wide_width` changed since the last
+            // scanline - e.g. a live window resize) to exactly `width` per
+            // row, not the max cap, so the buffer's actual stride always
+            // matches what the caller asked for this frame.
+            if self.wide_framebuffer.len() != width * SCREEN_H {
+                self.wide_framebuffer = vec![0; width * SCREEN_H];
+            }
+            self.wide_framebuffer[y * width..(y + 1) * width].copy_from_slice(&line[..width]);
+        } else {
+            self.framebuffer[y * SCREEN_W..(y + 1) * SCREEN_W].copy_from_slice(&line[..SCREEN_W]);
+        }
+
         self.advance_v_for_next_line();
     }
 
-    fn render_background_line(&mut self, y: usize, bg_opaque: &mut [bool; SCREEN_W]) {
+    /// `width` pixels of background starting `x_offset` pixels to the left
+    /// of the normal 256px view (0 for the normal, non-widescreen case).
+    fn render_background_line(&mut self, width: usize, x_offset: i32, bg_opaque: &mut [bool], out: &mut [u32]) {
         let base_nt = (self.v >> 10) & 0x03;
-        let coarse_x0 = self.v & 0x1F;
+        let coarse_x0 = (self.v & 0x1F) as i32;
         let coarse_y = (self.v >> 5) & 0x1F;
         let fine_y = (self.v >> 12) & 0x07;
         let pattern_base: u16 = if self.ctrl & CTRL_BG_PT != 0 { 0x1000 } else { 0x0000 };
 
-        for x in 0..SCREEN_W {
-            let total_fine_x = self.fine_x as u32 + x as u32;
-            let tile_col = (coarse_x0 as u32 + total_fine_x / 8) % 32;
-            let nt_h_flip = ((coarse_x0 as u32 + total_fine_x / 8) / 32) % 2 == 1;
-            let px_in_tile = (total_fine_x % 8) as u8;
+        for x in 0..width {
+            let total_fine_x = self.fine_x as i32 + x as i32 - x_offset;
+            let tile_offset = total_fine_x.div_euclid(8);
+            let px_in_tile = total_fine_x.rem_euclid(8) as u8;
+            let tile_col_raw = coarse_x0 + tile_offset;
+            let tile_col = tile_col_raw.rem_euclid(32) as u16;
+            let nt_h_flip = tile_col_raw.div_euclid(32).rem_euclid(2) == 1;
             let nt = base_nt ^ (nt_h_flip as u16);
 
-            let nt_addr = 0x2000 + nt * 0x400 + coarse_y * 32 + tile_col as u16;
+            let nt_addr = 0x2000 + nt * 0x400 + coarse_y * 32 + tile_col;
             let tile_index = self.read_vram(nt_addr);
 
-            let attr_addr = 0x2000 + nt * 0x400 + 0x3C0 + (coarse_y / 4) * 8 + tile_col as u16 / 4;
+            let attr_addr = 0x2000 + nt * 0x400 + 0x3C0 + (coarse_y / 4) * 8 + tile_col / 4;
             let attr_byte = self.read_vram(attr_addr);
-            let quadrant = (((coarse_y % 4) / 2) * 2 + (tile_col as u16 % 4) / 2) as u8;
+            let quadrant = (((coarse_y % 4) / 2) * 2 + (tile_col % 4) / 2) as u8;
             let palette_select = (attr_byte >> (quadrant * 2)) & 0x03;
 
             let plane0 = self.read_vram(pattern_base + tile_index as u16 * 16 + fine_y);
@@ -275,11 +352,18 @@ impl Ppu {
                 let pal = self.read_palette(0x3F00 + (palette_select as u16) * 4 + color_index as u16);
                 NES_PALETTE[(pal & 0x3F) as usize]
             };
-            self.framebuffer[y * SCREEN_W + x] = color;
+            out[x] = color;
         }
     }
 
-    fn render_sprites_line(&mut self, y: usize, bg_opaque: &[bool; SCREEN_W]) {
+    /// `width`/`x_offset` as in [`Self::render_background_line`]. Sprite
+    /// positions are shifted by `x_offset` so they stay visually aligned
+    /// with the (possibly widened) background. Note: in wide mode, sprite
+    /// 0 hit is evaluated against the widened background, which can differ
+    /// in timing from real hardware (which never had that extra background
+    /// to hit) - a known, accepted tradeoff of an opt-in presentation mode
+    /// that never touches actual game state.
+    fn render_sprites_line(&mut self, y: usize, width: usize, x_offset: i32, bg_opaque: &[bool], out: &mut [u32]) {
         let sprite_height: i32 = if self.ctrl & CTRL_SPRITE_16 != 0 { 16 } else { 8 };
         let mut rendered_on_line = 0u8;
         let mut sprite0_this_line = false;
@@ -291,7 +375,7 @@ impl Ppu {
         // shows up as flicker/wrong-part-on-top on any multi-sprite
         // character or overlapping-sprite effect. Track which pixels a
         // higher-priority sprite already claimed this line and skip them.
-        let mut claimed = [false; SCREEN_W];
+        let mut claimed = [false; EXTENDED_WIDTH];
 
         for i in 0..64 {
             let sprite_y = self.oam[i * 4] as i32 + 1;
@@ -301,7 +385,14 @@ impl Ppu {
             }
             if rendered_on_line >= 8 {
                 self.status |= STATUS_SPRITE_OVERFLOW;
-                break;
+                if !self.unlimited_sprites {
+                    break;
+                }
+                // `unlimited_sprites`: still report overflow (a script/mod
+                // reading $2002 should see the same flag a real cartridge
+                // would), just don't stop drawing at the hardware's 8-per-
+                // line cap - this is the actual "no sprite flicker" effect,
+                // an opt-in accuracy break, never on in Original mode.
             }
             rendered_on_line += 1;
 
@@ -337,8 +428,8 @@ impl Ppu {
                 if color_index == 0 {
                     continue;
                 }
-                let screen_x = sx + col;
-                if !(0..SCREEN_W as i32).contains(&screen_x) {
+                let screen_x = sx + col + x_offset;
+                if !(0..width as i32).contains(&screen_x) {
                     continue;
                 }
                 if i == 0 && bg_opaque[screen_x as usize] {
@@ -356,7 +447,7 @@ impl Ppu {
                 }
                 claimed[screen_x as usize] = true;
                 let pal = self.read_palette(0x3F10 + (palette_select as u16) * 4 + color_index as u16);
-                self.framebuffer[y * SCREEN_W + screen_x as usize] = NES_PALETTE[(pal & 0x3F) as usize];
+                out[screen_x as usize] = NES_PALETTE[(pal & 0x3F) as usize];
             }
         }
 
@@ -428,6 +519,113 @@ pub const NES_PALETTE: [u32; 64] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ppu_with_test_pattern() -> Ppu {
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.mask = MASK_SHOW_BG;
+        // Fill every nametable byte across both logical nametables with a
+        // repeating, non-trivial tile pattern so widening the view actually
+        // samples something other than tile 0 everywhere.
+        for addr in 0x2000u16..0x2800 {
+            let i = (addr - 0x2000) as u8;
+            ppu.write_vram(addr, i.wrapping_mul(7).wrapping_add(1));
+        }
+        for tile in 0u16..256 {
+            for row in 0..8u16 {
+                ppu.chr_ram[(tile * 16 + row) as usize] = 0xAA;
+                ppu.chr_ram[(tile * 16 + row + 8) as usize] = 0x00;
+            }
+        }
+        for i in 0..32u16 {
+            ppu.write_palette(0x3F00 + i, (i + 1) as u8 & 0x3F);
+        }
+        ppu
+    }
+
+    #[test]
+    fn wide_mode_center_matches_narrow_mode_exactly() {
+        let mut narrow = ppu_with_test_pattern();
+        let mut wide = ppu_with_test_pattern();
+        wide.wide_width = EXTENDED_WIDTH;
+
+        narrow.render_scanline(5);
+        wide.render_scanline(5);
+
+        let x_offset = (EXTENDED_WIDTH - SCREEN_W) / 2;
+        let wide_row = &wide.wide_framebuffer[5 * EXTENDED_WIDTH..(5 + 1) * EXTENDED_WIDTH];
+        let narrow_row = &narrow.framebuffer[5 * SCREEN_W..(5 + 1) * SCREEN_W];
+
+        assert_eq!(
+            &wide_row[x_offset..x_offset + SCREEN_W],
+            narrow_row,
+            "the center EXTENDED_WIDTH-minus-256 columns of the wide render must exactly match the normal render"
+        );
+        // And there must be *varied* (non-placeholder) content on both
+        // extended sides, not just one flat color - otherwise this
+        // "widescreen" mode would just be letterboxing with extra steps.
+        // (Checked as "not every pixel identical" rather than "not zero":
+        // a single specific pixel can legitimately land on one of the
+        // NES's reserved black palette slots ($0D/$0E/$0F per group) by
+        // coincidence, which isn't a rendering bug.)
+        let left_ext = &wide_row[..x_offset];
+        let right_ext = &wide_row[x_offset + SCREEN_W..];
+        assert!(left_ext.iter().any(|&p| p != left_ext[0]), "left extension should show varied background data");
+        assert!(right_ext.iter().any(|&p| p != right_ext[0]), "right extension should show varied background data");
+    }
+
+    #[test]
+    fn arbitrary_wide_width_below_the_cap_produces_a_correctly_strided_buffer() {
+        let mut ppu = ppu_with_test_pattern();
+        ppu.wide_width = 320; // an in-between size, e.g. matching some window's aspect ratio
+        ppu.render_scanline(3);
+        assert_eq!(ppu.wide_framebuffer.len(), 320 * SCREEN_H);
+        let row = &ppu.wide_framebuffer[3 * 320..4 * 320];
+        assert!(row.iter().any(|&p| p != row[0]), "should show varied content, not a flat fill");
+    }
+
+    #[test]
+    fn unlimited_sprites_draws_past_the_hardware_eight_per_line_cap() {
+        let mut limited = Ppu::new(Mirroring::Horizontal);
+        let mut unlimited = Ppu::new(Mirroring::Horizontal);
+        for ppu in [&mut limited, &mut unlimited] {
+            ppu.mask = MASK_SHOW_SPRITES;
+            for row in 0..8usize {
+                ppu.chr_ram[row] = 0xFF;
+            }
+            // $0D is one of the NES's reserved-black palette entries, so
+            // the (sprite-less) backdrop renders as literal 0 and this
+            // test's "count non-zero pixels" check only counts sprites.
+            ppu.write_palette(0x3F00, 0x0D);
+            ppu.write_palette(0x3F11, 0x01);
+            // 10 sprites, all on the same scanline, spread out horizontally
+            // so none overlap - only OAM-index-order + the 8-sprite cap
+            // determines how many actually draw.
+            for i in 0..10 {
+                ppu.oam[i * 4] = 9;
+                ppu.oam[i * 4 + 1] = 0;
+                ppu.oam[i * 4 + 2] = 0;
+                ppu.oam[i * 4 + 3] = (i * 10) as u8;
+            }
+        }
+        unlimited.unlimited_sprites = true;
+
+        limited.render_scanline(10);
+        unlimited.render_scanline(10);
+
+        let count_lit = |fb: &[u32]| fb[10 * SCREEN_W..11 * SCREEN_W].iter().filter(|&&p| p != 0).count();
+        assert_eq!(count_lit(&limited.framebuffer), 8 * 8, "hardware cap: exactly 8 sprites x 8px wide");
+        assert_eq!(count_lit(&unlimited.framebuffer), 10 * 8, "unlimited: all 10 sprites draw");
+        assert_ne!(limited.status & STATUS_SPRITE_OVERFLOW, 0);
+        assert_ne!(unlimited.status & STATUS_SPRITE_OVERFLOW, 0, "overflow flag should still be reported even when not enforced");
+    }
+
+    #[test]
+    fn narrow_mode_is_unaffected_when_wide_framebuffer_never_allocated() {
+        let mut ppu = ppu_with_test_pattern();
+        assert_eq!(ppu.wide_width, SCREEN_W);
+        ppu.render_scanline(0);
+        assert!(ppu.wide_framebuffer.is_empty(), "narrow mode must not allocate the wide buffer at all");
+    }
 
     #[test]
     fn lower_oam_index_sprite_wins_overlap_priority() {

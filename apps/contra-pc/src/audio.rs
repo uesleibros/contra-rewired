@@ -8,14 +8,21 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-/// Capped so a paused/minimized window (which stops draining the buffer)
-/// can't grow this unboundedly; a few seconds of headroom is plenty.
-const MAX_BUFFERED_SAMPLES: usize = 44_100 * 2;
+/// How far behind real-time the audio buffer is allowed to get before we
+/// start dropping the *oldest* samples to catch back up. This bounds
+/// latency, not just prevents unbounded memory growth: under normal
+/// operation the buffer sits at roughly one video frame's worth of samples
+/// (~16ms) because we push once per simulated frame and the callback drains
+/// continuously, so 150ms of headroom absorbs OS scheduling jitter without
+/// making a pile-up (e.g. the window losing focus for a moment) turn into
+/// audible seconds-long lag that never recovers.
+const MAX_LATENCY_SECONDS: f64 = 0.15;
 
 pub struct AudioOutput {
     _stream: cpal::Stream,
     buffer: Arc<Mutex<VecDeque<f32>>>,
     pub sample_rate: f64,
+    max_buffered_samples: usize,
 }
 
 impl AudioOutput {
@@ -33,6 +40,7 @@ impl AudioOutput {
         let config = device.default_output_config().ok()?;
         let sample_rate = config.sample_rate().0 as f64;
         let channels = config.channels() as usize;
+        let max_buffered_samples = (sample_rate * MAX_LATENCY_SECONDS) as usize;
 
         let buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
         let buffer_for_callback = buffer.clone();
@@ -60,7 +68,8 @@ impl AudioOutput {
             return None;
         }
 
-        Some(Self { _stream: stream, buffer, sample_rate })
+        log::info!("audio: {sample_rate} Hz, {channels} channel(s), max latency {}ms", (MAX_LATENCY_SECONDS * 1000.0) as u32);
+        Some(Self { _stream: stream, buffer, sample_rate, max_buffered_samples })
     }
 
     pub fn push_samples(&self, samples: &[f32]) {
@@ -69,7 +78,10 @@ impl AudioOutput {
         }
         let mut buf = self.buffer.lock().unwrap();
         buf.extend(samples.iter().copied());
-        while buf.len() > MAX_BUFFERED_SAMPLES {
+        // Drop from the front (oldest) rather than refusing new samples, so
+        // playback always catches back up to low latency instead of queuing
+        // an ever-growing backlog of stale audio.
+        while buf.len() > self.max_buffered_samples {
             buf.pop_front();
         }
     }

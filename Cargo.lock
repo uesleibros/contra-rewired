@@ -499,6 +499,7 @@ dependencies = [
  "clap",
  "contra-assets",
  "contra-core",
+ "contra-mods",
  "contra-nes",
  "cpal",
  "env_logger",

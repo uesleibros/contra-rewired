@@ -48,6 +48,45 @@ impl Nes {
         &self.bus.ppu.framebuffer
     }
 
+    /// The "Extended" widescreen framebuffer, [`Self::wide_width`] pixels
+    /// wide; only populated while widescreen is enabled (width >
+    /// `contra_nes::SCREEN_W`).
+    pub fn wide_framebuffer(&self) -> &[u32] {
+        &self.bus.ppu.wide_framebuffer
+    }
+
+    /// The width [`Self::wide_framebuffer`] is currently rendered at.
+    pub fn wide_width(&self) -> usize {
+        self.bus.ppu.wide_width
+    }
+
+    /// Sets the "Extended" widescreen presentation width - `SCREEN_W` (256)
+    /// disables it; anything greater (clamped to `EXTENDED_WIDTH`, the
+    /// hardware-imposed safe cap) renders that many pixels wide instead,
+    /// letting a front-end track a live, resizable window's aspect ratio
+    /// frame by frame. Purely a rendering choice - it never touches RAM,
+    /// collision, or any other game state, so it's safe to change at any
+    /// time, mid-gameplay included.
+    pub fn set_wide_width(&mut self, width: usize) {
+        self.bus.ppu.wide_width = width.clamp(crate::ppu::SCREEN_W, crate::ppu::EXTENDED_WIDTH);
+    }
+
+    /// Lifts the real NES's 8-sprites-per-scanline rendering limit (the
+    /// cause of "sprite flicker" whenever a scene has more sprites on one
+    /// line than that). Purely a rendering choice, off by default so
+    /// `Original` mode stays hardware-accurate.
+    pub fn set_unlimited_sprites(&mut self, enabled: bool) {
+        self.bus.ppu.unlimited_sprites = enabled;
+    }
+
+    /// Direct external write into PPU address space - see
+    /// [`crate::ppu::Ppu::poke`]. This is the seam mods/trainers use (e.g.
+    /// writing sprite palette entries each frame for a color-cycling
+    /// effect); it never touches CPU/RAM state, only what the PPU renders.
+    pub fn poke_ppu(&mut self, addr: u16, value: u8) {
+        self.bus.ppu.poke(addr, value);
+    }
+
     /// Drains every audio sample generated since the last call (mono,
     /// `f32` in roughly `[0, 1)`), for the front-end to feed to its audio
     /// output device.

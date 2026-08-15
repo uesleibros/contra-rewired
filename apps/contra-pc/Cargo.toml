@@ -14,6 +14,7 @@ path = "src/main.rs"
 contra-core = { path = "../../crates/contra-core" }
 contra-assets = { path = "../../crates/contra-assets" }
 contra-nes = { path = "../../crates/contra-nes" }
+contra-mods = { path = "../../crates/contra-mods" }
 bincode = { workspace = true }
 winit = "0.29"
 softbuffer = "0.4"
@@ -23,3 +24,9 @@ anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 clap = { workspace = true }
+
+[features]
+# Lua mod scripting. Off by default: mlua's vendored build needs a C
+# toolchain (MSVC Build Tools on Windows, gcc/clang elsewhere) not every
+# contributor has installed. `cargo build --features mods` to enable.
+mods = ["contra-mods/lua"]

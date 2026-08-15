@@ -30,4 +30,4 @@ pub mod ppu;
 mod serde_arrays;
 
 pub use nes::{Nes, NesSnapshot};
-pub use ppu::{Mirroring, SCREEN_H, SCREEN_W};
+pub use ppu::{Mirroring, EXTENDED_WIDTH, SCREEN_H, SCREEN_W};

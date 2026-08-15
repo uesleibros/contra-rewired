@@ -11,6 +11,7 @@
 //! framebuffer -> window) stays demonstrable on its own.
 
 mod audio;
+mod menu;
 
 use std::collections::HashSet;
 use std::num::NonZeroU32;
@@ -29,10 +30,11 @@ use contra_core::state_machine::{GameEvent, GameRoutine};
 use contra_nes::{Mirroring, Nes, NesSnapshot};
 
 use gilrs::{Axis, Button, Gilrs};
+use menu::{MenuItem, MenuState, Settings};
 use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::WindowBuilder;
+use winit::window::{Fullscreen, WindowBuilder};
 
 const INTERNAL_W: u32 = 256;
 const INTERNAL_H: u32 = 240;
@@ -273,6 +275,85 @@ fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> 
     }
 }
 
+/// Scans `./mods/` and loads every mod that has a Lua entry script. Every
+/// found mod is enabled automatically (no mod-management UI yet - see
+/// ROADMAP.md); drop a mod in the folder and it runs.
+#[cfg(feature = "mods")]
+struct LoadedMod {
+    id: String,
+    host: contra_mods::script::LuaModHost,
+}
+
+#[cfg(feature = "mods")]
+fn load_mods() -> Vec<LoadedMod> {
+    let registry = contra_mods::ModRegistry::scan("mods");
+    let mut loaded = Vec::new();
+    for m in registry.all() {
+        let Some(script_rel_path) = &m.manifest.entry_script else {
+            continue;
+        };
+        let script_path = m.dir.join(script_rel_path);
+        let source = match std::fs::read_to_string(&script_path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("mod '{}': could not read {}: {e}", m.manifest.id, script_path.display());
+                continue;
+            }
+        };
+        let host = match contra_mods::script::LuaModHost::new() {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("mod '{}': failed to create Lua host: {e}", m.manifest.id);
+                continue;
+            }
+        };
+        if let Err(e) = host.load_script(&source, &m.manifest.id) {
+            log::error!("mod '{}': script error: {e}", m.manifest.id);
+            continue;
+        }
+        log::info!("loaded mod: {} ({}) - {}", m.manifest.name, m.manifest.id, m.manifest.description);
+        loaded.push(LoadedMod { id: m.manifest.id.clone(), host });
+    }
+    loaded
+}
+
+/// Fires `frame_tick` on every loaded mod and applies whatever PPU writes
+/// it queued (see `contra_mods::script::LuaModHost`). No-op for the
+/// placeholder demo (no `Nes` to poke) or if `mods` wasn't enabled at
+/// build time.
+#[cfg(feature = "mods")]
+fn run_mods(mods: &[LoadedMod], session: &mut Session) {
+    let Session::Emulator { nes, frame_count, .. } = session else {
+        return;
+    };
+    for m in mods {
+        m.host.set_frame(*frame_count);
+        if let Err(e) = m.host.fire(contra_mods::script::ModEvent::FrameTick) {
+            log::error!("mod '{}': runtime error: {e}", m.id);
+            continue;
+        }
+        for (addr, value) in m.host.take_pending_writes() {
+            nes.poke_ppu(addr, value);
+        }
+    }
+}
+
+#[cfg(not(feature = "mods"))]
+fn run_mods(_mods: &[()], _session: &mut Session) {}
+
+#[cfg(not(feature = "mods"))]
+fn load_mods() -> Vec<()> {
+    let registry = contra_mods::ModRegistry::scan("mods");
+    let scriptable = registry.all().iter().filter(|m| m.manifest.entry_script.is_some()).count();
+    if scriptable > 0 {
+        log::warn!(
+            "{scriptable} mod(s) in ./mods have a Lua script, but this build doesn't have scripting enabled - \
+             rebuild with `cargo build --features mods` (requires a C toolchain; see docs/MODDING.md)"
+        );
+    }
+    Vec::new()
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
@@ -292,6 +373,7 @@ fn main() -> anyhow::Result<()> {
     let audio_sample_rate = audio_output.as_ref().map(|a| a.sample_rate).unwrap_or(44_100.0);
 
     let mut session = load_session(&args, rewind_capacity, audio_sample_rate);
+    let loaded_mods = load_mods();
     let window_title = match &session {
         Session::Emulator { .. } => "contra-rewired",
         Session::Placeholder { .. } => "contra-rewired (no ROM loaded - engine placeholder demo)",
@@ -314,6 +396,10 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
 
     let mut placeholder_framebuffer = vec![0u32; (INTERNAL_W * INTERNAL_H) as usize];
+    // Tracks the widescreen width that matches the *current* window's live
+    // aspect ratio (recomputed on every resize), so an ultrawide monitor
+    // fills edge to edge instead of pillarboxing at a fixed extension.
+    let mut target_wide_width = compute_wide_width(window.inner_size().width, window.inner_size().height);
 
     let bindings = config.input.player_bindings[0].clone();
     let mut action_state = ActionState::new();
@@ -324,6 +410,8 @@ fn main() -> anyhow::Result<()> {
 
     let mut held_keys: HashSet<String> = HashSet::new();
     let mut edges = EdgeTracker::default();
+    let mut settings = Settings::default();
+    let mut menu_state = MenuState::new();
 
     let mut gilrs = Gilrs::new().ok();
     if gilrs.is_none() {
@@ -334,9 +422,9 @@ fn main() -> anyhow::Result<()> {
     let mut last_tick = Instant::now();
     let mut accumulator = Duration::ZERO;
 
-    event_loop.run(move |event, elwt| {
-        elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
+    window.request_redraw();
 
+    event_loop.run(move |event, elwt| {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
@@ -359,7 +447,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     if let PhysicalKey::Code(key_code) = physical_key {
-                        if is_down && key_code == KeyCode::Escape {
+                        if is_down && (key_code == KeyCode::Escape || key_code == KeyCode::Tab) {
                             routine = match routine {
                                 GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
                                 GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
@@ -381,46 +469,105 @@ fn main() -> anyhow::Result<()> {
                     if let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
                         let _ = surface.resize(w, h);
                     }
+                    target_wide_width = compute_wide_width(size.width, size.height);
                 }
                 WindowEvent::RedrawRequested => {
-                    let fb = match &session {
-                        Session::Emulator { nes, .. } => nes.framebuffer(),
-                        Session::Placeholder { .. } => &placeholder_framebuffer[..],
+                    let (fb_source, fb_width): (&[u32], u32) = match &session {
+                        Session::Emulator { nes, .. } if nes.wide_width() > contra_nes::SCREEN_W && !nes.wide_framebuffer().is_empty() => {
+                            (nes.wide_framebuffer(), nes.wide_width() as u32)
+                        }
+                        Session::Emulator { nes, .. } => (nes.framebuffer(), contra_nes::SCREEN_W as u32),
+                        Session::Placeholder { .. } => (&placeholder_framebuffer[..], INTERNAL_W),
                     };
-                    present(&mut surface, &window, fb);
+
+                    let menu_overlay = (routine == GameRoutine::Paused).then_some(&menu_state);
+                    present(&mut surface, &window, fb_source, fb_width, INTERNAL_H, &settings, menu_overlay);
                 }
                 _ => {}
             },
             Event::AboutToWait => {
+                // WaitUntil (not Poll) so this only wakes up when a frame is
+                // actually due, instead of spinning as fast as the OS will
+                // allow. Poll was calling request_redraw() - a full
+                // framebuffer scale-copy - potentially hundreds of thousands
+                // of times per second, which is real CPU/GPU load that can
+                // starve the audio callback thread and make everything feel
+                // sluggish even though the emulation itself is nowhere near
+                // the bottleneck (it runs at ~30x real-time; see
+                // crates/contra-nes/examples/perf_test.rs).
                 let now = Instant::now();
                 accumulator += now.duration_since(last_tick);
                 last_tick = now;
 
-                let gp = poll_gamepad(gilrs.as_mut());
-                if edges.just_pressed("gp_start", gp.start) {
-                    routine = match routine {
-                        GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
-                        GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
-                        other => other,
-                    };
-                }
-
-                update_action_state(&mut action_state, &bindings, &held_keys, &gp);
-
+                let mut stepped = false;
                 while accumulator >= frame_duration {
-                    if routine.accepts_gameplay_input() {
+                    let gp = poll_gamepad(gilrs.as_mut());
+                    if edges.just_pressed("gp_start", gp.start) {
+                        routine = match routine {
+                            GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
+                            GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
+                            other => other,
+                        };
+                    }
+                    update_action_state(&mut action_state, &bindings, &held_keys, &gp);
+
+                    if routine == GameRoutine::Paused {
+                        if action_state.just_pressed(Action::Up) {
+                            menu_state.move_up();
+                        }
+                        if action_state.just_pressed(Action::Down) {
+                            menu_state.move_down();
+                        }
+                        if menu_state.current() == MenuItem::Zoom {
+                            if action_state.just_pressed(Action::Left) {
+                                settings.zoom_percent = (settings.zoom_percent - 10).max(50);
+                            }
+                            if action_state.just_pressed(Action::Right) {
+                                settings.zoom_percent = (settings.zoom_percent + 10).min(300);
+                            }
+                        }
+                        if action_state.just_pressed(Action::Jump) {
+                            match menu_state.current() {
+                                MenuItem::Widescreen => settings.widescreen = !settings.widescreen,
+                                MenuItem::NoSpriteLimit => settings.unlimited_sprites = !settings.unlimited_sprites,
+                                MenuItem::PixelPerfect => settings.pixel_perfect = !settings.pixel_perfect,
+                                MenuItem::Zoom => {}
+                                MenuItem::Fullscreen => {
+                                    settings.fullscreen = !settings.fullscreen;
+                                    window.set_fullscreen(settings.fullscreen.then_some(Fullscreen::Borderless(None)));
+                                }
+                                MenuItem::AudioMuted => settings.audio_muted = !settings.audio_muted,
+                                MenuItem::Resume => routine = routine.transition(GameEvent::ResumePressed),
+                            }
+                        }
+                    } else if routine.accepts_gameplay_input() {
+                        if let Session::Emulator { nes, .. } = &mut session {
+                            nes.set_wide_width(if settings.widescreen { target_wide_width } else { contra_nes::SCREEN_W });
+                            nes.set_unlimited_sprites(settings.unlimited_sprites);
+                        }
                         session.step(&action_state, rewind_enabled);
+                        run_mods(&loaded_mods, &mut session);
+                        let samples = session.drain_audio();
                         if let Some(audio) = &audio_output {
-                            audio.push_samples(&session.drain_audio());
+                            if !settings.audio_muted {
+                                audio.push_samples(&samples);
+                            }
                         }
                     }
                     accumulator -= frame_duration;
+                    stepped = true;
                 }
 
-                if let Session::Placeholder { player, .. } = &session {
-                    render_placeholder(&mut placeholder_framebuffer, player, routine);
+                if stepped {
+                    if let Session::Placeholder { player, .. } = &session {
+                        render_placeholder(&mut placeholder_framebuffer, player, routine);
+                    }
+                    window.request_redraw();
                 }
-                window.request_redraw();
+
+                elwt.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                    last_tick + frame_duration.saturating_sub(accumulator),
+                ));
             }
             _ => {}
         }
@@ -531,8 +678,51 @@ fn render_placeholder(fb: &mut [u32], player: &PlayerPhysics, routine: GameRouti
     }
 }
 
-fn present(surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>, window: &winit::window::Window, framebuffer: &[u32]) {
-    if framebuffer.len() < (INTERNAL_W * INTERNAL_H) as usize {
+/// Picks a widescreen render width that matches the window's *current*
+/// live aspect ratio, clamped to the hardware-safe cap
+/// (`contra_nes::EXTENDED_WIDTH`) - so resizing the window (dragging it
+/// wider, maximizing onto an ultrawide monitor, etc.) is reflected on the
+/// very next frame instead of needing a mode toggle. See
+/// `contra_nes::EXTENDED_WIDTH`'s docs for why there's a cap at all: the
+/// NES doesn't have infinite off-screen world to reveal.
+fn compute_wide_width(window_w: u32, window_h: u32) -> usize {
+    if window_h == 0 {
+        return contra_nes::SCREEN_W;
+    }
+    let aspect = window_w as f32 / window_h as f32;
+    let desired = (contra_nes::SCREEN_H as f32 * aspect).round() as usize;
+    desired.clamp(contra_nes::SCREEN_W, contra_nes::EXTENDED_WIDTH)
+}
+
+/// Blits `framebuffer` (`internal_w` x `internal_h`) into the window.
+///
+/// Two scaling philosophies, both real (see `menu::Settings::pixel_perfect`):
+/// - **Pixel perfect** (opt-in): scale is floored to a whole number, so
+///   every NES pixel is an exact NxN block on screen - crisp, but leaves
+///   letterbox bars unless the window happens to be an exact multiple.
+/// - **Dynamic fill** (default): scale is fractional, chosen to cover as
+///   much of the window as possible while preserving aspect ratio - the
+///   "whatever size the window is, it fills it" behavior of e.g. the
+///   Switch Pokemon/Link's Awakening ports. Combined with live widescreen
+///   width tracking, this reaches zero letterboxing on most window shapes.
+///
+/// `zoom_percent` (50-300) is an extra multiplier on top of either mode,
+/// letting content be cropped-in past a perfect fit if desired.
+///
+/// The pause menu, if `menu_overlay` is `Some`, is drawn *after* scaling,
+/// directly at the window's native resolution - crisp text that sits
+/// visually "outside" the low-res emulated picture, not blocky upscaled
+/// NES-style pixels.
+fn present(
+    surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>,
+    window: &winit::window::Window,
+    framebuffer: &[u32],
+    internal_w: u32,
+    internal_h: u32,
+    settings: &menu::Settings,
+    menu_state_if_paused: Option<&MenuState>,
+) {
+    if framebuffer.len() < (internal_w * internal_h) as usize {
         return;
     }
     let size = window.inner_size();
@@ -546,29 +736,38 @@ fn present(surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit
         return;
     };
 
-    // Integer-scale + letterbox the internal framebuffer into the window.
-    let scale = (size.width / INTERNAL_W).min(size.height / INTERNAL_H).max(1);
-    let out_w = INTERNAL_W * scale;
-    let out_h = INTERNAL_H * scale;
-    let off_x = (size.width - out_w) / 2;
-    let off_y = (size.height - out_h) / 2;
+    let zoom = (settings.zoom_percent as f32 / 100.0).max(0.01);
+    let fit_scale = (size.width as f32 / internal_w as f32).min(size.height as f32 / internal_h as f32);
+    let scale = if settings.pixel_perfect { fit_scale.floor().max(1.0) } else { fit_scale } * zoom;
+
+    let out_w = (internal_w as f32 * scale).round() as i32;
+    let out_h = (internal_h as f32 * scale).round() as i32;
+    let off_x = (size.width as i32 - out_w) / 2;
+    let off_y = (size.height as i32 - out_h) / 2;
 
     buffer.fill(0);
-    for sy in 0..out_h {
-        let src_y = sy / scale;
-        for sx in 0..out_w {
-            let src_x = sx / scale;
-            let src_idx = (src_y * INTERNAL_W + src_x) as usize;
-            let dst_x = off_x + sx;
-            let dst_y = off_y + sy;
-            if dst_x < size.width && dst_y < size.height {
-                let dst_idx = (dst_y * size.width + dst_x) as usize;
-                if src_idx < framebuffer.len() && dst_idx < buffer.len() {
-                    buffer[dst_idx] = framebuffer[src_idx];
-                }
+    for dy in 0..size.height as i32 {
+        let src_y = ((dy - off_y) as f32 / scale) as i32;
+        if src_y < 0 || src_y >= internal_h as i32 {
+            continue;
+        }
+        for dx in 0..size.width as i32 {
+            let src_x = ((dx - off_x) as f32 / scale) as i32;
+            if src_x < 0 || src_x >= internal_w as i32 {
+                continue;
+            }
+            let src_idx = (src_y as u32 * internal_w + src_x as u32) as usize;
+            let dst_idx = (dy as u32 * size.width + dx as u32) as usize;
+            if src_idx < framebuffer.len() && dst_idx < buffer.len() {
+                buffer[dst_idx] = framebuffer[src_idx];
             }
         }
     }
+
+    if let Some(menu_state) = menu_state_if_paused {
+        menu::draw_pause_menu(&mut buffer, size.width as usize, size.height as usize, menu_state, settings);
+    }
+
     let _ = buffer.present();
 }
 

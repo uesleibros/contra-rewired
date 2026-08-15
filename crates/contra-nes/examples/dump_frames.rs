@@ -46,6 +46,14 @@ fn main() {
     eprintln!("mapper={} prg_kib={} md5={}", rom.mapper, rom.prg_rom.len() / 1024, rom.md5_hex);
     let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
     let mut nes = Nes::new(rom.prg_rom, mirroring);
+    if let Ok(px) = std::env::var("WIDE_PX") {
+        nes.set_wide_width(px.parse().unwrap());
+    } else if std::env::var("WIDE").is_ok() {
+        nes.set_wide_width(contra_nes::EXTENDED_WIDTH);
+    }
+    if std::env::var("UNLIMITED_SPRITES").is_ok() {
+        nes.set_unlimited_sprites(true);
+    }
 
     let mut illegal_seen: HashMap<u8, u32> = HashMap::new();
     let mut saved = 0;
@@ -83,7 +91,11 @@ fn main() {
 
         if frame % 30 == 0 || frame == frame_count - 1 {
             let path = std::path::Path::new(out_dir).join(format!("frame_{frame:04}.png"));
-            save_png(&path, nes.framebuffer(), contra_nes::SCREEN_W, contra_nes::SCREEN_H);
+            if nes.wide_width() > contra_nes::SCREEN_W {
+                save_png(&path, nes.wide_framebuffer(), nes.wide_width(), contra_nes::SCREEN_H);
+            } else {
+                save_png(&path, nes.framebuffer(), contra_nes::SCREEN_W, contra_nes::SCREEN_H);
+            }
             saved += 1;
         }
 
