@@ -151,8 +151,13 @@ impl Nes {
     }
 
     fn advance_cpu(&mut self, budget: &mut f64) {
+        self.advance_cpu_inner(budget, &mut |_| {});
+    }
+
+    fn advance_cpu_inner(&mut self, budget: &mut f64, on_pc: &mut dyn FnMut(u16)) {
         *budget += DOTS_PER_SCANLINE / CPU_DOTS_PER_CYCLE;
         while (self.cpu.cycles as f64) < *budget {
+            on_pc(self.cpu.pc);
             let cycles = self.cpu.step(&mut self.bus);
             for _ in 0..cycles {
                 self.bus.apu.step();
@@ -165,6 +170,43 @@ impl Nes {
                 self.cpu.cycles += self.bus.dma_stall as u64;
                 self.bus.dma_stall = 0;
             }
+        }
+    }
+
+    /// Same as [`Self::run_frame`], but calls `on_pc` with the CPU's `pc`
+    /// register right before every single instruction executes this frame -
+    /// a debugging aid for the case `run_frame`'s frame-at-a-time
+    /// granularity can't help with: diagnosing *why* a frame produced no
+    /// visible progress (RAM/PPU state identical to the previous frame),
+    /// where the question is "what is the CPU actually doing", not "what
+    /// changed". Tally `on_pc`'s calls into a histogram and the most
+    /// frequent addresses are almost always the body of whatever loop it's
+    /// stuck in - used to help track down the Base 1/Base 2 stage-select
+    /// hang (see docs/FIDELITY.md). Not used by any shipped code path -
+    /// `contra-pc` never needs single-instruction granularity - but kept
+    /// as real, reusable tooling rather than a throwaway diagnostic script,
+    /// the same spirit as `dump_frames.rs`'s various `DEBUG_*` env vars.
+    pub fn run_frame_with_pc_trace(&mut self, on_pc: &mut dyn FnMut(u16)) {
+        let mut budget = self.cpu.cycles as f64;
+
+        self.bus.ppu.start_prerender();
+        self.advance_cpu_inner(&mut budget, on_pc);
+
+        for y in 0..SCREEN_H {
+            self.bus.ppu.render_scanline(y);
+            self.advance_cpu_inner(&mut budget, on_pc);
+        }
+
+        self.advance_cpu_inner(&mut budget, on_pc); // post-render line (240): no PPU memory access
+
+        let want_nmi = self.bus.ppu.start_vblank();
+        self.advance_cpu_inner(&mut budget, on_pc); // scanline 241: vblank flag becomes visible to the CPU here
+        if want_nmi {
+            self.cpu.nmi(&mut self.bus);
+        }
+
+        for _ in 0..SCANLINES_AFTER_VBLANK_START {
+            self.advance_cpu_inner(&mut budget, on_pc);
         }
     }
 

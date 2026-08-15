@@ -686,6 +686,27 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
                 for addr in 0x300..0x600u16 {
                     nes.poke_ram(addr, 0);
                 }
+                // CPU_GRAPHICS_BUFFER ($0700, 80 bytes) + the 112 reserved
+                // bytes after it, stopping short of PALETTE_CPU_BUFFER
+                // ($07c0) and the high-score bytes past that (real
+                // persistent state, not transition scratch). This is the
+                // actual root cause of the Base 1/Base 2 hang, found via
+                // `Nes::run_frame_with_pc_trace`: the graphics-buffer
+                // flush loop (`$cc60-$cc7f` in the fixed bank) walks this
+                // buffer via an 8-bit index until it reads a `#$00`
+                // "no more data" byte; if that index wraps all the way
+                // around $0700-$07ff without ever landing on a zero (which
+                // happened reliably for these two levels' supertile data,
+                // but not the other six), the flush - and with it the
+                // entire level-routine dispatch, since nothing else runs
+                // until it returns - never terminates. Zeroing the buffer
+                // first guarantees a `#$00` is always reachable. See
+                // docs/FIDELITY.md for the full account.
+                for addr in 0x0700..0x07C0u16 {
+                    nes.poke_ram(addr, 0);
+                }
+                nes.poke_ram(0x21, 0); // GRAPHICS_BUFFER_OFFSET
+                nes.poke_ram(0x23, 0); // GRAPHICS_BUFFER_MODE
                 nes.poke_ram(RAM_CURRENT_LEVEL, *stage);
                 nes.poke_ram(RAM_LEVEL_ROUTINE_INDEX, 0);
                 // The real level-load sequence this triggers is Contra's own

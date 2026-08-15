@@ -163,13 +163,6 @@ pub const WEAPON_NAMES: [(u8, &str); 5] = [(0, "Standard"), (1, "Machine Gun"), 
 /// disassembly's per-level data tables, which consistently have 8 entries.
 pub const STAGE_COUNT: u8 = 8;
 
-/// 0-based stage indices that hang forever (loading screen never clears)
-/// when jumped to via [`MenuAction::JumpToStage`] - `1` and `3` are Base 1
-/// and Base 2, the two "interior" levels. See the comment where this is
-/// checked in `debug_tab` and docs/FIDELITY.md for what's actually known
-/// about why.
-const JUMP_BREAKS_STAGE: [u8; 2] = [1, 3];
-
 fn weapon_name(id: u8) -> &'static str {
     WEAPON_NAMES.iter().find(|(wid, _)| *wid == id).map(|(_, n)| *n).unwrap_or("?")
 }
@@ -327,21 +320,9 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
     ui.horizontal_wrapped(|ui| {
         for stage in 0..STAGE_COUNT {
             let selected = debug.current_stage == stage;
-            // Stages 2 and 4 ("Base 1"/"Base 2") never finish loading when
-            // jumped to this way - the game gets stuck on the loading
-            // screen forever (confirmed by tracing RAM: it freezes solid,
-            // not just slow, unlike every other stage). Whatever those two
-            // levels need beyond the RAM state a plain jump can set up
-            // isn't something a black-box RAM poke can safely guess at -
-            // see docs/FIDELITY.md. Disabled rather than shipped broken.
-            let broken = JUMP_BREAKS_STAGE.contains(&stage);
-            ui.add_enabled_ui(!broken, |ui| {
-                let label = ui.selectable_label(selected, format!("{}", stage + 1));
-                let label = if broken { label.on_hover_text("Jumping here currently freezes the game - see docs/FIDELITY.md") } else { label };
-                if label.clicked() && !selected {
-                    actions.push(MenuAction::JumpToStage(stage));
-                }
-            });
+            if ui.selectable_label(selected, format!("{}", stage + 1)).clicked() && !selected {
+                actions.push(MenuAction::JumpToStage(stage));
+            }
         }
     });
 }

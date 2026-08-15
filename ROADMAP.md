@@ -375,61 +375,72 @@ is loaded**
       was removed after feedback that the heuristic wasn't useful in
       practice - simpler Debug tab, one less unreliable control. Shows "No
       ROM loaded" instead when there's no real RAM to poke
-- [x] **Stage select, real and working for 6 of the 8 stages** - click any
-      enabled stage to jump directly to it (`CURRENT_LEVEL`/
-      `LEVEL_ROUTINE_INDEX`, `$30`/`$2C`, plus the same RAM clear
-      `level_routine_05` itself does between levels). Took three passes to
-      get the tile-cache side of this right: first tested too briefly
-      (~80 frames), wrongly concluded broken (blamed on mapper
-      bank-switching); re-tested properly for CPU state (3000+ frames,
-      tracing `LEVEL_ROUTINE_INDEX` the whole way) but verified rendering
-      only with *sampled* screenshots (every ~200-300 frames), concluded
-      clean, and shipped clickable - then real play found persistent tile
-      flicker/collision after a jump the sampled test never caught. Root
-      cause was in the PPU, not here: `Ppu::tile_cache` (see the
-      true-ultrawide entry below) wasn't cleared when a stage jump landed
-      back near the same scroll position the old level was at, so the old
-      level's cached tiles kept showing alongside the new level's
-      live-read ones. Fixed by also clearing the cache on every PPUMASK
-      background-rendering off-to-on transition, independent of scroll
-      math, and re-verified with every-single-frame captures across the
-      jump at 700px widescreen. See docs/FIDELITY.md for the full
-      three-pass account - a useful example of how a sampled verification
-      can look clean and still miss real frame-to-frame instability.
-      **Separately**, broadening verification to all 8 stages (not just the
-      two spot-checked above) found stages 2 and 4 ("Base 1"/"Base 2")
-      hang on the loading screen forever when jumped to - confirmed via
-      RAM diffing (`RAM_DUMP_FRAME`, new debug hook) that the CPU is
-      genuinely parked in an infinite loop, not just slow. Root cause not
-      found without the reference disassembly (`vermiceli/nes-contra-us`)
-      to read - it was consulted directly afterward and confirms
-      `level_routine_02`'s advance condition is a plain two-byte countdown
-      (`decrement_delay_timer` on `DELAY_TIME_LOW_BYTE`/`_HIGH_BYTE`,
-      `$2a`/`$2b`) with nothing level-type-specific in the code path;
-      byte-level RAM diffing between consecutive frames while stuck showed
-      those two addresses (and everything else in `$0000-$00FF`) frozen
-      solid, meaning the routine isn't being reached at all for these two
-      levels, not that its countdown is merely slow - still unresolved,
-      documented in docs/FIDELITY.md. Those two stage buttons are disabled
-      in the Debug tab (`menu::JUMP_BREAKS_STAGE`) with an honest tooltip
-      rather than shipped broken.
-      **Separately**, real play found the six working jumps technically
-      worked but took the real game's full 30-60 real-second transition
-      (score flash, palette/graphics load, supertile render) with its
-      rendering-disabled loading screen visible the whole time - accurate
-      to the original game, but reads as broken in a PC port where nobody
-      expects to sit through it. Fixed by running that transition
-      *silently*: `apply_menu_action`'s `JumpToStage` now snapshots state,
-      pokes the jump, then calls `nes.run_frame()` in a tight, unpresented
-      loop (no audio, no mod events, controllers held neutral) until
-      `LEVEL_ROUTINE_INDEX` reaches `4` (real gameplay) or a generous frame
-      cap is hit - on the cap, it restores the snapshot instead of
-      stranding the player, which doubles as a backstop for any jump target
-      beyond the two known-broken ones that turns out to hang too. Since
-      this runs as fast as the host CPU allows rather than at 60fps, the
-      whole multi-second transition completes in a small fraction of a
-      real second - the jump reads as instant, and the rough loading screen
-      is never shown at all
+- [x] **Stage select, real and working for all 8 stages, instantly** -
+      click any stage in the Debug tab to jump directly to it
+      (`CURRENT_LEVEL`/`LEVEL_ROUTINE_INDEX`, `$30`/`$2C`, plus the same
+      RAM clear `level_routine_05` itself does between levels). Took
+      several rounds to get fully right - the honest history, since each
+      wrong conclusion is a useful lesson on its own:
+      1. First tested too briefly (~80 frames), wrongly concluded broken
+         (blamed on mapper bank-switching).
+      2. Re-tested properly for CPU state (3000+ frames, tracing
+         `LEVEL_ROUTINE_INDEX` the whole way) but verified rendering only
+         with *sampled* screenshots (every ~200-300 frames), concluded
+         clean, shipped clickable - then real play found persistent tile
+         flicker/collision a jump could cause, which the sampled test never
+         caught. Root cause was in the PPU: `Ppu::tile_cache` (see the
+         true-ultrawide entry below) wasn't cleared when a jump landed back
+         near the same scroll position the old level was at, so the old
+         level's cached tiles kept showing alongside the new level's
+         live-read ones. Fixed by also clearing the cache on every PPUMASK
+         background-rendering off-to-on transition, independent of scroll
+         math - re-verified with every-single-frame captures at 700px
+         widescreen.
+      3. Broadening verification to all 8 stages (not just the two
+         spot-checked above) found stages 2 and 4 ("Base 1"/"Base 2") hung
+         on the loading screen forever - confirmed via RAM diffing
+         (`RAM_DUMP_FRAME`, a new debug hook) that the CPU was genuinely
+         parked in an infinite loop, not just slow. Shipped those two
+         stages disabled in the meantime rather than broken.
+      4. **Root cause found and fixed.** Added `Nes::run_frame_with_pc_trace`
+         (a real, reusable `contra-nes` addition) plus `dump_frames.rs`'s
+         `PC_TRACE_FRAME=N`, which tallies every instruction address the
+         CPU executes in a frame into a histogram - the busiest addresses
+         are, definitionally, whatever loop it's stuck in. That pointed
+         straight at the graphics-buffer-flush routine in the fixed bank
+         (`$cc60-$cc7f`, hand-decoded from raw ROM bytes and matched
+         against `bank7.asm`): it walks `CPU_GRAPHICS_BUFFER` (`$0700`)
+         with an 8-bit index until it reads a `#$00` "done" byte, and since
+         that index can only address `$0700-$07ff` before wrapping, a
+         forced jump that leaves *no* zero byte anywhere in that page
+         (because the new level's real graphics data got written there
+         without one, for these two levels specifically) makes the loop
+         mathematically unable to terminate. Fixed by also zeroing
+         `$0700-$07bf` plus `GRAPHICS_BUFFER_OFFSET`/`GRAPHICS_BUFFER_MODE`
+         (`$21`/`$23`) as part of the jump - two more bytes below `$40`
+         this jump never used to touch. All 8 stages individually
+         re-verified (reach real gameplay, rendering re-enabled); Base 1
+         also re-run through the widescreen every-frame check - clean.
+         `menu::JUMP_BREAKS_STAGE` is gone.
+
+      See docs/FIDELITY.md for the full account of all four rounds.
+
+      **Separately**, real play found even the working jumps took the real
+      game's full 30-60 real-second transition (score flash, palette/
+      graphics load, supertile render) with its rendering-disabled loading
+      screen visible the whole time - accurate to the original game, but
+      reads as broken in a PC port where nobody expects to sit through it.
+      Fixed by running that transition *silently*: `apply_menu_action`'s
+      `JumpToStage` now snapshots state, pokes the jump, then calls
+      `nes.run_frame()` in a tight, unpresented loop (no audio, no mod
+      events, controllers held neutral) until `LEVEL_ROUTINE_INDEX` reaches
+      `4` (real gameplay) or a generous frame cap is hit - on the cap, it
+      restores the snapshot instead of stranding the player, which now
+      serves purely as a backstop for a future regression rather than a
+      documented two-stage exception. Since this runs as fast as the host
+      CPU allows rather than at 60fps, the whole multi-second transition
+      completes in a small fraction of a real second - the jump reads as
+      instant, and the rough loading screen is never shown at all
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
       (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array

@@ -129,6 +129,15 @@ fn main() {
                 }
                 nes.poke_ram(0x30, stage.parse().unwrap());
                 nes.poke_ram(0x2C, 0);
+                for addr in 0x0700..0x07C0u16 {
+                    // CPU_GRAPHICS_BUFFER ($0700, 80 bytes) + the 112
+                    // reserved bytes after it - stops short of
+                    // PALETTE_CPU_BUFFER ($07c0) and the high-score bytes
+                    // past that, which are real persistent state.
+                    nes.poke_ram(addr, 0);
+                }
+                nes.poke_ram(0x21, 0); // GRAPHICS_BUFFER_OFFSET
+                nes.poke_ram(0x23, 0); // GRAPHICS_BUFFER_MODE
                 eprintln!(
                     "jump: game_routine=${:02X} level_routine=${:02X} current_level=${:02X}",
                     nes.bus.ram[0x18],
@@ -137,7 +146,24 @@ fn main() {
                 );
             }
         }
-        nes.run_frame();
+        // PC_TRACE_FRAME=N: tallies every instruction address the CPU
+        // executes during frame N into a histogram and prints the most
+        // frequent ones - for diagnosing a frame that produces no visible
+        // RAM/PPU progress, where the question is "what is the CPU
+        // actually doing" (see `Nes::run_frame_with_pc_trace`'s doc
+        // comment). Used to track down the Base 1/Base 2 stage-select hang.
+        if std::env::var("PC_TRACE_FRAME").ok().and_then(|s| s.parse::<u32>().ok()) == Some(frame) {
+            let mut hist: HashMap<u16, u32> = HashMap::new();
+            nes.run_frame_with_pc_trace(&mut |pc| *hist.entry(pc).or_insert(0) += 1);
+            let mut counts: Vec<(u16, u32)> = hist.into_iter().collect();
+            counts.sort_by(|a, b| b.1.cmp(&a.1));
+            eprintln!("PC trace for frame {frame} - top addresses by instruction count:");
+            for (pc, count) in counts.iter().take(15) {
+                eprintln!("  ${pc:04X}: {count} instructions");
+            }
+        } else {
+            nes.run_frame();
+        }
 
         if let Some(op) = nes.cpu.illegal_opcode_hit {
             *illegal_seen.entry(op).or_insert(0) += 1;

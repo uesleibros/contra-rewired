@@ -316,7 +316,7 @@ the third time that exact gap has produced a wrong "looks fine" conclusion
 on this project (see the widescreen bias bug and the widescreen-not-
 filling-window bug above).
 
-### Stage select: Base 1 and Base 2 hang, and it's not the tile-cache bug
+### Stage select: Base 1 and Base 2 hang - found and fixed
 
 Broadening verification after the tile-cache fix (checking every stage, not
 just the two that had been spot-checked) found a second, unrelated problem:
@@ -382,15 +382,84 @@ consistent with, but didn't rule out a many-frames-per-tick wraparound
 case - the consecutive-frame check does rule that out). That rules out
 "the timer bytes are wrong", but not "the level_routine dispatcher itself
 isn't reaching `level_routine_02`'s code for some other reason" - which
-would need a real CPU trace of the frozen loop's actual program counter to
-confirm, not achievable through `dump_frames.rs`'s black-box RAM-diffing
-alone. Rather than ship a stage-select that can hard-freeze the game for 2
-of its 8 stages, `contra-pc`'s Debug tab disables (greys out, with an
-honest tooltip) jumping to stage 2 or 4 specifically -
-`menu::JUMP_BREAKS_STAGE` - while the other six remain real and working.
-This is a known gap, not a silently-accepted one - reading the disassembly
-narrowed the search but didn't close it; revisit with an actual CPU
-trace/debugger if one becomes practical to build for this project.
+needed a real CPU trace of the frozen loop's actual program counter to
+confirm, not something `dump_frames.rs`'s black-box RAM-diffing alone
+could do. Shipped disabled (greyed out, with an honest tooltip) for these
+two stages while the other six remained real and working, as a known,
+documented gap rather than a silently-accepted one.
+
+**Resolved: added a real PC trace, found a genuine emulation-adjacent
+data bug.** `dump_frames.rs`'s RAM-diffing could only ever say *what*
+wasn't changing, never *why* - answering that needed to see the actual
+instruction stream, which `Nes::run_frame`'s frame-at-a-time granularity
+can't expose. Added `Nes::run_frame_with_pc_trace` (`contra-nes`, a real,
+reusable addition - not a throwaway script): identical to `run_frame`, but
+calls a closure with the CPU's `pc` before every single instruction that
+frame. `dump_frames.rs`'s `PC_TRACE_FRAME=N` env var uses it to build a
+histogram of instruction counts per address and print the busiest ones -
+the loop a CPU is stuck in is, definitionally, whatever addresses that
+histogram is dominated by.
+
+Run against the stuck state, it wasn't subtle: five addresses
+(`$cc70`-`$cc78`) accounted for ~1859 of that single frame's instructions,
+with the CPU still parked at `$cc70` at the very end of the run. Extracting
+the raw ROM bytes at that address (UxROM's fixed bank is the ROM's last
+16KiB, mapped straight to `$c000-$ffff`, so the file offset is directly
+computable) and decoding them by hand matched, byte for byte, this stretch
+of `bank7.asm`:
+
+```
+@set_PPU_write_address:
+    ldy $00
+    inx
+    lda CPU_GRAPHICS_BUFFER,x
+    sta PPUADDR
+    inx
+    lda CPU_GRAPHICS_BUFFER,x
+    sta PPUADDR
+@write_loop:                  ; <- $cc70, where the CPU was stuck
+    inx
+    lda CPU_GRAPHICS_BUFFER,x
+    sta PPUDATA
+    dey
+    bne @write_loop
+    dec $01
+    bne @set_PPU_write_address
+    inx
+    bne @write_to_ppu          ; more data? go again - only exits on a $00 byte
+```
+
+This is the routine that flushes `CPU_GRAPHICS_BUFFER` (`$0700`, per
+`ram.asm`) to the PPU - graphics/supertile data queued up by the level-load
+code. It walks the buffer with an 8-bit index (`x`) and keeps going,
+`inx`-ing past whatever block it just wrote, until it happens to read a
+`#$00` byte back at the top (`@write_to_ppu`'s `beq @reset_graphics_buffer`
+check - see that routine's own doc comment in `ram.asm`, which documents
+`$0700 == #$00` as the literal "done" signal). Since `x` is 8 bits, it can
+only ever address `$0700-$07ff` before wrapping back to the start of the
+same 256 bytes - so if *nothing* in that entire page happens to be `#$00`
+at a position the check lands on, the loop cannot mathematically terminate:
+it just keeps re-reading the same bytes forever. That's exactly what was
+happening. A one-byte poke of `CPU_GRAPHICS_BUFFER[0]` alone (mirroring
+`@reset_graphics_buffer`'s own reset code) turned out not to be enough,
+because `level_routine_00`'s legitimate graphics-loading code overwrites
+that buffer with the new level's real data before the hang - the fix had
+to guarantee a `#$00` exists somewhere in the buffer's full reachable
+range, not just clear whatever was there before the jump.
+
+The fix, in `apply_menu_action`'s `JumpToStage` handler (`main.rs`) and
+`dump_frames.rs`'s `JUMP_STAGE` hook: also zero `$0700-$07bf`
+(`CPU_GRAPHICS_BUFFER` plus the reserved bytes after it, stopping short of
+`PALETTE_CPU_BUFFER` at `$07c0` and the high-score bytes past that - real
+persistent state, not transition scratch) along with `GRAPHICS_BUFFER_OFFSET`
+(`$21`) and `GRAPHICS_BUFFER_MODE` (`$23`) - two more bytes this jump
+never used to touch, since they're below `$40` and outside its original
+clear range. Re-verified every stage individually (`level_routine`
+reaches `$04`, real gameplay, and `PPUMASK` shows rendering re-enabled for
+all eight, not just six) and re-ran the widescreen every-single-frame
+check from the tile-cache fix above against the previously-broken Base 1 -
+clean, fully filled, no flicker. All 8 stages are real and clickable in
+the Debug tab now; `menu::JUMP_BREAKS_STAGE` is gone.
 
 ### Stage select: making the (real, accurate) transition instant
 
