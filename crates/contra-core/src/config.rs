@@ -22,6 +22,15 @@ pub struct Config {
     pub gameplay: GameplayConfig,
     pub accessibility: AccessibilityConfig,
     pub practice: PracticeConfig,
+    // `serde(default)` specifically: without it, loading an existing
+    // config.toml saved before this field existed would fail to parse
+    // entirely (`toml`'s derived Deserialize errors on a missing field by
+    // default), and `load_or_default` silently discards the *whole*
+    // config and resets every other section to defaults too when that
+    // happens - a real regression for anyone with an already-customized
+    // config.toml, not just a "mods list resets" one.
+    #[serde(default)]
+    pub mods: ModsConfig,
 }
 
 impl Default for Config {
@@ -34,6 +43,7 @@ impl Default for Config {
             gameplay: GameplayConfig::default(),
             accessibility: AccessibilityConfig::default(),
             practice: PracticeConfig::default(),
+            mods: ModsConfig::default(),
         }
     }
 }
@@ -346,6 +356,16 @@ impl Default for PracticeConfig {
             fixed_rng_seed: None,
         }
     }
+}
+
+/// Which mods are disabled, persisted across launches. Stores IDs to
+/// *disable* rather than IDs to *enable*, so a newly-added mod (one this
+/// list has never heard of) defaults to enabled, matching the existing
+/// "every discovered mod starts enabled" behavior - this list only ever
+/// grows when the player explicitly turns one off in the Mods tab.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModsConfig {
+    pub disabled_ids: Vec<String>,
 }
 
 #[cfg(test)]

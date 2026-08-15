@@ -167,7 +167,7 @@ pub fn pause_menu(
 ) -> Vec<MenuAction> {
     let mut actions = Vec::new();
 
-    egui::Window::new("contra-rewired")
+    egui::Window::new("Contra: Rewired")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))

@@ -62,6 +62,8 @@ fn main() {
     let out_dir = args.get(2).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
     let frame_count: u32 = args.get(3).map(|s| s.parse().unwrap()).unwrap_or(600);
     let start_after: u32 = args.get(4).map(|s| s.parse().unwrap()).unwrap_or(120);
+    let save_every: u32 = std::env::var("SAVE_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+    let save_from: u32 = std::env::var("SAVE_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
 
     std::fs::create_dir_all(out_dir).unwrap();
 
@@ -139,7 +141,7 @@ fn main() {
             nes.cpu.illegal_opcode_hit = None;
         }
 
-        if frame % 30 == 0 || frame == frame_count - 1 {
+        if frame >= save_from && (frame % save_every == 0 || frame == frame_count - 1) {
             let path = std::path::Path::new(out_dir).join(format!("frame_{frame:04}.png"));
             let wide = nes.wide_width() > contra_nes::SCREEN_W;
             let (w, h) = (if wide { nes.wide_width() } else { contra_nes::SCREEN_W }, contra_nes::SCREEN_H);

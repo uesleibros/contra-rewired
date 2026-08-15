@@ -37,3 +37,6 @@ png = "0.17"
 # toolchain (MSVC Build Tools on Windows, gcc/clang elsewhere) not every
 # contributor has installed. `cargo build --features mods` to enable.
 mods = ["contra-mods/lua"]
+
+[build-dependencies]
+winres = "0.1"

@@ -185,6 +185,23 @@ is loaded**
       no renderer behind them yet)
 - [x] **True ultrawide** - no longer bounded by `EXTENDED_WIDTH`'s cap, see
       the widescreen section above (`Ppu::tile_cache`)
+- [x] **Fixed: not filling the screen / edge flicker on maximize or
+      fullscreen.** `wgpu`'s swapchain (`surface_config`) only got resized
+      reactively, inside the `WindowEvent::Resized` handler - but
+      `target_wide_width` and `egui`'s own layout both read
+      `window.inner_size()` live, every frame, independent of whether a
+      `Resized` event has actually been processed yet. Maximizing or
+      entering fullscreen can report the window's new size before its
+      `Resized` event is delivered (OS/compositor-dependent), so for
+      however many frames that gap lasts, wide-mode's target width and
+      egui's layout would already reflect the new (larger) size while the
+      swapchain was still configured for the old, smaller one - exactly
+      the kind of mismatch that shows up as "not filling the screen" and
+      flicker specifically on the edge that's out of sync. `redraw` now
+      also checks `window.inner_size()` against `surface_config` directly,
+      every redraw, and reconfigures immediately on a mismatch - not just
+      reactively - so the swapchain can never be more than one redraw
+      behind the window's actual size
 
 **Controls**
 - [x] Fully rebindable action system (`input.rs`), hold/toggle fire modes
@@ -278,12 +295,25 @@ is loaded**
       machine post-fix, mostly GPU driver/Vulkan instance overhead
       (`wgpu`'s baseline, not something specific to this app) rather than
       anything growing unbounded
-- [x] **App icon**: a real one, not the winit/OS default - baked into the
+- [x] **App icon, on the window *and* the `.exe` itself**: baked into the
       binary (`include_bytes!` on `apps/contra-pc/assets/icon-256.png`, a
       cropped/resized square from the project's own "C" mark), decoded at
       startup with the `png` crate and set via `WindowBuilder::
-      with_window_icon`. Decode failure just means no icon rather than a
+      with_window_icon` - this covers the window/taskbar icon at runtime.
+      That alone doesn't cover Explorer/the taskbar pin *before* the app is
+      even running, since that's read from the `.exe`'s own Windows
+      resource section, a completely different mechanism - added
+      `apps/contra-pc/build.rs` (Windows-only, `winres`) embedding a proper
+      multi-resolution `icon.ico` (16/32/48/256px, assembled from the same
+      source crop) as the binary's resource icon, plus the product name/
+      description metadata Explorer's Details tab reads. Decode/embed
+      failure in either path just means no icon there, not a build or
       launch failure
+- [x] **App name**: "contra-rewired" (the Cargo package/binary name, which
+      stays as-is - a valid identifier, not user-facing) was leaking into
+      every user-visible string - window title, pause menu title, `--help`
+      text, the `.exe`'s resource metadata. All of it now reads
+      "Contra: Rewired" instead; the crate/binary name is unaffected
 - [x] Pause menu: two tabs plus Debug - **Settings** (Widescreen, No
       Sprite Flicker, Pixel Perfect, Hitbox overlay, Scanlines, Stats
       overlay, Zoom slider, Speed slider, Fullscreen, Audio Mute - all
@@ -371,7 +401,19 @@ is loaded**
       palette, keybind remapping, difficulty, checkpoint mode, ...) still
       needs a menu entry; this is the pattern to extend, not a finished
       options screen
-- [ ] Mod reorder UI, mod enable/disable persisted across launches
+- [x] **Mod enable/disable persisted across launches** - `contra_core::
+      config::ModsConfig` (`[mods] disabled_ids` in `config.toml`) stores
+      which mods are *off*, not which are on, so a newly-added mod this
+      list has never heard of still defaults to enabled. Reuses the
+      existing save-on-close path (`config.save`), no new save mechanism
+      needed. Found and fixed a real bug while adding the field: `Config`'s
+      `load_or_default` silently resets *the entire config* to defaults if
+      `toml::from_str` fails for any reason, including "a field that didn't
+      exist in an older config.toml" - so the new field needed
+      `#[serde(default)]` specifically to avoid discarding an
+      already-customized config.toml the first time someone with an old
+      one updates
+- [ ] Mod reorder UI
 - [ ] `egui` opens the door CRT/scanline shaders were already waiting on
       (see the widescreen section above) - `egui-wgpu`'s renderer runs
       inside the same `wgpu` device/queue as the game background, so a

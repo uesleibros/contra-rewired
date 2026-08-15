@@ -79,7 +79,7 @@ const RAM_ENEMY_HP_BASE: u16 = 0x0578;
 const ENEMY_SLOT_COUNT: u16 = 16;
 
 #[derive(Parser)]
-#[command(author, version, about = "contra-rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
+#[command(author, version, about = "Contra: Rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
 struct Args {
     /// Path to your own ROM dump. If omitted, looks for ./baserom.nes, then
     /// shows the in-app Load ROM screen.
@@ -327,7 +327,7 @@ fn load_rom_into_session(
         Ok(loaded) => {
             *session = loaded;
             *last_load_error = None;
-            window.set_title("contra-rewired");
+            window.set_title("Contra: Rewired");
             // In case Escape/Tab was pressed while staring at the no-ROM
             // screen (which has no menu of its own to open) - start the
             // freshly loaded game unpaused rather than inheriting a
@@ -356,10 +356,12 @@ fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> 
     }
 }
 
-/// Scans `./mods/` and loads every mod that has a Lua entry script. Every
-/// found mod starts enabled; toggle them from the pause menu's Mods tab
-/// (session-only for now - not yet persisted across launches, see
-/// ROADMAP.md).
+/// Scans `./mods/` and loads every mod that has a Lua entry script. A mod
+/// starts enabled unless its id is in `disabled_ids` (from `config.toml`'s
+/// `[mods] disabled_ids`, see `ModsConfig`) - toggling one in the pause
+/// menu's Mods tab updates that same list, which `main`'s existing
+/// save-on-close (`config.save`) already persists, so this needed no new
+/// save path, just a place to read/write.
 #[cfg(feature = "mods")]
 pub struct LoadedMod {
     pub id: String,
@@ -369,7 +371,7 @@ pub struct LoadedMod {
 }
 
 #[cfg(feature = "mods")]
-fn load_mods() -> Vec<LoadedMod> {
+fn load_mods(disabled_ids: &[String]) -> Vec<LoadedMod> {
     let registry = contra_mods::ModRegistry::scan("mods");
     let mut loaded = Vec::new();
     for m in registry.all() {
@@ -395,8 +397,15 @@ fn load_mods() -> Vec<LoadedMod> {
             log::error!("mod '{}': script error: {e}", m.manifest.id);
             continue;
         }
-        log::info!("loaded mod: {} ({}) - {}", m.manifest.name, m.manifest.id, m.manifest.description);
-        loaded.push(LoadedMod { id: m.manifest.id.clone(), name: m.manifest.name.clone(), enabled: true, host });
+        let enabled = !disabled_ids.iter().any(|id| id == &m.manifest.id);
+        log::info!(
+            "loaded mod: {} ({}) - {} [{}]",
+            m.manifest.name,
+            m.manifest.id,
+            m.manifest.description,
+            if enabled { "enabled" } else { "disabled" }
+        );
+        loaded.push(LoadedMod { id: m.manifest.id.clone(), name: m.manifest.name.clone(), enabled, host });
     }
     loaded
 }
@@ -433,7 +442,7 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session) {
 fn run_mods(_mods: &[()], _session: &mut Session) {}
 
 #[cfg(not(feature = "mods"))]
-fn load_mods() -> Vec<()> {
+fn load_mods(_disabled_ids: &[String]) -> Vec<()> {
     let registry = contra_mods::ModRegistry::scan("mods");
     let scriptable = registry.all().iter().filter(|m| m.manifest.entry_script.is_some()).count();
     if scriptable > 0 {
@@ -462,13 +471,18 @@ fn mod_entries(_mods: &[()]) -> Vec<ModEntry> {
 }
 
 #[cfg(feature = "mods")]
-fn toggle_mod(mods: &mut [LoadedMod], idx: usize) {
+fn toggle_mod(mods: &mut [LoadedMod], idx: usize, disabled_ids: &mut Vec<String>) {
     if let Some(m) = mods.get_mut(idx) {
         m.enabled = !m.enabled;
+        if m.enabled {
+            disabled_ids.retain(|id| id != &m.id);
+        } else if !disabled_ids.iter().any(|id| id == &m.id) {
+            disabled_ids.push(m.id.clone());
+        }
     }
 }
 #[cfg(not(feature = "mods"))]
-fn toggle_mod(_mods: &mut [()], _idx: usize) {}
+fn toggle_mod(_mods: &mut [()], _idx: usize, _disabled_ids: &mut Vec<String>) {}
 
 /// Steps exactly one simulated frame of `Session::Emulator` gameplay -
 /// widescreen/sprite settings, the step itself, mods, and audio. Shared by
@@ -519,9 +533,9 @@ fn step_gameplay_frame(
 /// own (the live `Nes`, the mod list). `Resume` and `LoadRom` are handled
 /// inline where they're produced instead (they need the `GameRoutine`/
 /// window handle respectively, and `LoadRom` blocks on a native dialog).
-fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &mut LoadedModsVec) {
+fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &mut LoadedModsVec, disabled_mod_ids: &mut Vec<String>) {
     match action {
-        MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, *idx),
+        MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, *idx, disabled_mod_ids),
         MenuAction::SetWeapon(player, id) => {
             if let Session::Emulator { nes, .. } = session {
                 let addr = match player {
@@ -627,7 +641,7 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    let config = Config::load_or_default(CONFIG_PATH);
+    let mut config = Config::load_or_default(CONFIG_PATH);
     let initial_scale = match config.video.scaling {
         ScalingMode::Integer(n) => n.max(1) as u32,
         _ => 3,
@@ -642,10 +656,10 @@ fn main() -> anyhow::Result<()> {
     let audio_sample_rate = audio_output.as_ref().map(|a| a.sample_rate).unwrap_or(44_100.0);
 
     let mut session = load_session(&args, rewind_capacity, audio_sample_rate);
-    let mut loaded_mods = load_mods();
+    let mut loaded_mods = load_mods(&config.mods.disabled_ids);
     let window_title = match &session {
-        Session::Emulator { .. } => "contra-rewired",
-        Session::Placeholder { .. } => "contra-rewired - load a ROM to play",
+        Session::Emulator { .. } => "Contra: Rewired",
+        Session::Placeholder { .. } => "Contra: Rewired - load a ROM to play",
     };
 
     let event_loop = EventLoop::new()?;
@@ -836,6 +850,29 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                     WindowEvent::RedrawRequested => {
+                        // Defensive resync, not just reactive on `Resized`:
+                        // `surface_config` only updates when a `Resized`
+                        // event is processed, but `target_wide_width` (and
+                        // egui's own layout) read `window.inner_size()`
+                        // live every frame. Maximizing or entering
+                        // fullscreen can deliver its `Resized` event a
+                        // frame or more after the window's actual size has
+                        // already changed (OS/compositor-dependent) - in
+                        // that gap, wide-mode's target width and egui's
+                        // layout would already reflect the new (larger)
+                        // size while the wgpu swapchain is still
+                        // configured for the old one, which is exactly the
+                        // kind of mismatch that shows up as "not filling
+                        // the screen" and flicker on the edge that's out
+                        // of sync. Checking here, every redraw, means the
+                        // swapchain can never be more than one redraw
+                        // behind the window's real size.
+                        let live_size = window.inner_size();
+                        if live_size.width > 0 && live_size.height > 0 && (live_size.width != surface_config.width || live_size.height != surface_config.height) {
+                            surface_config.width = live_size.width;
+                            surface_config.height = live_size.height;
+                            surface.configure(&device, &surface_config);
+                        }
                         redraw(
                             &window,
                             &device,
@@ -850,6 +887,7 @@ fn main() -> anyhow::Result<()> {
                             &mut menu_state,
                             &mut settings,
                             &mut loaded_mods,
+                            &mut config.mods.disabled_ids,
                             &mut routine,
                             &mut last_load_error,
                             &mut prev_widescreen,
@@ -1007,6 +1045,7 @@ fn redraw(
     menu_state: &mut MenuState,
     settings: &mut Settings,
     loaded_mods: &mut LoadedModsVec,
+    disabled_mod_ids: &mut Vec<String>,
     routine: &mut GameRoutine,
     last_load_error: &mut Option<String>,
     prev_widescreen: &mut bool,
@@ -1147,7 +1186,7 @@ fn redraw(
         match action {
             MenuAction::Resume => *routine = routine.transition(GameEvent::ResumePressed),
             MenuAction::LoadRom => pending_rom_pick = true,
-            other => apply_menu_action(other, session, loaded_mods),
+            other => apply_menu_action(other, session, loaded_mods, disabled_mod_ids),
         }
     }
 
