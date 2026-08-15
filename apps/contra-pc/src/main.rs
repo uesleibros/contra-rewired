@@ -627,6 +627,7 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
                 // Mirrors what `level_routine_05` (level complete) itself
                 // clears between levels, so a jump leaves RAM in the same
                 // shape a real transition would.
+                let pre_jump = nes.snapshot();
                 for addr in 0x40..=0xF0u16 {
                     nes.poke_ram(addr, 0);
                 }
@@ -635,6 +636,40 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
                 }
                 nes.poke_ram(RAM_CURRENT_LEVEL, *stage);
                 nes.poke_ram(RAM_LEVEL_ROUTINE_INDEX, 0);
+                // The real level-load sequence this triggers is Contra's own
+                // code, unmodified - it's genuinely ~30-60 real seconds of
+                // score-flash/palette-load/supertile-render, same as a real
+                // level-complete transition, and looks exactly as rough
+                // mid-transition as the original game does (a blanked-
+                // rendering loading screen isn't a bug here, it's just not
+                // meant to be looked at). So: don't make the player sit
+                // through it or look at it. Run it silently, as fast as the
+                // host CPU can - no audio, no mod events, no presented
+                // frames - until real gameplay resumes (`LEVEL_ROUTINE_INDEX
+                // == 4`) or the cap is hit, then hand back control exactly
+                // once it's actually ready. The jump itself reads as
+                // instant; nothing rough about the transition is ever shown.
+                nes.set_controller(0, 0);
+                nes.set_controller(1, 0);
+                let mut reached_gameplay = false;
+                for _ in 0..3600 {
+                    nes.run_frame();
+                    if nes.peek_ram(RAM_LEVEL_ROUTINE_INDEX) == 4 {
+                        reached_gameplay = true;
+                        break;
+                    }
+                }
+                let _ = nes.take_audio_samples(); // discard - see above
+                if !reached_gameplay {
+                    // Known to happen for Base 1/Base 2 (see
+                    // docs/FIDELITY.md) - the Debug tab disables those two
+                    // buttons, but this is the backstop for any other
+                    // combination that turns out to hang too: undo the jump
+                    // entirely rather than strand the player on a screen
+                    // that's never coming back.
+                    log::error!("jump to stage {}: never reached real gameplay within the frame cap, reverting", stage + 1);
+                    nes.restore(&pre_jump);
+                }
             }
         }
         // Handled by the caller, not here - see doc comment above.

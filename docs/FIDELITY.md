@@ -351,17 +351,77 @@ quarter's old contents was the missing piece - came back negative on all
 four quarters, ruling out "one leftover byte in the range we already
 clear" as the cause too.
 
-Past that, further narrowing needs either the actual disassembly (not
-present anywhere in this repo - the RAM-address comments elsewhere in this
-codebase come from general knowledge of the community disassembly, not a
-vendored copy of it) or a real CPU trace/debugger step-through of the
-frozen loop's PC, neither of which `dump_frames.rs`'s black-box RAM-diffing
-approach can do. Rather than ship a stage-select that can hard-freeze the
-game for 2 of its 8 stages, `contra-pc`'s Debug tab disables (greys out,
-with an honest tooltip) jumping to stage 2 or 4 specifically -
+**Update: consulted the real disassembly, still unresolved.** The
+RAM-address comments elsewhere in this codebase come from general
+knowledge, not a vendored copy of the source - so this round actually
+fetched `vermiceli/nes-contra-us` (the real, public, annotated Contra US
+disassembly) and read `level_routine_02` directly:
+
+```
+level_routine_02:
+    jsr decrement_delay_timer  ; decrement timer (sets/clears zero flag)
+    bne draw_the_scores_1      ; jump if the timer has not yet elapsed
+    jsr zero_out_nametables    ; timer elapsed - reset nametables
+    jsr load_level_graphics    ; load level graphics
+    ...
+    inc LEVEL_ROUTINE_INDEX    ; advance to level_routine_03
+```
+
+`decrement_delay_timer` just counts down `DELAY_TIME_LOW_BYTE`/
+`DELAY_TIME_HIGH_BYTE` (`$2a`/`$2b`, set to `#$c0`/unused by
+`level_routine_01`) - nothing in this code branches on level type
+(indoor/Base vs. outdoor); the dispatch table and the generic
+`run_routine_from_tbl_below` jump helper that reaches it are also
+level-agnostic. So the disassembly doesn't explain the hang by itself - it
+just narrows where to look next. Re-ran the RAM diff at single-frame
+granularity (`$2a`/`$2b` specifically, frame N vs. N+1 while stuck): both
+bytes bit-identical frame to frame, meaning `decrement_delay_timer` isn't
+being reached at all for these two levels, not that its countdown is
+merely running slowly (which the earlier 690-frame-apart diff was already
+consistent with, but didn't rule out a many-frames-per-tick wraparound
+case - the consecutive-frame check does rule that out). That rules out
+"the timer bytes are wrong", but not "the level_routine dispatcher itself
+isn't reaching `level_routine_02`'s code for some other reason" - which
+would need a real CPU trace of the frozen loop's actual program counter to
+confirm, not achievable through `dump_frames.rs`'s black-box RAM-diffing
+alone. Rather than ship a stage-select that can hard-freeze the game for 2
+of its 8 stages, `contra-pc`'s Debug tab disables (greys out, with an
+honest tooltip) jumping to stage 2 or 4 specifically -
 `menu::JUMP_BREAKS_STAGE` - while the other six remain real and working.
-This is a known gap, not a silently-accepted one; revisit if the
-disassembly ever becomes available to consult directly.
+This is a known gap, not a silently-accepted one - reading the disassembly
+narrowed the search but didn't close it; revisit with an actual CPU
+trace/debugger if one becomes practical to build for this project.
+
+### Stage select: making the (real, accurate) transition instant
+
+Independent of either bug above, real play surfaced a UX problem with the
+six jumps that do work: they're not fake or sped up in any way, so they
+cost the same 30-60 real seconds - score flash, palette/graphics load,
+supertile render, all with background rendering switched off - that a
+genuine level-complete transition always costs in this game, because it's
+executing the exact same unmodified game code. That's accurate to the
+original, but reads as broken in a PC port: staring at a rendering-disabled
+loading screen for the better part of a minute with no progress indicator
+looks exactly like a freeze, whether or not it eventually resolves.
+
+Fixed by not showing that transition at all. `apply_menu_action`'s
+`JumpToStage` now: snapshots state (`Nes::snapshot`), applies the same
+pokes as before, then drives the transition itself by calling
+`nes.run_frame()` in a tight loop - un-presented (no frame reaches the
+screen), silent (audio samples taken and discarded each iteration so a
+multi-second backlog doesn't dump into the speakers as one burst on the
+next real frame), and with no mod events fired (these are the game's own
+internal loading frames, not real gameplay frames a mod should see) -
+until `LEVEL_ROUTINE_INDEX` reaches `4` (real gameplay resumed) or a
+generous frame cap is hit. Since the loop runs as fast as the host CPU
+allows rather than paced at 60fps, completing 30-60 *simulated* seconds of
+Contra's own loading code takes a small fraction of a real second on
+current hardware - the jump reads as instant, and the loading screen -
+accurate as it is - is never actually shown to the player. Hitting the cap
+without reaching real gameplay restores the pre-jump snapshot instead of
+stranding the player on a screen that isn't coming back; this also serves
+as an automatic backstop for any jump target beyond the two known-broken
+ones (Base 1/Base 2) that might turn out to hang too.
 
 ### Where RAM-based tooling's limits are, in general
 

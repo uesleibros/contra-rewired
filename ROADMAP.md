@@ -394,11 +394,35 @@ is loaded**
       hang on the loading screen forever when jumped to - confirmed via
       RAM diffing (`RAM_DUMP_FRAME`, new debug hook) that the CPU is
       genuinely parked in an infinite loop, not just slow. Root cause not
-      found without the actual disassembly to read (not vendored in this
-      repo); those two stage buttons are disabled in the Debug tab
-      (`menu::JUMP_BREAKS_STAGE`) with an honest tooltip rather than shipped
-      broken. The Debug tab labels the 30-60s the transition takes for the
-      six that do work, since there's no progress indicator
+      found without the reference disassembly (`vermiceli/nes-contra-us`)
+      to read - it was consulted directly afterward and confirms
+      `level_routine_02`'s advance condition is a plain two-byte countdown
+      (`decrement_delay_timer` on `DELAY_TIME_LOW_BYTE`/`_HIGH_BYTE`,
+      `$2a`/`$2b`) with nothing level-type-specific in the code path;
+      byte-level RAM diffing between consecutive frames while stuck showed
+      those two addresses (and everything else in `$0000-$00FF`) frozen
+      solid, meaning the routine isn't being reached at all for these two
+      levels, not that its countdown is merely slow - still unresolved,
+      documented in docs/FIDELITY.md. Those two stage buttons are disabled
+      in the Debug tab (`menu::JUMP_BREAKS_STAGE`) with an honest tooltip
+      rather than shipped broken.
+      **Separately**, real play found the six working jumps technically
+      worked but took the real game's full 30-60 real-second transition
+      (score flash, palette/graphics load, supertile render) with its
+      rendering-disabled loading screen visible the whole time - accurate
+      to the original game, but reads as broken in a PC port where nobody
+      expects to sit through it. Fixed by running that transition
+      *silently*: `apply_menu_action`'s `JumpToStage` now snapshots state,
+      pokes the jump, then calls `nes.run_frame()` in a tight, unpresented
+      loop (no audio, no mod events, controllers held neutral) until
+      `LEVEL_ROUTINE_INDEX` reaches `4` (real gameplay) or a generous frame
+      cap is hit - on the cap, it restores the snapshot instead of
+      stranding the player, which doubles as a backstop for any jump target
+      beyond the two known-broken ones that turns out to hang too. Since
+      this runs as fast as the host CPU allows rather than at 60fps, the
+      whole multi-second transition completes in a small fraction of a
+      real second - the jump reads as instant, and the rough loading screen
+      is never shown at all
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
       (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array
@@ -489,8 +513,15 @@ is loaded**
       errors over 300+ frames), 11 tests in `script.rs`
 - [x] `mods/rgb-character/` - a complete, working example mod (cycles every
       sprite palette through the NES's 64-color range every frame)
-- [ ] Typed event payloads for `enemy_spawn`/`player_hit`/etc. (only
-      `frame_tick` carries real data today)
+- [x] Typed event payloads - `stage_start(stage)`/`stage_clear(stage)` fire
+      together whenever `apps/contra-pc` observes `RAM_CURRENT_LEVEL`
+      change between frames; `player_hit({player, lives_remaining})` fires
+      when either player's lives count drops (the closest honest proxy for
+      "got hit" without the real disassembly to find an exact flag - see
+      `LuaModHost::fire_player_hit`'s doc comment). `enemy_spawn` is still
+      unwired - unlike the other three there's no RAM byte a host can just
+      watch for it; needs the CPU bank/PC-scoped hook mentioned below, not
+      a RAM-diff
 - [ ] Asset-file-based overrides (`sprite_overrides`/`music_overrides` in
       the manifest schema exist but aren't consumed - see docs/MODDING.md
       for why that's a CHR-RAM-patching problem, not a file-swap one)

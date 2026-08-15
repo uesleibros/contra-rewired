@@ -294,7 +294,7 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
 
     ui.separator();
     ui.label(format!("Current stage: {} / {STAGE_COUNT}", debug.current_stage + 1));
-    ui.label(egui::RichText::new("Jumping fades to a loading screen for a few seconds - that's normal.").weak());
+    ui.label(egui::RichText::new("Jumps land instantly - the loading transition runs in the background, unseen.").weak());
     ui.horizontal_wrapped(|ui| {
         for stage in 0..STAGE_COUNT {
             let selected = debug.current_stage == stage;
