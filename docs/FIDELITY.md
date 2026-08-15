@@ -196,6 +196,40 @@ drawn. That guarantee shaped how true ultrawide got built.
   ROADMAP.md rather than folded into the presentation-only widescreen work,
   since it's a fundamentally different kind of change (it *does* touch
   game state, on purpose, gated behind widescreen being on).
+  **Follow-up: read `soldier_generation_01` for real, and the "scoped,
+  identified patch target" turned out not to be a patch target at all.**
+  The hope going in was that a simple ROM-byte edit (push `#$0a`/`#$fa`
+  further toward the edges when widescreen is on, so soldiers keep
+  spawning off the *visible* area instead of popping in mid-screen) could
+  sidestep the CPU-hook requirement entirely for at least this one case.
+  Fetching `vermiceli/nes-contra-us`'s `bank2.asm` and reading the actual
+  routine ruled that out: `gen_soldier_initial_x_pos` (the table those two
+  constants come from) is genuinely just `.byte $fa,$0a,...` - single
+  bytes, and the X position they seed is carried in a single-byte register
+  ($09) all the way through `check_gen_soldier_bg_collision`'s call into
+  `get_bg_collision`. `#$0a` and `#$fa` (10 and 250) are already about as
+  close to the two ends of that byte's 0-255 range as they can usefully
+  get - there's no room to push them further "off the wide-visible area"
+  without overflowing the single byte the rest of the routine reads them
+  back through. The constraint isn't the constant, it's the *data type*:
+  the original game never needed to represent an X position wider than one
+  256px screen, so it doesn't. Confirms the ROADMAP conclusion rather than
+  changing it - a real fix needs the spawn-*logic* itself patched to reason
+  in a wider coordinate space (the CPU hook), not just its constants
+  nudged, and that's a genuinely new piece of engine infrastructure, not a
+  quick follow-up.
+  **What this does and doesn't affect, to be precise about scope**: it's
+  specifically the procedural/infinite soldier generator
+  (`soldier_generation_*`) that has this off-the-narrow-edge spawn
+  behavior. Level-authored enemies (turrets, fixed placements, bosses) are
+  positioned from real absolute level data, not "just off the 256px
+  screen" - once they exist as OAM entries, `render_sprites_line` already
+  applies the same `x_offset` widescreen shift to every sprite uniformly
+  (see its own doc comment), so they render at the geometrically-correct
+  wide position with no special handling needed. The pop-in is a spawn-
+  *timing* problem for one specific enemy-generation mechanism, not a
+  sprite-positioning bug and not something affecting every enemy or
+  bullet in the game.
 - **Widescreen not visibly turning on, not visibly resizing the window, and
   the camera visibly drifting.** Three related bugs, fixed across several
   rounds. The target width used to be computed only from `Resized` events,

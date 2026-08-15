@@ -29,6 +29,13 @@
 //!   change real game state - it's what a trainer/cheat mod uses.
 //! - `contra.peek_ram(addr)` - reads work RAM as of the start of the
 //!   current frame (see [`LuaModHost::set_ram_snapshot`]).
+//! - `contra.draw_text(x, y, text[, {r=, g=, b=}])` - screen-space text
+//!   overlay drawn by the host's own UI (`egui` in `contra-pc`), not the
+//!   NES PPU - full Unicode, any position, doesn't touch a tile grid or
+//!   fight the game's nametable for space. Purely presentational, same
+//!   spirit as `write_ppu` but for text a mod wants to show that Contra's
+//!   own font/HUD was never going to render (custom UI, debug readouts,
+//!   messages) - see [`TextDraw`].
 //!
 //! **High-level** (`contra.player`, Contra-specific, built entirely on the
 //! low-level primitives above - see the address constants at the top of
@@ -88,6 +95,20 @@ impl ModEvent {
     }
 }
 
+/// One `contra.draw_text(...)` call queued by a mod - see
+/// [`LuaModHost::take_pending_text_draws`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextDraw {
+    /// Screen-space pixel position (top-left), *not* a tile/nametable
+    /// coordinate - this is drawn by the host's own UI layer (`egui` in
+    /// `contra-pc`), not the NES PPU, so it isn't bound to an 8x8 tile
+    /// grid or the console's font. See this struct's doc comment on why.
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
+    pub color: (u8, u8, u8),
+}
+
 /// One loaded mod's Lua VM. Each mod gets its own `Lua` instance so a
 /// misbehaving mod can't reach into another mod's globals.
 pub struct LuaModHost {
@@ -95,6 +116,7 @@ pub struct LuaModHost {
     frame: Rc<RefCell<u64>>,
     pending_ppu_writes: Rc<RefCell<Vec<(u16, u8)>>>,
     pending_ram_writes: Rc<RefCell<Vec<(u16, u8)>>>,
+    pending_text_draws: Rc<RefCell<Vec<TextDraw>>>,
     ram_snapshot: Rc<RefCell<Vec<u8>>>,
 }
 
@@ -104,6 +126,7 @@ impl LuaModHost {
         let frame = Rc::new(RefCell::new(0u64));
         let pending_ppu_writes: Rc<RefCell<Vec<(u16, u8)>>> = Rc::new(RefCell::new(Vec::new()));
         let pending_ram_writes: Rc<RefCell<Vec<(u16, u8)>>> = Rc::new(RefCell::new(Vec::new()));
+        let pending_text_draws: Rc<RefCell<Vec<TextDraw>>> = Rc::new(RefCell::new(Vec::new()));
         let ram_snapshot: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(vec![0; 0x800]));
 
         let contra_table = lua.create_table()?;
@@ -142,6 +165,33 @@ impl LuaModHost {
             Ok(())
         })?;
         contra_table.set("write_ppu", write_ppu_fn)?;
+
+        // Screen-space text overlay - the host's own UI font (`egui`'s in
+        // `contra-pc`), not the NES's, and not bound to an 8x8 tile grid or
+        // a nametable address. Deliberately *not* built on `write_ppu`:
+        // drawing real text into the PPU would mean either patching CHR-RAM
+        // with a custom font (destructive - overwrites real game tiles) or
+        // learning Contra's own font's tile-index mapping and fighting the
+        // nametable for space the game is already using. An overlay avoids
+        // both and gives mods full Unicode, not just whatever glyphs
+        // happen to be in this one game's character set. `color` is an
+        // optional `{r=, g=, b=}` table (each `0-255`); omitted or any
+        // missing channel defaults to a warm off-white matching the stats
+        // overlay's own text color, so a mod that doesn't care about color
+        // still gets something readable.
+        let text_draws_for_queue = pending_text_draws.clone();
+        let draw_text_fn = lua.create_function(move |_, (x, y, text, color): (i32, i32, String, Option<Table>)| {
+            let channel = |c: &Option<Table>, key: &str, default: u8| -> LuaResult<u8> {
+                match c {
+                    Some(t) => Ok(t.get::<_, Option<u8>>(key)?.unwrap_or(default)),
+                    None => Ok(default),
+                }
+            };
+            let rgb = (channel(&color, "r", 255)?, channel(&color, "g", 224)?, channel(&color, "b", 128)?);
+            text_draws_for_queue.borrow_mut().push(TextDraw { x, y, text, color: rgb });
+            Ok(())
+        })?;
+        contra_table.set("draw_text", draw_text_fn)?;
 
         let ram_writes_for_queue = pending_ram_writes.clone();
         let poke_ram_fn = lua.create_function(move |_, (addr, value): (u16, u8)| {
@@ -215,7 +265,7 @@ impl LuaModHost {
         contra_table.set("player", player_table)?;
 
         lua.globals().set("contra", contra_table)?;
-        Ok(Self { lua, frame, pending_ppu_writes, pending_ram_writes, ram_snapshot })
+        Ok(Self { lua, frame, pending_ppu_writes, pending_ram_writes, pending_text_draws, ram_snapshot })
     }
 
     pub fn load_script(&self, source: &str, chunk_name: &str) -> Result<(), ScriptError> {
@@ -303,11 +353,45 @@ impl LuaModHost {
     pub fn take_pending_ram_writes(&self) -> Vec<(u16, u8)> {
         std::mem::take(&mut *self.pending_ram_writes.borrow_mut())
     }
+
+    /// Drains every `contra.draw_text(...)` call queued since the last
+    /// drain, for the host to render as a screen-space overlay this frame
+    /// (see [`TextDraw`]'s doc comment).
+    pub fn take_pending_text_draws(&self) -> Vec<TextDraw> {
+        std::mem::take(&mut *self.pending_text_draws.borrow_mut())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draw_text_queues_with_defaulted_color_and_drains_once() {
+        let host = LuaModHost::new().unwrap();
+        host.load_script(
+            r#"
+                contra.on("frame_tick", function()
+                    contra.draw_text(10, 20, "hello")
+                    contra.draw_text(1, 2, "colored", {r = 0, g = 255, b = 0})
+                    contra.draw_text(3, 4, "partial", {g = 100})
+                end)
+            "#,
+            "text_mod",
+        )
+        .unwrap();
+        host.fire(ModEvent::FrameTick).unwrap();
+        let draws = host.take_pending_text_draws();
+        assert_eq!(
+            draws,
+            vec![
+                TextDraw { x: 10, y: 20, text: "hello".into(), color: (255, 224, 128) },
+                TextDraw { x: 1, y: 2, text: "colored".into(), color: (0, 255, 0) },
+                TextDraw { x: 3, y: 4, text: "partial".into(), color: (255, 100, 128) },
+            ]
+        );
+        assert!(host.take_pending_text_draws().is_empty());
+    }
 
     #[test]
     fn script_can_register_and_receive_events() {

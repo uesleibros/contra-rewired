@@ -64,11 +64,21 @@ end)
 ```
 
 - `contra.on(eventName, fn)` - registers a handler. Events fired today:
-  `frame_tick` (once per emulated frame, real). `enemy_spawn`, `player_hit`,
-  `stage_start`, `stage_clear` are defined (see `ModEvent` in `script.rs`)
-  but not wired to any real emulator signal yet - detecting them means
-  reading known RAM addresses the way Custom Difficulty tooling will
-  (tracked in ROADMAP.md).
+  - `frame_tick(fn())` - once per emulated frame, no payload.
+  - `stage_start(fn(stage))` / `stage_clear(fn(stage))` - `stage` is the
+    0-based level index, fired together whenever `contra-pc` observes
+    `CURRENT_LEVEL` change between frames (a real level completion, or the
+    Debug tab's stage-select jump - both look the same from here).
+  - `player_hit(fn({player, lives_remaining}))` - `player` is `0`/`1` for
+    P1/P2. Fires when that player's lives count drops between frames - the
+    closest honest signal available without the reference disassembly
+    exposing an exact "just got hit" flag, so this is really "just lost a
+    life" (won't fire for a hit survived on temporary invincibility, if
+    Contra even has that).
+  - `enemy_spawn` is defined (see `ModEvent` in `script.rs`) but still not
+    wired to anything - unlike the other three, there's no RAM byte to
+    watch for it; it needs a CPU bank/PC-scoped hook instead (tracked in
+    ROADMAP.md).
 - `contra.log(msg)` - writes to `contra-pc`'s log output.
 - `contra.frame()` - the current frame count, set by the host once per
   frame. Use it as a clock for time-based effects
@@ -86,6 +96,27 @@ end)
   the 4 sprite sub-palettes'. This never touches CPU/RAM/collision state -
   only what's already-drawn pixels are colored with, so it can't desync
   gameplay, only recolor it.
+- `contra.draw_text(x, y, text[, {r=, g=, b=}])` - draws `text` at
+  screen-space position `(x, y)` (same NES-pixel coordinate space as the
+  game image itself - `(0, 0)` is the top-left of the 256x240 playfield,
+  regardless of window size/zoom/widescreen). This is the host's own UI
+  font (`egui`'s, in `contra-pc`), *not* the NES's - full Unicode, any
+  position, and it can't fail to render because a tile it needed was
+  already something else. Not built on `write_ppu`: writing real text into
+  the PPU would mean either patching CHR-RAM with a custom font
+  (destructive - overwrites real game tiles) or learning Contra's own
+  font's tile-index mapping and fighting the nametable for space the game
+  is already using. Purely presentational, cleared and requeued every
+  frame (so redraw it every `frame_tick` if you want it to persist -
+  nothing lingers on screen from a frame you didn't draw it in). `color`
+  is optional, defaults to a warm off-white if omitted entirely, and any
+  channel left out of the table defaults the same way (`{g = 255}` gives
+  you `(255, 255, 128)`, not black-and-green):
+  ```lua
+  contra.on("frame_tick", function()
+      contra.draw_text(4, 4, "mod loaded", {r = 128, g = 255, b = 128})
+  end)
+  ```
 - `contra.poke_ram(addr, value)` / `contra.peek_ram(addr)` - **low-level,
   gameplay-affecting.** `addr` is a CPU work-RAM offset (`$0000-$07FF`, the
   NES's 2KB of real RAM), the same address space the reference disassembly's

@@ -351,11 +351,23 @@ is loaded**
       overlay, Zoom slider, Speed slider, Fullscreen, Audio Mute - all
       direct `egui::Checkbox`/`egui::Slider` bindings), **Mods** (every
       discovered mod as a click-to-toggle checkbox), **Debug** (see below).
-      Opens with Tab or Escape; egui owns mouse/keyboard focus while it's
-      open (`egui_winit::State::on_window_event`'s `consumed` flag gates
-      whether gameplay input handling sees the event at all), and reads as
-      "outside the game" the same way the old bitmap-font menu did -
-      that part of the design goal didn't change, just how it's built
+      Opens and closes with Tab or Escape; egui owns mouse/keyboard focus
+      while it's open (`egui_winit::State::on_window_event`'s `consumed`
+      flag gates whether gameplay input handling sees the event at all),
+      and reads as "outside the game" the same way the old bitmap-font menu
+      did - that part of the design goal didn't change, just how it's
+      built.
+      **Real bug, found and fixed**: the pause/resume toggle itself used to
+      live *behind* that same `consumed` gate - meaning once the menu was
+      open, `egui`'s own Tab-cycles-widget-focus behavior (and sometimes
+      Escape, depending what had focus) could consume the keypress before
+      it ever reached the app-level shortcut that's supposed to close the
+      menu, so Tab/Escape would silently do nothing until you clicked
+      somewhere first to defocus whatever `egui` widget had grabbed it.
+      Fixed by checking Tab/Escape *before*, and regardless of, the
+      `consumed` gate - opening and closing the menu is the primary way in
+      and out of it, so it has to win over `egui`'s internal focus handling
+      either way
 - [x] **Debug tab, now both players**: live cheat/trainer controls backed
       by real CPU RAM pokes (`Nes::peek_ram`/`poke_ram`) - lives (+/-
       steppers) and current weapon (a real `egui::ComboBox` dropdown, not
@@ -572,6 +584,18 @@ is loaded**
       unwired - unlike the other three there's no RAM byte a host can just
       watch for it; needs the CPU bank/PC-scoped hook mentioned below, not
       a RAM-diff
+- [x] **`contra.draw_text(x, y, text[, {r=, g=, b=}])`** - screen-space text
+      overlay, drawn by `contra-pc`'s own `egui` painter (same coordinate
+      space as the hitbox overlay - NES pixels, not raw screen pixels, so
+      it's correctly positioned regardless of zoom/window size/widescreen
+      without the mod needing to know any of that). Deliberately not built
+      on `write_ppu`: real in-game text would mean either patching CHR-RAM
+      with a custom font (destructive) or reverse-engineering Contra's own
+      font's tile-index mapping and fighting the nametable for space the
+      game's already using - an overlay sidesteps both and gets full
+      Unicode besides. Cleared and re-collected every frame in `run_mods`
+      (`TextOverlay`, a local mirror of `contra_mods::script::TextDraw` so
+      `redraw()` doesn't need its own `#[cfg(feature = "mods")]` split)
 - [ ] Asset-file-based overrides (`sprite_overrides`/`music_overrides` in
       the manifest schema exist but aren't consumed - see docs/MODDING.md
       for why that's a CHR-RAM-patching problem, not a file-swap one)

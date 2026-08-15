@@ -442,14 +442,28 @@ struct ModEventTracker {
     p2_lives: Option<u8>,
 }
 
+/// Local mirror of `contra_mods::script::TextDraw` - lets `redraw()` draw
+/// mod text overlays unconditionally (always empty without the `mods`
+/// feature) instead of needing its own `#[cfg(feature = "mods")]` split
+/// the way `LoadedModsVec` needs for the mod list itself.
+struct TextOverlay {
+    x: i32,
+    y: i32,
+    text: String,
+    color: (u8, u8, u8),
+}
+
 /// Fires `frame_tick` on every loaded mod, plus `stage_start`/`stage_clear`
 /// (when `RAM_CURRENT_LEVEL` changes between frames) and `player_hit`
 /// (when either player's lives count drops), and applies whatever PPU/RAM
-/// writes got queued in response (see `contra_mods::script::LuaModHost`).
-/// No-op for the placeholder session (no `Nes` to poke) or if `mods` wasn't
-/// enabled at build time.
+/// writes got queued in response, collecting any `contra.draw_text(...)`
+/// calls into `text_overlays` (cleared first - these are this-frame-only,
+/// not cumulative) for `redraw` to actually draw (see
+/// `contra_mods::script::LuaModHost`). No-op for the placeholder session
+/// (no `Nes` to poke) or if `mods` wasn't enabled at build time.
 #[cfg(feature = "mods")]
-fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTracker) {
+fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTracker, text_overlays: &mut Vec<TextOverlay>) {
+    text_overlays.clear();
     let Session::Emulator { nes, frame_count, .. } = session else {
         return;
     };
@@ -498,11 +512,16 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session, tracker: &mut ModEventTra
         for (addr, value) in m.host.take_pending_ram_writes() {
             nes.poke_ram(addr, value);
         }
+        for d in m.host.take_pending_text_draws() {
+            text_overlays.push(TextOverlay { x: d.x, y: d.y, text: d.text, color: d.color });
+        }
     }
 }
 
 #[cfg(not(feature = "mods"))]
-fn run_mods(_mods: &[()], _session: &mut Session, _tracker: &mut ModEventTracker) {}
+fn run_mods(_mods: &[()], _session: &mut Session, _tracker: &mut ModEventTracker, text_overlays: &mut Vec<TextOverlay>) {
+    text_overlays.clear();
+}
 
 /// The inverse of [`apply_mod_order`] - captures the current execution
 /// order as a list of IDs, for `config.mods.order` right before the
@@ -609,6 +628,7 @@ fn step_gameplay_frame(
     rewind_enabled: bool,
     loaded_mods: &LoadedModsVec,
     mod_event_tracker: &mut ModEventTracker,
+    text_overlays: &mut Vec<TextOverlay>,
     settings: &Settings,
     audio_output: &Option<audio::AudioOutput>,
     target_wide_width: usize,
@@ -619,7 +639,7 @@ fn step_gameplay_frame(
     nes.set_wide_width(if settings.widescreen { target_wide_width } else { contra_nes::SCREEN_W });
     nes.set_unlimited_sprites(settings.unlimited_sprites);
     session.step(action_state, rewind_enabled);
-    run_mods(loaded_mods, session, mod_event_tracker);
+    run_mods(loaded_mods, session, mod_event_tracker, text_overlays);
     let samples = session.drain_audio();
     if let Some(audio) = audio_output {
         if !settings.audio_muted {
@@ -968,6 +988,7 @@ fn main() -> anyhow::Result<()> {
     let mut frozen = false;
     let mut advance_one_frame = false;
     let mut mod_event_tracker = ModEventTracker::default();
+    let mut text_overlays: Vec<TextOverlay> = Vec::new();
 
     window.request_redraw();
 
@@ -1007,16 +1028,33 @@ fn main() -> anyhow::Result<()> {
                             held_keys.remove(&code);
                         }
 
+                        // Pause/resume is checked *before* the `egui_consumed`
+                        // gate below, and unconditionally - not just when
+                        // `!egui_consumed`. `egui` treats Tab as its own
+                        // "move focus to the next widget" shortcut (and can
+                        // also swallow Escape for whatever currently has
+                        // focus) whenever the pause menu is open, which used
+                        // to mean the very key that's supposed to *close*
+                        // the menu got eaten by `egui`'s internal focus
+                        // handling instead of ever reaching this app-level
+                        // shortcut - the menu would only close if you first
+                        // clicked somewhere to defocus whatever `egui`
+                        // widget had grabbed it. Resume/pause is the primary
+                        // way in and out of the menu, so it has to win
+                        // regardless of what else `egui` does with the key.
+                        if let PhysicalKey::Code(key_code) = physical_key {
+                            if is_down && (key_code == KeyCode::Escape || key_code == KeyCode::Tab) {
+                                routine = match routine {
+                                    GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
+                                    GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
+                                    other => other,
+                                };
+                                window.request_redraw();
+                            }
+                        }
+
                         if !egui_consumed {
                             if let PhysicalKey::Code(key_code) = physical_key {
-                                if is_down && (key_code == KeyCode::Escape || key_code == KeyCode::Tab) {
-                                    routine = match routine {
-                                        GameRoutine::Playing => routine.transition(GameEvent::PausePressed),
-                                        GameRoutine::Paused => routine.transition(GameEvent::ResumePressed),
-                                        other => other,
-                                    };
-                                    window.request_redraw();
-                                }
                                 if is_down && key_code == KeyCode::F5 {
                                     session.quick_save();
                                 }
@@ -1114,6 +1152,7 @@ fn main() -> anyhow::Result<()> {
                             &mut prev_widescreen,
                             &mut prev_fullscreen,
                             &mut rom_dialog_rx,
+                            &text_overlays,
                         );
                     }
                     _ => {}
@@ -1158,7 +1197,7 @@ fn main() -> anyhow::Result<()> {
                     advance_one_frame = false;
                     let gp = poll_gamepad(gilrs.as_mut());
                     update_action_state(&mut action_state, &bindings, &held_keys, &gp);
-                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &settings, &audio_output, target_wide);
+                    step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &mut text_overlays, &settings, &audio_output, target_wide);
                     // Frozen again immediately after - a backlog built up
                     // while frozen shouldn't turn into a burst of extra
                     // steps the instant `frozen` is cleared.
@@ -1182,7 +1221,7 @@ fn main() -> anyhow::Result<()> {
                             // Gameplay input/stepping is simply suspended while
                             // paused.
                         } else if routine.accepts_gameplay_input() {
-                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &settings, &audio_output, target_wide);
+                            step_gameplay_frame(&mut session, &action_state, rewind_enabled, &loaded_mods, &mut mod_event_tracker, &mut text_overlays, &settings, &audio_output, target_wide);
                         }
                         accumulator -= frame_duration;
                         stepped = true;
@@ -1272,6 +1311,7 @@ fn redraw(
     prev_widescreen: &mut bool,
     prev_fullscreen: &mut bool,
     rom_dialog_rx: &mut Option<mpsc::Receiver<Option<PathBuf>>>,
+    text_overlays: &[TextOverlay],
 ) {
     let is_placeholder = matches!(session, Session::Placeholder { .. });
     let mut hitboxes: Vec<egui::Rect> = Vec::new();
@@ -1356,6 +1396,22 @@ fn redraw(
                             text,
                             egui::FontId::monospace(13.0),
                             egui::Color32::from_rgb(255, 224, 128),
+                        );
+                    }
+
+                    // Mod-drawn text (`contra.draw_text(x, y, text)`) -
+                    // `x`/`y` are in the same NES-pixel coordinate space as
+                    // `hitboxes` above, scaled/offset the same way, so a
+                    // mod's overlay stays correctly positioned regardless
+                    // of window size/zoom without needing to know either.
+                    for overlay in text_overlays {
+                        let pos = rect.min + egui::vec2(overlay.x as f32, overlay.y as f32) * scale;
+                        ui.painter().text(
+                            pos,
+                            egui::Align2::LEFT_TOP,
+                            &overlay.text,
+                            egui::FontId::monospace((13.0 * scale).max(8.0)),
+                            egui::Color32::from_rgb(overlay.color.0, overlay.color.1, overlay.color.2),
                         );
                     }
 
