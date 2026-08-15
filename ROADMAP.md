@@ -97,17 +97,24 @@ is loaded**
       CPU/GPU work that could starve the audio thread and make everything
       feel sluggish, even though pure emulation runs at ~30x real-time (see
       `crates/contra-nes/examples/perf_test.rs`)
-- [x] **"Extended" widescreen mode**, real and working, and now *live*: the
-      render width tracks the window's actual aspect ratio every frame (see
-      `compute_wide_width` in `main.rs`), so resizing the window or
-      maximizing onto an ultrawide monitor is reflected immediately, up to
-      the empirically-tested safe cap (`EXTENDED_WIDTH` = 380px). Never
-      touches RAM/collision/spawn logic (presentation-only), verified by a
-      test asserting the center 256px exactly matches normal rendering
-      byte-for-byte, plus a test covering arbitrary in-between widths (not
-      just the max). Toggle it from the pause menu. Known limitation:
-      sprite-0-hit timing can differ from real hardware while active (an
-      accepted tradeoff for an opt-in mode - see docs/FIDELITY.md)
+- [x] **"Extended" widescreen mode**, real and working: toggling it on in
+      the pause menu immediately targets the full empirically-tested safe
+      cap (`EXTENDED_WIDTH` = 380px), independent of the current window
+      size - the scale-to-fit blit handles however that ends up displayed.
+      (Fixed this round: it used to derive its target width from the
+      window's *current* size via a resize-event-driven
+      `compute_wide_width`, so toggling it on without also resizing the
+      window produced no visible change - removed entirely in favor of
+      always targeting the cap.) Never touches RAM/collision/spawn logic
+      (presentation-only), verified by a test asserting the center 256px
+      exactly matches normal rendering byte-for-byte, plus a test covering
+      arbitrary in-between widths (not just the max, and not just the
+      framebuffer's row stride, which had its own now-fixed bug - see
+      docs/FIDELITY.md). Known limitation: enemies still only appear the
+      moment the original 256px-camera spawn logic decides to spawn them,
+      same as real hardware - see docs/FIDELITY.md, "Widescreen ... what it
+      can and can't do", for why that's inherent to keeping widescreen
+      presentation-only rather than a fixable bug
 - [x] **Freely resizable window with dynamic fill scaling** (not
       integer-locked): default behavior now scales fractionally to cover as
       much of the window as possible while preserving aspect ratio - drag
@@ -164,42 +171,62 @@ is loaded**
 - [ ] Actually wired to a renderer/simulation once one exists
 - [ ] Frame advance / slow-motion (25–200%)
 
-**Menu / UI - v1, real but small**
+**Menu / UI - v2, mouse-driven, tabbed**
 - [x] Built-in 5x7 bitmap font + text renderer, no external font/asset
       dependency (`apps/contra-pc/src/menu.rs`), visually verified by
       rendering full A-Z/0-9/symbol and full-menu samples to PNGs
-- [x] Pause menu: appears on Escape/Tab/Start, Up/Down to navigate, Jump/X
-      to toggle, Left/Right to adjust Zoom. Renders as a crisp overlay at
-      the window's *native* resolution (drawn after scaling, onto the
-      softbuffer output directly) rather than blocky upscaled low-res NES
-      pixels - reads as "outside the game," closer to how e.g. Ship of
-      Harkinian's menu sits apart from the emulated picture. Seven real
-      working toggles: Widescreen, No Sprite Flicker, Pixel Perfect, Zoom,
-      Fullscreen (`window.set_fullscreen`), Audio Mute, Resume
+- [x] Pause menu rebuilt as **mouse-only**, not directional-nav: `draw_menu`
+      builds a `MenuLayout` (a list of clickable rects) as it draws, and
+      that *same* layout is hit-tested against real `CursorMoved`/
+      `MouseInput` events - so the drawn layout and the clickable layout can
+      never drift apart, by construction. No keyboard/gamepad menu
+      navigation remains. Opens with Tab or Escape or Start. Renders as a
+      crisp overlay at the window's *native* resolution (drawn after
+      scaling, onto the softbuffer output directly) rather than blocky
+      upscaled low-res NES pixels - reads as "outside the game," closer to
+      how e.g. Ship of Harkinian's menu sits apart from the emulated
+      picture
+- [x] Three tabs - **Settings** (Widescreen, No Sprite Flicker, Pixel
+      Perfect, Zoom with +/- steppers, Fullscreen, Audio Mute), **Mods**
+      (every discovered mod listed with a click-to-toggle enabled state),
+      **Debug** (see below) - plus a Resume button, all mouse-clickable
+- [x] **Debug tab**: live, clickable cheat/trainer controls backed by real
+      CPU RAM pokes (`Nes::peek_ram`/`poke_ram`) - lives and continues as
+      +/- steppers (clamped 0-99 / 0-9), current weapon as five
+      click-to-select rows (Standard/Machine Gun/Fire/Spread/Laser, RAM
+      addresses from the reference disassembly's `ram.asm`). Shows "NO ROM
+      LOADED" instead when running the placeholder demo, since there's no
+      real RAM to poke
+- [x] Mod enable/disable UI (Mods tab, click a mod row to toggle) - session
+      only for now, resets to all-enabled on next launch; not yet persisted
+      to `config.toml`
 - [ ] Everything else from the config surface (CRT filter, scanlines,
       palette, keybind remapping, difficulty, checkpoint mode, ...) still
       needs a menu entry; this is the pattern to extend, not a finished
       options screen
 - [ ] Main menu / title screen UI (currently boots straight into gameplay
       with no menu shown before Playing)
-- [ ] Gamepad button glyphs instead of a fixed "X" prompt
-- [ ] Mod enable/disable/reorder UI (every mod with a valid `mod.toml` in
-      `./mods/` currently auto-runs - see the Modding section below)
+- [ ] Mod reorder UI, mod enable/disable persisted across launches
 
-**Modding - Lua scripting is real and wired to the emulator**
-- [x] `contra.write_ppu(addr, value)` / `contra.frame()` / `contra.on(...)`
-      / `contra.log(...)` host API (`crates/contra-mods/src/script.rs`, 8
-      tests incl. one that runs a full frame-by-frame color-cycling script
-      and asserts >10 distinct colors appear over 200 simulated frames)
+**Modding - Lua scripting, high-level and low-level APIs**
+- [x] Low-level host API (`crates/contra-mods/src/script.rs`):
+      `contra.write_ppu(addr, value)` / `contra.poke_ram(addr, value)` /
+      `contra.peek_ram(addr)` / `contra.frame()` / `contra.on(...)` /
+      `contra.log(...)`. RAM writes are queued and PPU writes are queued
+      separately, both drained and applied to the live `Nes` once per frame
+      - RAM pokes actually change game state (lives, weapon, position,
+      anything else in work RAM), unlike the presentation-only PPU pokes
+- [x] High-level API layered on the same primitives:
+      `contra.player.set_lives/get_lives`,
+      `set_weapon/get_weapon`, `set_continues/get_continues` - a mod author
+      who doesn't want to know RAM addresses doesn't have to
 - [x] `contra-pc --features mods` scans `./mods/`, loads every mod with an
       `entry_script` into its own Lua VM, fires `frame_tick` once per
-      emulated frame, and applies queued PPU writes to the live `Nes` -
-      verified against the real ROM (log-confirmed mod load, no runtime
-      errors over 300+ frames)
+      emulated frame, and applies queued PPU + RAM writes to the live `Nes`
+      - verified against the real ROM (log-confirmed mod load, no runtime
+      errors over 300+ frames), 11 tests in `script.rs`
 - [x] `mods/rgb-character/` - a complete, working example mod (cycles every
       sprite palette through the NES's 64-color range every frame)
-- [ ] RAM (CPU-side) peek/poke, not just PPU - needed for gameplay-affecting
-      mods, not just visual ones
 - [ ] Typed event payloads for `enemy_spawn`/`player_hit`/etc. (only
       `frame_tick` carries real data today)
 - [ ] Asset-file-based overrides (`sprite_overrides`/`music_overrides` in

@@ -116,6 +116,57 @@ higher-priority sprite's pixel can never be overwritten by a
 lower-priority one; regression-tested in `ppu.rs`
 (`lower_oam_index_sprite_wins_overlap_priority`).
 
+### Widescreen ("Extended") mode: what it can and can't do
+
+Widescreen is presentation-only by design: it never touches CPU RAM, PPU
+registers, or anything else the game logic reads back, so turning it on or
+off can never change gameplay - only how much of the same game state is
+drawn. That guarantee is also exactly what limits it.
+
+- **Why the extra width is capped at `EXTENDED_WIDTH` (380px, i.e. 62px per
+  side beyond the real 256px).** The NES only has two physical nametables in
+  hardware. Contra's own engine only pre-draws the nametable columns in the
+  direction it's currently auto-scrolling toward - the trailing edge (behind
+  the camera) is never kept populated, because the real console never needed
+  it to be. Extending the visible background further than the game has
+  actually drawn reveals that undrawn nametable data as visible garbage on
+  the trailing edge. 380px was found empirically, by rendering real ROM
+  frames with `dump_frames.rs` at several widths (350 / 380 / 420 / 480px)
+  and visually inspecting the trailing edge in each - 380px is clean, 420px
+  is not. This means true ultrawide framing (e.g. 32:9, which would need
+  roughly 854px to fill edge-to-edge without letterboxing) is not achievable
+  without either patching the game's own nametable-fill logic (which would
+  cross the "never touch game state" line every other enhancement here
+  respects) or accepting visible garbage at the edges. `contra-pc` fills any
+  extra space beyond 380px with plain letterboxing rather than doing either.
+- **Enemies still "pop in" at the same moment they would on real hardware.**
+  Extending the background is safe because tiles are just re-drawn from
+  nametable data that already exists. Enemies are not tiles - they're real
+  entities the original, unmodified game code spawns based on the player's
+  *actual* 256px-wide camera position, exactly like on real hardware. Making
+  an enemy appear before that code decides to spawn it would mean running
+  game logic differently depending on a purely visual setting, which is the
+  one thing widescreen mode is built to never do. So in Extended mode, an
+  enemy that would be just off-screen on real hardware is now visibly
+  *further* off-screen (inside the extra 62px), and still won't render until
+  the original spawn check fires - it's more noticeable than on a 256px
+  screen, but not a new or different bug; the alternative would require
+  widescreen to become a gameplay-affecting cheat rather than a presentation
+  option.
+- **Fixed this round: widescreen not visibly turning on.** The target width
+  used to be computed from the *current window size* (`compute_wide_width`,
+  keyed off `Resized` events), so toggling "Widescreen: ON" without also
+  resizing the window away from its narrow default produced no visible
+  change - the computed target was still ≈256px. Widescreen now always
+  targets the full `EXTENDED_WIDTH` cap the moment it's enabled, independent
+  of window size; the existing scale-to-fit blit handles whatever window
+  size the extra pixels end up displayed at. A related buffer bug was fixed
+  alongside it: `wide_framebuffer` was always allocated at
+  `EXTENDED_WIDTH * SCREEN_H` and copied a full `EXTENDED_WIDTH`-wide slice
+  per scanline regardless of the width actually in use that frame, which
+  corrupted the buffer's row stride any time the active width was less than
+  the cap. It's now sized and copied to the actual per-frame width.
+
 ## `contra-core`: hand-ported layer (placeholder demo)
 
 The rest of this document describes `contra-core`'s hand-ported physics/RNG

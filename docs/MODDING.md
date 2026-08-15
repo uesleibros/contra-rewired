@@ -1,9 +1,11 @@
 # Modding
 
 A mod is a directory: `/mods/<your-mod-id>/mod.toml` plus whatever assets or
-scripts it needs. Drop it in `./mods/` next to the executable and it loads
-automatically - there's no enable/disable UI yet (tracked in ROADMAP.md), so
-every mod with a valid `mod.toml` in that folder runs.
+scripts it needs. Drop it in `./mods/` next to the executable; it's picked up
+and enabled by default. Toggle individual mods on/off from the pause menu's
+Mods tab (mouse click on a mod row) - this is session-only for now, it
+resets to all-enabled on the next launch (persisting it to `config.toml` is
+tracked in ROADMAP.md).
 
 ## Scripting: Lua, real and working
 
@@ -84,6 +86,24 @@ end)
   the 4 sprite sub-palettes'. This never touches CPU/RAM/collision state -
   only what's already-drawn pixels are colored with, so it can't desync
   gameplay, only recolor it.
+- `contra.poke_ram(addr, value)` / `contra.peek_ram(addr)` - **low-level,
+  gameplay-affecting.** `addr` is a CPU work-RAM offset (`$0000-$07FF`, the
+  NES's 2KB of real RAM), the same address space the reference disassembly's
+  `ram.asm` documents. Unlike `write_ppu`, this *does* change real game
+  state - it's the same RAM the running game itself reads and writes, so a
+  poke here is indistinguishable from the game doing it. `peek_ram` reads
+  the RAM snapshot taken at the start of the current frame (before this
+  frame's queued pokes are applied), so reading back a value you just poked
+  in the same tick won't yet reflect it - queue the write, then read it back
+  next frame.
+- `contra.player` - a high-level convenience layer built entirely on
+  `poke_ram`/`peek_ram`, for mod authors who'd rather not memorize RAM
+  addresses:
+  - `contra.player.set_lives(n)` / `contra.player.get_lives()`
+  - `contra.player.set_weapon(id)` / `contra.player.get_weapon()` - `id` is
+    0=Standard, 1=Machine Gun, 2=Fire, 3=Spread, 4=Laser (matches the
+    Debug tab's weapon list and `bank6.asm`'s weapon IDs)
+  - `contra.player.set_continues(n)` / `contra.player.get_continues()`
 
 Each mod gets its own Lua VM (`LuaModHost::new()`), so a misbehaving script
 can't reach into another mod's globals, and a script error is caught and
@@ -104,11 +124,10 @@ logged per-mod rather than taking down the whole session.
 - **Typed event payloads** (which enemy, how much damage, which stage) -
   `frame_tick` is the only event with real data behind it so far.
   `enemy_spawn`/`player_hit`/etc. need RAM-address-based detection wired in.
-- **Mod management UI**, load order control, and `ModRegistry::
-  unmet_dependencies` enforcement at load time (the check exists and is
-  tested; `contra-pc` doesn't call it yet).
-- **RAM peek/poke** (CPU-side memory, not just PPU) - would unlock gameplay
-  mods (Custom Difficulty pokes, cheats, trainers), not just visual ones.
+- **Mod load order control** and `ModRegistry::unmet_dependencies`
+  enforcement at load time (the check exists and is tested; `contra-pc`
+  doesn't call it yet). Enable/disable is built (see above); reordering
+  isn't.
 
 ## `.contramap` (level editor format)
 

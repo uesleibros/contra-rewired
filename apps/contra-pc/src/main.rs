@@ -30,8 +30,8 @@ use contra_core::state_machine::{GameEvent, GameRoutine};
 use contra_nes::{Mirroring, Nes, NesSnapshot};
 
 use gilrs::{Axis, Button, Gilrs};
-use menu::{MenuItem, MenuState, Settings};
-use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
+use menu::{DebugInfo, MenuAction, MenuState, ModEntry, Settings};
+use winit::event::{ElementState, Event, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, WindowBuilder};
@@ -40,6 +40,14 @@ const INTERNAL_W: u32 = 256;
 const INTERNAL_H: u32 = 240;
 const CONFIG_PATH: &str = "config.toml";
 const GAMEPAD_STICK_DEADZONE: f32 = 0.35;
+
+// RAM addresses backing the Debug tab's live weapon/lives/continues
+// controls, from the community disassembly's `ram.asm` (see
+// docs/MODDING.md and docs/FIDELITY.md). All are CPU work-RAM
+// (`$0000-$07FF`), player-1-scoped (`+1` gets player 2's copy).
+const RAM_P1_NUM_LIVES: u16 = 0x32;
+const RAM_P1_CURRENT_WEAPON: u16 = 0xAA;
+const RAM_NUM_CONTINUES: u16 = 0x3A;
 
 #[derive(Parser)]
 #[command(author, version, about = "contra-rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
@@ -276,11 +284,14 @@ fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> 
 }
 
 /// Scans `./mods/` and loads every mod that has a Lua entry script. Every
-/// found mod is enabled automatically (no mod-management UI yet - see
-/// ROADMAP.md); drop a mod in the folder and it runs.
+/// found mod starts enabled; toggle them from the pause menu's Mods tab
+/// (session-only for now - not yet persisted across launches, see
+/// ROADMAP.md).
 #[cfg(feature = "mods")]
-struct LoadedMod {
-    id: String,
+pub struct LoadedMod {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
     host: contra_mods::script::LuaModHost,
 }
 
@@ -312,7 +323,7 @@ fn load_mods() -> Vec<LoadedMod> {
             continue;
         }
         log::info!("loaded mod: {} ({}) - {}", m.manifest.name, m.manifest.id, m.manifest.description);
-        loaded.push(LoadedMod { id: m.manifest.id.clone(), host });
+        loaded.push(LoadedMod { id: m.manifest.id.clone(), name: m.manifest.name.clone(), enabled: true, host });
     }
     loaded
 }
@@ -327,13 +338,20 @@ fn run_mods(mods: &[LoadedMod], session: &mut Session) {
         return;
     };
     for m in mods {
+        if !m.enabled {
+            continue;
+        }
         m.host.set_frame(*frame_count);
+        m.host.set_ram_snapshot(nes.ram());
         if let Err(e) = m.host.fire(contra_mods::script::ModEvent::FrameTick) {
             log::error!("mod '{}': runtime error: {e}", m.id);
             continue;
         }
-        for (addr, value) in m.host.take_pending_writes() {
+        for (addr, value) in m.host.take_pending_ppu_writes() {
             nes.poke_ppu(addr, value);
+        }
+        for (addr, value) in m.host.take_pending_ram_writes() {
+            nes.poke_ram(addr, value);
         }
     }
 }
@@ -354,6 +372,31 @@ fn load_mods() -> Vec<()> {
     Vec::new()
 }
 
+#[cfg(feature = "mods")]
+type LoadedModsVec = Vec<LoadedMod>;
+#[cfg(not(feature = "mods"))]
+type LoadedModsVec = Vec<()>;
+
+/// Read-only view of the loaded mods for `menu.rs`'s Mods tab - decoupled
+/// from the `mods` Cargo feature so `menu.rs` never needs to know it exists.
+#[cfg(feature = "mods")]
+fn mod_entries(mods: &[LoadedMod]) -> Vec<ModEntry> {
+    mods.iter().map(|m| ModEntry { name: m.name.clone(), enabled: m.enabled }).collect()
+}
+#[cfg(not(feature = "mods"))]
+fn mod_entries(_mods: &[()]) -> Vec<ModEntry> {
+    Vec::new()
+}
+
+#[cfg(feature = "mods")]
+fn toggle_mod(mods: &mut [LoadedMod], idx: usize) {
+    if let Some(m) = mods.get_mut(idx) {
+        m.enabled = !m.enabled;
+    }
+}
+#[cfg(not(feature = "mods"))]
+fn toggle_mod(_mods: &mut [()], _idx: usize) {}
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
@@ -373,7 +416,7 @@ fn main() -> anyhow::Result<()> {
     let audio_sample_rate = audio_output.as_ref().map(|a| a.sample_rate).unwrap_or(44_100.0);
 
     let mut session = load_session(&args, rewind_capacity, audio_sample_rate);
-    let loaded_mods = load_mods();
+    let mut loaded_mods = load_mods();
     let window_title = match &session {
         Session::Emulator { .. } => "contra-rewired",
         Session::Placeholder { .. } => "contra-rewired (no ROM loaded - engine placeholder demo)",
@@ -396,10 +439,6 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
 
     let mut placeholder_framebuffer = vec![0u32; (INTERNAL_W * INTERNAL_H) as usize];
-    // Tracks the widescreen width that matches the *current* window's live
-    // aspect ratio (recomputed on every resize), so an ultrawide monitor
-    // fills edge to edge instead of pillarboxing at a fixed extension.
-    let mut target_wide_width = compute_wide_width(window.inner_size().width, window.inner_size().height);
 
     let bindings = config.input.player_bindings[0].clone();
     let mut action_state = ActionState::new();
@@ -412,6 +451,8 @@ fn main() -> anyhow::Result<()> {
     let mut edges = EdgeTracker::default();
     let mut settings = Settings::default();
     let mut menu_state = MenuState::new();
+    let mut mouse_pos: (i32, i32) = (0, 0);
+    let mut last_menu_layout: Option<menu::MenuLayout> = None;
 
     let mut gilrs = Gilrs::new().ok();
     if gilrs.is_none() {
@@ -469,7 +510,28 @@ fn main() -> anyhow::Result<()> {
                     if let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
                         let _ = surface.resize(w, h);
                     }
-                    target_wide_width = compute_wide_width(size.width, size.height);
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    mouse_pos = (position.x as i32, position.y as i32);
+                    if routine == GameRoutine::Paused {
+                        window.request_redraw(); // keep hover highlighting live
+                    }
+                }
+                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                    if routine == GameRoutine::Paused {
+                        if let Some(action) = last_menu_layout.as_ref().and_then(|l| l.hit_test(mouse_pos.0, mouse_pos.1)) {
+                            apply_menu_action(
+                                action,
+                                &mut menu_state,
+                                &mut settings,
+                                &mut session,
+                                &mut loaded_mods,
+                                &mut routine,
+                                &window,
+                            );
+                            window.request_redraw();
+                        }
+                    }
                 }
                 WindowEvent::RedrawRequested => {
                     let (fb_source, fb_width): (&[u32], u32) = match &session {
@@ -480,8 +542,33 @@ fn main() -> anyhow::Result<()> {
                         Session::Placeholder { .. } => (&placeholder_framebuffer[..], INTERNAL_W),
                     };
 
-                    let menu_overlay = (routine == GameRoutine::Paused).then_some(&menu_state);
-                    present(&mut surface, &window, fb_source, fb_width, INTERNAL_H, &settings, menu_overlay);
+                    if routine == GameRoutine::Paused {
+                        let mod_entries = mod_entries(&loaded_mods);
+                        let debug_info = match &session {
+                            Session::Emulator { nes, .. } => Some(DebugInfo {
+                                p1_lives: nes.peek_ram(RAM_P1_NUM_LIVES),
+                                p1_weapon: nes.peek_ram(RAM_P1_CURRENT_WEAPON) & 0x0F,
+                                continues: nes.peek_ram(RAM_NUM_CONTINUES),
+                            }),
+                            Session::Placeholder { .. } => None,
+                        };
+                        let layout = present_with_menu(
+                            &mut surface,
+                            &window,
+                            fb_source,
+                            fb_width,
+                            INTERNAL_H,
+                            &settings,
+                            &menu_state,
+                            &mod_entries,
+                            debug_info.as_ref(),
+                            mouse_pos,
+                        );
+                        last_menu_layout = layout;
+                    } else {
+                        present(&mut surface, &window, fb_source, fb_width, INTERNAL_H, &settings);
+                        last_menu_layout = None;
+                    }
                 }
                 _ => {}
             },
@@ -512,37 +599,21 @@ fn main() -> anyhow::Result<()> {
                     update_action_state(&mut action_state, &bindings, &held_keys, &gp);
 
                     if routine == GameRoutine::Paused {
-                        if action_state.just_pressed(Action::Up) {
-                            menu_state.move_up();
-                        }
-                        if action_state.just_pressed(Action::Down) {
-                            menu_state.move_down();
-                        }
-                        if menu_state.current() == MenuItem::Zoom {
-                            if action_state.just_pressed(Action::Left) {
-                                settings.zoom_percent = (settings.zoom_percent - 10).max(50);
-                            }
-                            if action_state.just_pressed(Action::Right) {
-                                settings.zoom_percent = (settings.zoom_percent + 10).min(300);
-                            }
-                        }
-                        if action_state.just_pressed(Action::Jump) {
-                            match menu_state.current() {
-                                MenuItem::Widescreen => settings.widescreen = !settings.widescreen,
-                                MenuItem::NoSpriteLimit => settings.unlimited_sprites = !settings.unlimited_sprites,
-                                MenuItem::PixelPerfect => settings.pixel_perfect = !settings.pixel_perfect,
-                                MenuItem::Zoom => {}
-                                MenuItem::Fullscreen => {
-                                    settings.fullscreen = !settings.fullscreen;
-                                    window.set_fullscreen(settings.fullscreen.then_some(Fullscreen::Borderless(None)));
-                                }
-                                MenuItem::AudioMuted => settings.audio_muted = !settings.audio_muted,
-                                MenuItem::Resume => routine = routine.transition(GameEvent::ResumePressed),
-                            }
-                        }
+                        // The menu is mouse-driven (see WindowEvent::CursorMoved
+                        // / MouseInput below) - nothing to poll here every
+                        // simulated frame. Gameplay input/stepping is simply
+                        // suspended while paused.
                     } else if routine.accepts_gameplay_input() {
                         if let Session::Emulator { nes, .. } = &mut session {
-                            nes.set_wide_width(if settings.widescreen { target_wide_width } else { contra_nes::SCREEN_W });
+                            // Widescreen ON always targets the max safe
+                            // width immediately, regardless of the current
+                            // window shape - decoupled from window size so
+                            // toggling it has an instant, visible effect.
+                            // `present()`'s fill-scaling makes the best use
+                            // of whatever width is available either way, so
+                            // there's no need to shrink the rendered
+                            // content down to match a narrower window.
+                            nes.set_wide_width(if settings.widescreen { contra_nes::EXTENDED_WIDTH } else { contra_nes::SCREEN_W });
                             nes.set_unlimited_sprites(settings.unlimited_sprites);
                         }
                         session.step(&action_state, rewind_enabled);
@@ -678,23 +749,9 @@ fn render_placeholder(fb: &mut [u32], player: &PlayerPhysics, routine: GameRouti
     }
 }
 
-/// Picks a widescreen render width that matches the window's *current*
-/// live aspect ratio, clamped to the hardware-safe cap
-/// (`contra_nes::EXTENDED_WIDTH`) - so resizing the window (dragging it
-/// wider, maximizing onto an ultrawide monitor, etc.) is reflected on the
-/// very next frame instead of needing a mode toggle. See
-/// `contra_nes::EXTENDED_WIDTH`'s docs for why there's a cap at all: the
-/// NES doesn't have infinite off-screen world to reveal.
-fn compute_wide_width(window_w: u32, window_h: u32) -> usize {
-    if window_h == 0 {
-        return contra_nes::SCREEN_W;
-    }
-    let aspect = window_w as f32 / window_h as f32;
-    let desired = (contra_nes::SCREEN_H as f32 * aspect).round() as usize;
-    desired.clamp(contra_nes::SCREEN_W, contra_nes::EXTENDED_WIDTH)
-}
-
-/// Blits `framebuffer` (`internal_w` x `internal_h`) into the window.
+/// Scales `framebuffer` (`internal_w` x `internal_h`) into `buffer` (sized
+/// to `window_w` x `window_h`), returning the region it actually drew into
+/// (useful for nothing here, but keeps the geometry math in one place).
 ///
 /// Two scaling philosophies, both real (see `menu::Settings::pixel_perfect`):
 /// - **Pixel perfect** (opt-in): scale is floored to a whole number, so
@@ -708,11 +765,51 @@ fn compute_wide_width(window_w: u32, window_h: u32) -> usize {
 ///
 /// `zoom_percent` (50-300) is an extra multiplier on top of either mode,
 /// letting content be cropped-in past a perfect fit if desired.
-///
-/// The pause menu, if `menu_overlay` is `Some`, is drawn *after* scaling,
-/// directly at the window's native resolution - crisp text that sits
-/// visually "outside" the low-res emulated picture, not blocky upscaled
-/// NES-style pixels.
+fn blit_scaled(buffer: &mut [u32], window_w: u32, window_h: u32, framebuffer: &[u32], internal_w: u32, internal_h: u32, settings: &menu::Settings) {
+    let zoom = (settings.zoom_percent as f32 / 100.0).max(0.01);
+    let fit_scale = (window_w as f32 / internal_w as f32).min(window_h as f32 / internal_h as f32);
+    let scale = if settings.pixel_perfect { fit_scale.floor().max(1.0) } else { fit_scale } * zoom;
+
+    let out_w = (internal_w as f32 * scale).round() as i32;
+    let out_h = (internal_h as f32 * scale).round() as i32;
+    let off_x = (window_w as i32 - out_w) / 2;
+    let off_y = (window_h as i32 - out_h) / 2;
+
+    buffer.fill(0);
+    for dy in 0..window_h as i32 {
+        let src_y = ((dy - off_y) as f32 / scale) as i32;
+        if src_y < 0 || src_y >= internal_h as i32 {
+            continue;
+        }
+        for dx in 0..window_w as i32 {
+            let src_x = ((dx - off_x) as f32 / scale) as i32;
+            if src_x < 0 || src_x >= internal_w as i32 {
+                continue;
+            }
+            let src_idx = (src_y as u32 * internal_w + src_x as u32) as usize;
+            let dst_idx = (dy as u32 * window_w + dx as u32) as usize;
+            if src_idx < framebuffer.len() && dst_idx < buffer.len() {
+                buffer[dst_idx] = framebuffer[src_idx];
+            }
+        }
+    }
+}
+
+fn resize_and_lock<'a>(
+    surface: &'a mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>,
+    window: &winit::window::Window,
+) -> Option<(softbuffer::Buffer<'a, Rc<winit::window::Window>, Rc<winit::window::Window>>, winit::dpi::PhysicalSize<u32>)> {
+    let size = window.inner_size();
+    let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
+        return None;
+    };
+    if surface.resize(w, h).is_err() {
+        return None;
+    }
+    surface.buffer_mut().ok().map(|b| (b, size))
+}
+
+/// Presents the game view with no menu overlay (normal gameplay).
 fn present(
     surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>,
     window: &winit::window::Window,
@@ -720,55 +817,91 @@ fn present(
     internal_w: u32,
     internal_h: u32,
     settings: &menu::Settings,
-    menu_state_if_paused: Option<&MenuState>,
 ) {
     if framebuffer.len() < (internal_w * internal_h) as usize {
         return;
     }
-    let size = window.inner_size();
-    let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
+    let Some((mut buffer, size)) = resize_and_lock(surface, window) else {
         return;
     };
-    if surface.resize(w, h).is_err() {
-        return;
-    }
-    let Ok(mut buffer) = surface.buffer_mut() else {
-        return;
-    };
-
-    let zoom = (settings.zoom_percent as f32 / 100.0).max(0.01);
-    let fit_scale = (size.width as f32 / internal_w as f32).min(size.height as f32 / internal_h as f32);
-    let scale = if settings.pixel_perfect { fit_scale.floor().max(1.0) } else { fit_scale } * zoom;
-
-    let out_w = (internal_w as f32 * scale).round() as i32;
-    let out_h = (internal_h as f32 * scale).round() as i32;
-    let off_x = (size.width as i32 - out_w) / 2;
-    let off_y = (size.height as i32 - out_h) / 2;
-
-    buffer.fill(0);
-    for dy in 0..size.height as i32 {
-        let src_y = ((dy - off_y) as f32 / scale) as i32;
-        if src_y < 0 || src_y >= internal_h as i32 {
-            continue;
-        }
-        for dx in 0..size.width as i32 {
-            let src_x = ((dx - off_x) as f32 / scale) as i32;
-            if src_x < 0 || src_x >= internal_w as i32 {
-                continue;
-            }
-            let src_idx = (src_y as u32 * internal_w + src_x as u32) as usize;
-            let dst_idx = (dy as u32 * size.width + dx as u32) as usize;
-            if src_idx < framebuffer.len() && dst_idx < buffer.len() {
-                buffer[dst_idx] = framebuffer[src_idx];
-            }
-        }
-    }
-
-    if let Some(menu_state) = menu_state_if_paused {
-        menu::draw_pause_menu(&mut buffer, size.width as usize, size.height as usize, menu_state, settings);
-    }
-
+    blit_scaled(&mut buffer, size.width, size.height, framebuffer, internal_w, internal_h, settings);
     let _ = buffer.present();
+}
+
+/// Presents the game view *and* the mouse-driven pause menu, drawn after
+/// scaling directly at the window's native resolution - crisp text that
+/// sits visually "outside" the low-res emulated picture, not blocky
+/// upscaled NES-style pixels. Returns the menu's clickable layout so the
+/// caller can hit-test the next mouse click against exactly what was drawn.
+#[allow(clippy::too_many_arguments)]
+fn present_with_menu(
+    surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>,
+    window: &winit::window::Window,
+    framebuffer: &[u32],
+    internal_w: u32,
+    internal_h: u32,
+    settings: &menu::Settings,
+    menu_state: &MenuState,
+    mods: &[ModEntry],
+    debug: Option<&DebugInfo>,
+    mouse: (i32, i32),
+) -> Option<menu::MenuLayout> {
+    if framebuffer.len() < (internal_w * internal_h) as usize {
+        return None;
+    }
+    let Some((mut buffer, size)) = resize_and_lock(surface, window) else {
+        return None;
+    };
+    blit_scaled(&mut buffer, size.width, size.height, framebuffer, internal_w, internal_h, settings);
+    let layout = menu::draw_menu(&mut buffer, size.width as usize, size.height as usize, menu_state, settings, mods, debug, mouse);
+    let _ = buffer.present();
+    Some(layout)
+}
+
+/// Applies a click's effect. The only place that turns a [`MenuAction`]
+/// into a real change to settings/emulator/window state - `menu.rs` itself
+/// never touches any of these directly.
+#[allow(clippy::too_many_arguments)]
+fn apply_menu_action(
+    action: MenuAction,
+    menu_state: &mut MenuState,
+    settings: &mut Settings,
+    session: &mut Session,
+    loaded_mods: &mut LoadedModsVec,
+    routine: &mut GameRoutine,
+    window: &winit::window::Window,
+) {
+    match action {
+        MenuAction::SwitchTab(tab) => menu_state.tab = tab,
+        MenuAction::ToggleWidescreen => settings.widescreen = !settings.widescreen,
+        MenuAction::ToggleNoSpriteLimit => settings.unlimited_sprites = !settings.unlimited_sprites,
+        MenuAction::TogglePixelPerfect => settings.pixel_perfect = !settings.pixel_perfect,
+        MenuAction::ZoomDelta(d) => settings.zoom_percent = (settings.zoom_percent + d).clamp(50, 300),
+        MenuAction::ToggleFullscreen => {
+            settings.fullscreen = !settings.fullscreen;
+            window.set_fullscreen(settings.fullscreen.then_some(Fullscreen::Borderless(None)));
+        }
+        MenuAction::ToggleAudioMuted => settings.audio_muted = !settings.audio_muted,
+        MenuAction::Resume => *routine = routine.transition(GameEvent::ResumePressed),
+        MenuAction::ToggleMod(idx) => toggle_mod(loaded_mods, idx),
+        MenuAction::SetWeapon(id) => {
+            if let Session::Emulator { nes, .. } = session {
+                nes.poke_ram(RAM_P1_CURRENT_WEAPON, id);
+            }
+        }
+        MenuAction::LivesDelta(delta) => {
+            if let Session::Emulator { nes, .. } = session {
+                let current = nes.peek_ram(RAM_P1_NUM_LIVES) as i32;
+                nes.poke_ram(RAM_P1_NUM_LIVES, (current + delta).clamp(0, 99) as u8);
+            }
+        }
+        MenuAction::ContinuesDelta(delta) => {
+            if let Session::Emulator { nes, .. } = session {
+                let current = nes.peek_ram(RAM_NUM_CONTINUES) as i32;
+                nes.poke_ram(RAM_NUM_CONTINUES, (current + delta).clamp(0, 9) as u8);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

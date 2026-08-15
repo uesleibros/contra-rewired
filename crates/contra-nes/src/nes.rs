@@ -87,6 +87,25 @@ impl Nes {
         self.bus.ppu.poke(addr, value);
     }
 
+    /// The 2KB CPU-visible work RAM (`$0000-$07FF`), unmirrored. This is
+    /// exactly what a real "Game Genie"-style trainer or a debug menu
+    /// pokes: player lives, weapon ID, continues, and every other piece of
+    /// gameplay state a running Contra ROM keeps here. Reading/writing it
+    /// directly (vs. going through the CPU) can't desync instruction
+    /// timing, but *does* change real game state - unlike
+    /// [`Self::poke_ppu`], this is not a purely cosmetic knob.
+    pub fn ram(&self) -> &[u8; 0x800] {
+        &self.bus.ram
+    }
+
+    pub fn peek_ram(&self, addr: u16) -> u8 {
+        self.bus.ram[(addr & 0x07FF) as usize]
+    }
+
+    pub fn poke_ram(&mut self, addr: u16, value: u8) {
+        self.bus.ram[(addr & 0x07FF) as usize] = value;
+    }
+
     /// Drains every audio sample generated since the last call (mono,
     /// `f32` in roughly `[0, 1)`), for the front-end to feed to its audio
     /// output device.
