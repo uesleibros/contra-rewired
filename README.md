@@ -1,11 +1,13 @@
-# contra-rewired
+<p align="center">
+  <img src="docs/assets/logo.png" alt="contra-rewired" width="480">
+</p>
 
 A from-scratch Rust engine for a PC (and eventually Android) port of
 *Contra* (NES, 1988) - built to the "definitive port" brief: **the original
 game, unmodified by default, with every modern convenience available as an
 opt-in layer instead of a replacement.**
 
-> **Status: playable, with your own ROM.** `contra-pc` now runs a real,
+> **Status: playable, with your own ROM.** `contra-pc` runs a real,
 > from-scratch NES emulation core (`crates/contra-nes`: 6502 CPU, 2C02 PPU,
 > mapper 2/UxROM) - point it at your own legally-dumped Contra ROM and it
 > plays the actual game, not a reimplementation of it. Verified against a
@@ -14,11 +16,13 @@ opt-in layer instead of a replacement.**
 > [docs/FIDELITY.md](docs/FIDELITY.md) for exactly what was checked. It has
 > real audio (pulse/triangle/noise synthesis via `cpal`; DMC is the one
 > channel still missing), a freely resizable window that fills whatever
-> shape it's dragged to, live widescreen that tracks the window's aspect
-> ratio, an opt-in "no sprite flicker" mode, and working Lua mod scripting
-> (see `mods/rgb-character/` for a real, running example). See
-> [Project status](#project-status) and [ROADMAP.md](ROADMAP.md) for exactly
-> what's real today versus planned.
+> shape it's dragged to, true-ultrawide widescreen that tracks your monitor
+> and remembers already-explored terrain (not just a wider fixed box - see
+> [Controls](#controls)), an opt-in "no sprite flicker" mode, a mouse-driven
+> `egui` pause menu with live RAM-based cheats/trainer tooling for both
+> players, and working Lua mod scripting (see `mods/rgb-character/` for a
+> real, running example). See [Project status](#project-status) and
+> [ROADMAP.md](ROADMAP.md) for exactly what's real today versus planned.
 
 ## Why an emulator core, not a hand-ported reimplementation
 
@@ -143,6 +147,7 @@ setup if `cl.exe` isn't already on `PATH`, and for the full scripting API -
 | Pause / menu | Escape or Tab | Start |
 | Quick save / load | F5 / F9 | - |
 | Rewind | Backspace | - |
+| Frame advance | F12 to freeze, `.` to step one frame | - |
 
 Gamepad support is via [`gilrs`](https://docs.rs/gilrs) and works alongside
 keyboard input; only the first connected controller is read today. Rewind
@@ -150,40 +155,71 @@ only does anything if `gameplay.rewind_enabled = true` in `config.toml`
 (off by default, matching `Original` fidelity). Save states hold the whole
 emulator's state - CPU, RAM, PPU, APU - captured without copying the
 cartridge ROM each time (see `contra_nes::Nes::snapshot`/`restore`).
+Fully rebindable via `contra_core::input::Bindings` - an in-game rebinding
+UI isn't built yet; edit `config.toml` after first run, or see
+`crates/contra-core/src/input.rs`.
+
+**Settings hotkeys** - every toggle below also has a direct hotkey, so you
+don't have to open the menu mid-fight:
+
+| Hotkey | Toggles |
+|---|---|
+| F1 | Widescreen |
+| F2 | No Sprite Flicker |
+| F3 | Pixel Perfect |
+| F4 | Hitbox overlay |
+| F6 | Scanlines |
+| F7 | Stats overlay |
+| F8 | Mute audio |
+| F11 | Fullscreen |
+| F12 | Freeze (frame advance with `.`) |
 
 **Window**: freely resizable, no fixed aspect ratio - drag it to any size
 and the content fills it (fractional "dynamic fill" scaling by default; a
-"Pixel Perfect" toggle in the menu switches to strict integer scaling with
-letterbox bars instead, if you prefer crisp NES pixels over a perfect
-window fill). Toggling Widescreen on resizes the window to your monitor's
-full width and tracks it live from then on - true ultrawide, not just a
-wider fixed box. Terrain the level has already shown (anything the camera
-has scrolled past) is remembered and redrawn correctly no matter how far
-out you go; terrain it hasn't shown yet renders as clean backdrop instead
-of a guess. See docs/FIDELITY.md for exactly how that works and its one
-real limitation (enemies/bullets still only appear the moment the original
-camera-relative game logic would spawn them).
+"Pixel Perfect" toggle switches to strict integer scaling with letterbox
+bars instead, if you prefer crisp NES pixels over a perfect window fill).
+Toggling Widescreen on resizes the window to your monitor's full width and
+tracks it live from then on - true ultrawide, not just a wider fixed box.
+Terrain the level has already shown (anything the camera has scrolled past)
+is remembered and redrawn correctly no matter how far out you go; terrain
+it hasn't shown yet renders as clean backdrop instead of a guess. See
+docs/FIDELITY.md for exactly how that works and its one real limitation
+(enemies/bullets still only appear the moment the original camera-relative
+game logic would spawn them).
 
 **Pause menu**: press Escape, Tab, or gamepad Start to open it - built on
 [`egui`](https://github.com/emilk/egui) (real checkboxes, sliders, and
 buttons, not a hand-rolled bitmap font), rendered via `wgpu` as a crisp
 overlay at the window's native resolution, not blocky upscaled NES pixels.
-Mouse-driven. Three tabs: **Settings** (Widescreen, No Sprite Flicker -
-lifts the real hardware's 8-sprites-per-scanline limit, an accuracy break
-that's off by default so `Original` mode stays hardware-accurate - Pixel
-Perfect, Zoom 50-300%, Fullscreen, Audio Mute), **Mods** (click to enable/
-disable any mod found in `./mods/`), and **Debug** (live lives/weapon
-cheats for *both* players plus continues, backed by real CPU RAM pokes -
-see docs/MODDING.md). It's a small, honest v1, not a finished options
-screen - see ROADMAP.md for what's still menu-less.
+Mouse-driven, and stays up while gameplay keeps rendering behind it. Three
+tabs:
+
+- **Settings** - Widescreen, No Sprite Flicker (lifts the real hardware's
+  8-sprites-per-scanline limit, an accuracy break that's off by default so
+  `Original` mode stays hardware-accurate), Pixel Perfect, Hitbox overlay
+  (outlines every active sprite - the *visual* bounding box, see
+  docs/FIDELITY.md for why it's not necessarily Contra's exact collision
+  box), Scanlines, Stats overlay (frame count + both players' live X/Y),
+  Zoom (50-300%), Speed (25-200%, real slow motion - the game still runs
+  its own logic one real frame at a time, just paced differently),
+  Fullscreen, Audio Mute.
+- **Mods** - click to enable/disable any mod found in `./mods/`.
+- **Debug** - live cheats for *both* players, backed by real CPU RAM pokes
+  (not `contra-core`'s hand-ported layer - the actual running game's
+  memory, using the address map the community disassembly documents; see
+  docs/MODDING.md): lives, current weapon (dropdown), the "R" rapid-fire
+  capsule powerup (independent of weapon, same as the real pickup), shared
+  continues, current boss/strongest-enemy HP, and which stage you're on.
+
+It's a small, honest v1, not a finished options screen - see ROADMAP.md for
+what's still menu-less (CRT filter beyond scanlines, palette swaps,
+in-game keybind remapping, a stage-select that doesn't just show the
+current stage - see docs/FIDELITY.md for why jumping stages by RAM poke
+alone doesn't work cleanly yet).
 
 **No ROM loaded?** `contra-pc` shows a real Load ROM screen instead of a
 placeholder demo - click "Load ROM..." for a native file picker, or drag
 and drop a `.nes` file onto the window.
-
-Fully rebindable via `contra_core::input::Bindings` - an in-game rebinding
-UI isn't built yet; edit `config.toml` after first run, or see
-`crates/contra-core/src/input.rs`.
 
 ## Repository layout
 
@@ -195,11 +231,13 @@ crates/contra-core/     hand-ported simulation: physics, RNG, config, input,
                          save states, replays, difficulty, checkpoints
 crates/contra-assets/   legal ROM loading/validation
 crates/contra-mods/     mod manifest/registry + working Lua host (`lua` feature)
-apps/contra-pc/         desktop shell: window/input/audio/pause-menu, loads a
-                         ROM into contra-nes (falling back to the contra-core
-                         placeholder demo) and mods into contra-mods
+apps/contra-pc/         desktop shell: wgpu + egui window/menu, input/audio,
+                         loads a ROM into contra-nes (falling back to a real
+                         Load ROM screen) and mods into contra-mods
+apps/contra-pc/assets/  app icon (baked into the binary via include_bytes!)
 apps/contra-extract/    ROM validation CLI
 docs/                   architecture, fidelity notes, asset pipeline, modding
+docs/assets/            README images
 mods/                   drop mods here (gitignored) - see mods/rgb-character/
                          for a real, working example
 ```
@@ -209,14 +247,19 @@ mods/                   drop mods here (gitignored) - see mods/rgb-character/
 The highest-value work right now is on the emulator core, since it's what
 actually makes the game playable:
 
-- **APU (audio)** - pulse/triangle/noise/DMC synthesis. Currently silent.
+- **APU (audio)** - pulse/triangle/noise are real and playing; DMC (sample
+  playback) is the one channel still missing.
 - **PPU accuracy** - moving from scanline-granular to per-dot rendering for
   effects that change registers mid-scanline (rare, but real).
 - **More mappers**, if you want other NES games to run on this core too.
-- **RAM-address tooling** - Custom Difficulty sliders, Practice-mode
-  overlays, and trainers that poke the running emulator's memory using the
-  address map the community disassembly documents (`docs/FIDELITY.md` has
-  the pattern to follow).
+- **RAM-address tooling** - lives/weapon/rapid-fire/continues/boss-HP
+  pokes and a stats overlay are real and working (Debug tab, see
+  docs/MODDING.md); a full Custom Difficulty slider set (enemy speed/
+  density/spawn-rate/damage multipliers) needs a per-frame RAM-watch
+  mechanism rather than one-time pokes, and stage select needs the
+  UxROM bank-switch state a level transition depends on, not just the two
+  RAM bytes that record which level is active - see docs/FIDELITY.md for
+  what's been tried and why it's not shipped yet.
 
 See [ROADMAP.md](ROADMAP.md) for the full list.
 

@@ -30,6 +30,7 @@ egui-winit = "0.28"
 egui-wgpu = "0.28"
 wgpu = "0.20"
 pollster = "0.3"
+png = "0.17"
 
 [features]
 # Lua mod scripting. Off by default: mlua's vendored build needs a C

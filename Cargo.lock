@@ -823,6 +823,7 @@ dependencies = [
  "env_logger",
  "gilrs",
  "log",
+ "png",
  "pollster",
  "rfd",
  "softbuffer",

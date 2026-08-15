@@ -35,6 +35,7 @@ pub enum MenuAction {
     ToggleRapidFire(Player),
     LivesDelta(Player, i32),
     ContinuesDelta(i32),
+    EnemyHpDelta(i32),
     LoadRom,
 }
 
@@ -87,6 +88,12 @@ pub struct Settings {
     /// APU themselves - the game still runs its own unmodified logic one
     /// real frame at a time, just paced slower or faster.
     pub sim_speed_percent: i32,
+    /// Draws a faint dark line over every other scanline of the game
+    /// image, egui-painter-side (no shader/render-pipeline change needed -
+    /// see `game_image_rect`'s caller). Purely cosmetic, same spirit as
+    /// `pixel_perfect`: an accuracy-flavored preference, not a gameplay
+    /// setting.
+    pub scanlines: bool,
 }
 
 impl Default for Settings {
@@ -101,6 +108,7 @@ impl Default for Settings {
             show_hitboxes: false,
             show_stats: false,
             sim_speed_percent: 100,
+            scanlines: false,
         }
     }
 }
@@ -125,9 +133,22 @@ pub struct DebugInfo {
     pub p2_weapon: u8,
     pub p2_rapid_fire: bool,
     pub continues: u8,
+    /// 0-based `CURRENT_LEVEL` from RAM - the Stage Select row shows
+    /// `current_stage + 1` (Stage 1-8) to match how the game numbers them
+    /// on screen.
+    pub current_stage: u8,
+    /// HP of whichever enemy slot currently has the most (a heuristic for
+    /// "the boss" - see `RAM_ENEMY_HP_BASE`'s comment in `main.rs`).
+    /// `None` when no enemy is active.
+    pub enemy_hp: Option<u8>,
 }
 
 pub const WEAPON_NAMES: [(u8, &str); 5] = [(0, "Standard"), (1, "Machine Gun"), (2, "Fire"), (3, "Spread"), (4, "Laser")];
+
+/// Contra (USA) has 8 stages (Jungle, Base 1, Waterfall, Base 2, Snowfield,
+/// Energy Zone, Hangar, Alien's Lair) - confirmed against the reference
+/// disassembly's per-level data tables, which consistently have 8 entries.
+pub const STAGE_COUNT: u8 = 8;
 
 fn weapon_name(id: u8) -> &'static str {
     WEAPON_NAMES.iter().find(|(wid, _)| *wid == id).map(|(_, n)| *n).unwrap_or("?")
@@ -188,6 +209,7 @@ fn settings_tab(ui: &mut egui::Ui, settings: &mut Settings) {
     ui.checkbox(&mut settings.show_hitboxes, "Show hitboxes (F4)");
     ui.checkbox(&mut settings.show_stats, "Show stats overlay (F7)");
     ui.checkbox(&mut settings.fullscreen, "Fullscreen (F11)");
+    ui.checkbox(&mut settings.scanlines, "Scanlines (F6)");
     ui.checkbox(&mut settings.audio_muted, "Mute audio (F8)");
     ui.horizontal(|ui| {
         ui.label("Zoom");
@@ -263,6 +285,21 @@ fn debug_tab(ui: &mut egui::Ui, debug: Option<&DebugInfo>, actions: &mut Vec<Men
             actions.push(MenuAction::ContinuesDelta(1));
         }
     });
+
+    if let Some(hp) = debug.enemy_hp {
+        ui.horizontal(|ui| {
+            ui.label(format!("Enemy/boss HP: {hp}"));
+            if ui.small_button("-").clicked() {
+                actions.push(MenuAction::EnemyHpDelta(-1));
+            }
+            if ui.small_button("+").clicked() {
+                actions.push(MenuAction::EnemyHpDelta(1));
+            }
+        });
+    }
+
+    ui.separator();
+    ui.label(format!("Current stage: {} / {STAGE_COUNT}", debug.current_stage + 1));
 }
 
 /// Drawn instead of gameplay when no ROM is loaded - a real "load your

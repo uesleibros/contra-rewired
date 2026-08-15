@@ -105,6 +105,33 @@ fn main() {
             0
         };
         nes.set_controller(0, buttons);
+        // JUMP_STAGE=N: verification hook for the stage-select feature
+        // (`apps/contra-pc`'s Debug tab) - pokes the same two addresses
+        // (CURRENT_LEVEL, LEVEL_ROUTINE_INDEX) once, partway through the
+        // run, so a screenshot can confirm the level actually changed.
+        if let Ok(stage) = std::env::var("JUMP_STAGE") {
+            if frame == start_after + 700 {
+                // Mirrors level_routine_05's own transition, not just the
+                // two "which level" bytes: it clears $40-$f0 and $300-$5ff
+                // (enemy/object/sprite-buffer state) before moving on, so
+                // level_routine_00 starts from a clean slate instead of
+                // whatever the previous level's entities left behind.
+                for addr in 0x40..=0xF0u16 {
+                    nes.poke_ram(addr, 0);
+                }
+                for addr in 0x300..0x600u16 {
+                    nes.poke_ram(addr, 0);
+                }
+                nes.poke_ram(0x30, stage.parse().unwrap());
+                nes.poke_ram(0x2C, 0);
+                eprintln!(
+                    "jump: game_routine=${:02X} level_routine=${:02X} current_level=${:02X}",
+                    nes.bus.ram[0x18],
+                    nes.bus.ram[0x2C],
+                    nes.bus.ram[0x30],
+                );
+            }
+        }
         nes.run_frame();
 
         if let Some(op) = nes.cpu.illegal_opcode_hit {

@@ -211,6 +211,65 @@ drawn. That guarantee shaped how true ultrawide got built.
   the active width was smaller. It's now sized and copied to the actual
   per-frame width.
 
+### Stage select: tried, doesn't work cleanly, not shipped
+
+The Debug tab shows the current stage (read-only, from `CURRENT_LEVEL`,
+`$30`) but doesn't let you jump to one, even though it looks like it should
+be a two-byte poke. It was actually tried and reverted after empirical
+testing showed it doesn't work.
+
+The reference disassembly's "Contra Control Flow.md" documents that
+`level_routine_05` transitions between levels by incrementing
+`CURRENT_LEVEL`, clearing RAM `$40-$f0` and `$300-$5ff` (enemy/object/
+sprite-buffer state left over from the level that just ended), and
+resetting `LEVEL_ROUTINE_INDEX` (`$2c`) to `$00` to restart level loading
+from `level_routine_00`. Replicating exactly that from `contra-pc` (poke
+`CURRENT_LEVEL` to the target stage, clear those two RAM ranges, reset
+`LEVEL_ROUTINE_INDEX`) was tried against the real ROM via
+`dump_frames.rs`'s `JUMP_STAGE` env var. Result: the CPU-side state machine
+stays consistent afterward - `GAME_ROUTINE_INDEX` stays `$05`, the PPU mask/
+ctrl registers look like normal in-game values, no illegal opcodes - but the
+*rendered screen* comes out corrupted (a wrong-colored horizontal line, a
+flat gray field where the level should be) on every stage tested (2 and 6),
+and stays that way for hundreds of frames afterward, not just a brief
+loading flicker.
+
+The most likely explanation: Mapper 2 (UxROM) PRG bank-switching is mapper
+state, set by whatever the CPU last wrote to `$8000-$FFFF` - not something
+`poke_ram`'s CPU-work-RAM writes touch at all. Level loading almost
+certainly expects a specific PRG bank to already be switched in (the level
+data tables live somewhere in ROM, split across banks the same way the
+enemy routines are - "Loads bank 0 where the enemy routines are" is called
+out explicitly for `level_routine_00`), and that switch is presumably a side
+effect of whatever code path *naturally* leads into `level_routine_00`
+(finishing the previous level, or the game's own boot sequence) - a code
+path this poke-based jump skips entirely by starting execution from
+`level_routine_00`'s dispatch directly.
+
+Confirming and fixing this for real means figuring out which PRG bank
+number the level data/graphics actually live in and replicating that
+mapper write too, which needs more of the disassembly's bank-layout
+documentation than has been dug into so far. Tracked as a real next step in
+ROADMAP.md; not shipped as a clickable action while it corrupts the screen
+every time.
+
+### Where RAM-based tooling's limits are, in general
+
+The Debug tab's lives/weapon/rapid-fire/continues/boss-HP controls all work
+the same safe way: they poke a value the game reads passively every frame
+(a counter, a flag, a stat), so there's no "the game expected something else
+to happen first" gap for the poke to fall into - the next frame's game logic
+just reads the new value like it would've read the old one. Stage select
+fails precisely because it isn't that kind of value: `CURRENT_LEVEL` is a
+value the game *only* consults right after a specific, multi-step
+transition (bank switch included) that a plain poke doesn't reproduce. The
+general rule this suggests for future RAM-tooling ideas: a value the game
+polls every frame (position, HP, ammo, timers, flags) is safe to poke from
+outside; a value that's only meaningful *immediately after* a longer setup
+sequence (level transitions, boss-fight initialization, anything that also
+involves a bank switch or a multi-frame load) needs that sequence
+replicated too, or it's not a safe target.
+
 ## `contra-core`: hand-ported layer (placeholder demo)
 
 The rest of this document describes `contra-core`'s hand-ported physics/RNG

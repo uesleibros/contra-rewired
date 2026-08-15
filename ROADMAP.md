@@ -177,11 +177,14 @@ is loaded**
       possible letterbox bars) for players who prefer that instead
 - [x] **Zoom** (50-300%), adjustable from the pause menu, layered on top of
       either scaling mode
-- [ ] CRT/scanline/composite shaders (currently config fields with no
-      renderer behind them yet)
-- [ ] True ultrawide (32:9 and beyond) is bounded by `EXTENDED_WIDTH`'s
-      hardware-imposed cap, not a software limitation - see docs/FIDELITY.md
-      for why going further shows wrong data, not just an arbitrary block
+- [x] **Scanlines** (Settings tab / F6): a faint dark line over every other
+      emulated scanline, drawn by the `egui` painter directly on top of the
+      game image (no shader/render-pipeline change needed) - see below,
+      this is what `egui`+`wgpu` made easy that wasn't before
+- [ ] CRT/composite shaders beyond scanlines (currently config fields with
+      no renderer behind them yet)
+- [x] **True ultrawide** - no longer bounded by `EXTENDED_WIDTH`'s cap, see
+      the widescreen section above (`Ppu::tile_cache`)
 
 **Controls**
 - [x] Fully rebindable action system (`input.rs`), hold/toggle fire modes
@@ -275,9 +278,16 @@ is loaded**
       machine post-fix, mostly GPU driver/Vulkan instance overhead
       (`wgpu`'s baseline, not something specific to this app) rather than
       anything growing unbounded
+- [x] **App icon**: a real one, not the winit/OS default - baked into the
+      binary (`include_bytes!` on `apps/contra-pc/assets/icon-256.png`, a
+      cropped/resized square from the project's own "C" mark), decoded at
+      startup with the `png` crate and set via `WindowBuilder::
+      with_window_icon`. Decode failure just means no icon rather than a
+      launch failure
 - [x] Pause menu: two tabs plus Debug - **Settings** (Widescreen, No
-      Sprite Flicker, Pixel Perfect, Zoom slider, Fullscreen, Audio Mute -
-      all direct `egui::Checkbox`/`egui::Slider` bindings), **Mods** (every
+      Sprite Flicker, Pixel Perfect, Hitbox overlay, Scanlines, Stats
+      overlay, Zoom slider, Speed slider, Fullscreen, Audio Mute - all
+      direct `egui::Checkbox`/`egui::Slider` bindings), **Mods** (every
       discovered mod as a click-to-toggle checkbox), **Debug** (see below).
       Opens with Tab or Escape; egui owns mouse/keyboard focus while it's
       open (`egui_winit::State::on_window_event`'s `consumed` flag gates
@@ -297,8 +307,18 @@ is loaded**
       low nibble weapon, bit 4 rapid fire), toggled independently of it so
       picking a weapon from the dropdown doesn't silently clear rapid fire
       (a real bug caught while wiring this - `SetWeapon` used to poke the
-      raw weapon id over the whole byte, bit 4 included). Shows "No ROM
-      loaded" instead when there's no real RAM to poke
+      raw weapon id over the whole byte, bit 4 included). Also: a
+      **boss/strongest-enemy HP** +/- stepper (`ENEMY_HP`, `$0578`, a
+      16-slot array with no documented "this one's the boss" flag, so it
+      targets whichever slot currently has the most HP - a heuristic,
+      labeled as one; floored at 1 rather than letting it reach 0, since
+      the game only notices a kill when its own collision code subtracts
+      HP down to 0, not by polling the byte), and a **read-only current
+      stage** display (`CURRENT_LEVEL`, `$30`) - a clickable stage-select
+      was attempted and reverted, see docs/FIDELITY.md for exactly why a
+      simple RAM poke doesn't work for that value the way it does for the
+      others here. Shows "No ROM loaded" instead when there's no real RAM
+      to poke
 - [x] **Stats overlay** (Settings tab / F7): frame count and both players'
       X/Y position, read live from `SPRITE_X_POS`/`SPRITE_Y_POS`
       (`$0334`/`$031A`, indexed 0=P1/1=P2 - the same array

@@ -36,7 +36,7 @@ use menu::{DebugInfo, MenuAction, MenuState, ModEntry, Settings};
 use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, WindowBuilder};
+use winit::window::{Fullscreen, Icon, WindowBuilder};
 
 const INTERNAL_W: u32 = 256;
 const INTERNAL_H: u32 = 240;
@@ -57,6 +57,26 @@ const RAM_NUM_CONTINUES: u16 = 0x3A;
 // see docs/FIDELITY.md). Backs the stats overlay's coordinates readout.
 const RAM_SPRITE_X_POS: u16 = 0x0334;
 const RAM_SPRITE_Y_POS: u16 = 0x031A;
+// Read-only - the Debug tab shows this, it doesn't write it. A "jump to
+// stage" write attempt (this address plus resetting LEVEL_ROUTINE_INDEX,
+// $2C, to replay level_routine_05's own between-levels transition) was
+// tried and reverted: it leaves the CPU-side state machine looking
+// consistent (GAME_ROUTINE_INDEX stays $05, no illegal opcodes) but the
+// rendered screen comes out corrupted (wrong palette/nametable data) on
+// every stage tested. Most likely cause: UxROM bank-switching is mapper
+// state, not something `poke_ram` touches, and level loading likely
+// expects a specific PRG bank already switched in by whatever led up to
+// it - which a poke from outside the CPU's own execution can't replicate.
+// Tracked as a real next step in ROADMAP.md, not shipped half-working.
+const RAM_CURRENT_LEVEL: u16 = 0x30;
+// ENEMY_HP: 16 enemy-slot array, one byte per active enemy. There's no
+// documented "this slot is the boss" flag, so the debug tab's boss/enemy
+// HP control targets whichever slot currently has the *highest* HP (a
+// boss reliably has far more HP than any regular enemy while one is
+// active) - a heuristic, not exact, but it's what's actually knowable
+// without a documented boss-slot marker.
+const RAM_ENEMY_HP_BASE: u16 = 0x0578;
+const ENEMY_SLOT_COUNT: u16 = 16;
 
 #[derive(Parser)]
 #[command(author, version, about = "contra-rewired PC front-end. Pass your own legally-dumped Contra (NES) ROM to play it for real.")]
@@ -200,6 +220,18 @@ impl Session {
             Session::Placeholder { .. } => Vec::new(),
         }
     }
+}
+
+/// The RAM address of whichever `ENEMY_HP` slot currently has the highest
+/// HP, and its value - see the comment on `RAM_ENEMY_HP_BASE` for why
+/// "highest HP" stands in for "the boss" when nothing documents an actual
+/// boss-slot flag. `None` when no enemy is active (every slot reads 0).
+fn strongest_enemy_slot(nes: &Nes) -> Option<(u16, u8)> {
+    (0..ENEMY_SLOT_COUNT)
+        .map(|i| RAM_ENEMY_HP_BASE + i)
+        .map(|addr| (addr, nes.peek_ram(addr)))
+        .filter(|&(_, hp)| hp > 0)
+        .max_by_key(|&(_, hp)| hp)
 }
 
 fn controller_byte(actions: &ActionState) -> u8 {
@@ -528,9 +560,36 @@ fn apply_menu_action(action: &MenuAction, session: &mut Session, loaded_mods: &m
                 nes.poke_ram(RAM_NUM_CONTINUES, (current + delta).clamp(0, 9) as u8);
             }
         }
+        MenuAction::EnemyHpDelta(delta) => {
+            if let Session::Emulator { nes, .. } = session {
+                if let Some((addr, hp)) = strongest_enemy_slot(nes) {
+                    // Floor of 1, not 0: the game only notices an enemy
+                    // died when its own collision code subtracts HP down
+                    // to 0, not by polling the byte - poking it to exactly
+                    // 0 from here could leave a "dead" enemy that's still
+                    // walking around until something else damages it.
+                    nes.poke_ram(addr, (hp as i32 + delta).clamp(1, 255) as u8);
+                }
+            }
+        }
         // Handled by the caller, not here - see doc comment above.
         MenuAction::Resume | MenuAction::LoadRom => {}
     }
+}
+
+/// Decodes the baked-in app icon (see `apps/contra-pc/assets/icon-256.png`)
+/// into a `winit::window::Icon` for the title bar/taskbar. `include_bytes!`
+/// bakes it into the binary - no runtime file dependency, no missing-icon
+/// case to handle at launch. Decode failure just means no icon (falls back
+/// to winit's/the OS's default) rather than refusing to start.
+fn load_app_icon() -> Option<Icon> {
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
+    let decoder = png::Decoder::new(ICON_PNG);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    Icon::from_rgba(buf, info.width, info.height).ok()
 }
 
 /// Converts the NES framebuffer (`0x00RRGGBB` per pixel) into an
@@ -597,6 +656,7 @@ fn main() -> anyhow::Result<()> {
                 INTERNAL_W * initial_scale,
                 INTERNAL_H * initial_scale,
             ))
+            .with_window_icon(load_app_icon())
             .build(&event_loop)?,
     );
 
@@ -748,6 +808,7 @@ fn main() -> anyhow::Result<()> {
                                         KeyCode::F2 => settings.unlimited_sprites = !settings.unlimited_sprites,
                                         KeyCode::F3 => settings.pixel_perfect = !settings.pixel_perfect,
                                         KeyCode::F4 => settings.show_hitboxes = !settings.show_hitboxes,
+                                        KeyCode::F6 => settings.scanlines = !settings.scanlines,
                                         KeyCode::F7 => settings.show_stats = !settings.show_stats,
                                         KeyCode::F8 => settings.audio_muted = !settings.audio_muted,
                                         KeyCode::F11 => settings.fullscreen = !settings.fullscreen,
@@ -1037,6 +1098,27 @@ fn redraw(
                             egui::Color32::from_rgb(255, 224, 128),
                         );
                     }
+
+                    if settings.scanlines {
+                        // A faint dark line over every other *NES* pixel
+                        // row (not every other screen pixel - drawn at
+                        // `scale`, same as everything else here, so it
+                        // stays one line per emulated scanline regardless
+                        // of zoom/window size). Purely a painter overlay,
+                        // no shader or render-pipeline change - cheap
+                        // enough that egui's own batching handles it
+                        // without a measurable cost.
+                        let line_color = egui::Color32::from_black_alpha(90);
+                        let mut y = 1;
+                        while (y as f32) < internal_h {
+                            let line_rect = egui::Rect::from_min_size(
+                                rect.min + egui::vec2(0.0, y as f32 * scale),
+                                egui::vec2(rect.width(), (scale * 0.4).max(1.0)),
+                            );
+                            ui.painter().rect_filled(line_rect, 0.0, line_color);
+                            y += 2;
+                        }
+                    }
                 });
             }
             if *routine == GameRoutine::Paused {
@@ -1050,6 +1132,8 @@ fn redraw(
                         p2_weapon: nes.peek_ram(RAM_P2_CURRENT_WEAPON) & 0x0F,
                         p2_rapid_fire: nes.peek_ram(RAM_P2_CURRENT_WEAPON) & 0x10 != 0,
                         continues: nes.peek_ram(RAM_NUM_CONTINUES),
+                        current_stage: nes.peek_ram(RAM_CURRENT_LEVEL),
+                        enemy_hp: strongest_enemy_slot(nes).map(|(_, hp)| hp),
                     })
                 } else {
                     None
