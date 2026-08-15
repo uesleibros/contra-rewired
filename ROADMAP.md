@@ -101,11 +101,19 @@ is loaded**
       the pause menu immediately targets the full empirically-tested safe
       cap (`EXTENDED_WIDTH` = 380px), independent of the current window
       size - the scale-to-fit blit handles however that ends up displayed.
-      (Fixed this round: it used to derive its target width from the
-      window's *current* size via a resize-event-driven
+      (Fixed two rounds in a row: first, it used to derive its target width
+      from the window's *current* size via a resize-event-driven
       `compute_wide_width`, so toggling it on without also resizing the
       window produced no visible change - removed entirely in favor of
-      always targeting the cap.) Never touches RAM/collision/spawn logic
+      always targeting the cap. That alone still wasn't enough: with the
+      window left at its narrow default, the wider content just got
+      squeezed back down by the fill-scaling blit, so almost nothing
+      visibly changed. `apply_menu_action`'s `ToggleWidescreen` arm now
+      also calls `window.request_inner_size` immediately, growing/shrinking
+      the window's width to match the new content width at whatever
+      per-pixel scale is already in effect - the way other NES PC ports
+      resize when widescreen is turned on. No-op in fullscreen, where the
+      compositor owns the size.) Never touches RAM/collision/spawn logic
       (presentation-only), verified by a test asserting the center 256px
       exactly matches normal rendering byte-for-byte, plus a test covering
       arbitrary in-between widths (not just the max, and not just the
@@ -195,17 +203,27 @@ is loaded**
       +/- steppers (clamped 0-99 / 0-9), current weapon as five
       click-to-select rows (Standard/Machine Gun/Fire/Spread/Laser, RAM
       addresses from the reference disassembly's `ram.asm`). Shows "NO ROM
-      LOADED" instead when running the placeholder demo, since there's no
-      real RAM to poke
+      LOADED" instead when no ROM is loaded, since there's no real RAM to
+      poke
 - [x] Mod enable/disable UI (Mods tab, click a mod row to toggle) - session
       only for now, resets to all-enabled on next launch; not yet persisted
       to `config.toml`
+- [x] **Real "Load ROM" screen**, not the old engine-only physics demo:
+      shown whenever there's no ROM loaded (missing/invalid/wrong-mapper),
+      with a click-to-open native file picker (`rfd`, filtered to `.nes`)
+      and drag-and-drop support (`WindowEvent::DroppedFile`) - both go
+      through the same `try_load_rom` validation path as the CLI arg /
+      `./baserom.nes`, so a ROM picked at runtime is checked exactly the
+      same way. A failed load (wrong mapper, bad file) shows the reason
+      inline instead of failing silently. The old walking-placeholder demo
+      (`render_placeholder`) is gone from `contra-pc`; `contra-core`'s
+      hand-ported `PlayerPhysics` still exists as the save-state fallback
+      and RAM-tooling reference, it's just not driven or drawn as a
+      "gameplay" screen anymore.
 - [ ] Everything else from the config surface (CRT filter, scanlines,
       palette, keybind remapping, difficulty, checkpoint mode, ...) still
       needs a menu entry; this is the pattern to extend, not a finished
       options screen
-- [ ] Main menu / title screen UI (currently boots straight into gameplay
-      with no menu shown before Playing)
 - [ ] Mod reorder UI, mod enable/disable persisted across launches
 
 **Modding - Lua scripting, high-level and low-level APIs**

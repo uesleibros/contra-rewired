@@ -35,11 +35,11 @@ bugs/quirks" (from the original brief) is actually achievable.
 
 `crates/contra-core` (the hand-ported physics/RNG/config/save-state layer
 from earlier in this project) is still here and still useful - for
-documentation, for a placeholder demo when no ROM is loaded, and as the
-foundation for RAM-address-based tooling (Custom Difficulty, Practice mode
-overlays, trainers) that pokes the *emulator's* memory using the address map
-the community disassembly documents, the same way real "enhanced ports" of
-old console games are usually built.
+documentation, as a reference for RAM-address-based tooling (Custom
+Difficulty, Practice mode overlays, trainers) that pokes the *emulator's*
+memory using the address map the community disassembly documents, the same
+way real "enhanced ports" of old console games are usually built, and as
+the save-state format `contra-pc` falls back to before any ROM is loaded.
 
 ## Design principle
 
@@ -69,8 +69,9 @@ cargo run -p contra-pc --release -- path\to\your\baserom.nes
 
 Or drop a `baserom.nes` next to the executable and just run `contra-pc` -
 it's picked up automatically. Without a ROM, or with a ROM using a mapper
-other than 2 (UxROM), it falls back to an engine-only placeholder demo
-instead of failing outright.
+other than 2 (UxROM), it shows a real Load ROM screen instead of failing
+outright: click "LOAD ROM..." for a native file picker, or drag and drop a
+`.nes` file onto the window - no CLI required.
 
 ## Project status
 
@@ -78,7 +79,7 @@ instead of failing outright.
 |---|---|
 | **NES emulation core** (`contra-nes`) | |
 | 6502/2A03 CPU | All official opcodes, incl. the JMP-indirect page-boundary bug; 21 unit tests against hand-assembled programs - see `crates/contra-nes/src/cpu.rs` |
-| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, live widescreen (window-aspect-tracking) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
+| 2C02 PPU | Background + sprites, scrolling, sprite 0 hit, mapper-CHR-RAM, opt-in "Extended" widescreen (fixed safe-width cap, resizes the window the instant it's toggled) and unlimited-sprites presentation modes - **scanline-granular, not per-dot** (see [docs/FIDELITY.md](docs/FIDELITY.md)) |
 | Mapper 2 (UxROM) | Implemented - PRG bank switching, CHR-RAM |
 | APU | Pulse 1/2, triangle, noise, frame sequencer, real-time playback via `cpal` - **DMC (sample playback) not implemented** |
 | Controller input | Implemented (standard shift-register protocol) |

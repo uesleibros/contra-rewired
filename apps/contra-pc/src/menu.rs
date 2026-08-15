@@ -157,6 +157,7 @@ pub enum MenuAction {
     SetWeapon(u8),
     LivesDelta(i32),
     ContinuesDelta(i32),
+    LoadRom,
 }
 
 pub struct MenuState {
@@ -325,6 +326,61 @@ pub fn draw_menu(
     layout.clickable.push((resume_r, MenuAction::Resume));
 
     draw_text(fb, fb_width, fb_height, panel_x + 16, footer_y + 8, "CLICK TO INTERACT", COLOR_TEXT_DIM, 1);
+
+    layout
+}
+
+/// Drawn instead of gameplay when no ROM is loaded - a real "load your
+/// ROM" screen (title + a big clickable button that opens a native file
+/// picker), not the old engine-only physics placeholder demo. `error`, if
+/// set, is the reason the last load attempt (button click or drag-and-drop)
+/// failed, shown under the button so a bad file doesn't just silently do
+/// nothing.
+pub fn draw_no_rom_screen(fb: &mut [u32], fb_width: usize, fb_height: usize, mouse: (i32, i32), error: Option<&str>) -> MenuLayout {
+    let mut layout = MenuLayout { clickable: Vec::new() };
+    fb.fill(0x00000000);
+
+    let title = "CONTRA";
+    let title_scale = 6;
+    let title_w = text_width(title, title_scale);
+    let cx = fb_width as i32 / 2;
+    let title_y = (fb_height as i32 / 2) - 90;
+    draw_text(fb, fb_width, fb_height, cx - title_w / 2, title_y, title, COLOR_ACCENT, title_scale);
+
+    let subtitle = "PC PORT - NO ROM LOADED";
+    let sub_w = text_width(subtitle, 2);
+    draw_text(fb, fb_width, fb_height, cx - sub_w / 2, title_y + title_scale * 8 + 10, subtitle, COLOR_TEXT, 2);
+
+    let btn_label = "LOAD ROM...";
+    let btn_w = text_width(btn_label, 3) + 40;
+    let btn_h = 44;
+    let btn_r = Rect { x: cx - btn_w / 2, y: title_y + title_scale * 8 + 46, w: btn_w, h: btn_h };
+    let hover = btn_r.contains(mouse.0, mouse.1);
+    fill_rect(fb, fb_width, fb_height, btn_r.x, btn_r.y, btn_r.w, btn_r.h, if hover { COLOR_ACCENT } else { COLOR_ROW_BG });
+    stroke_rect(fb, fb_width, fb_height, btn_r, COLOR_PANEL_BORDER);
+    draw_text(
+        fb,
+        fb_width,
+        fb_height,
+        btn_r.x + 20,
+        btn_r.y + 14,
+        btn_label,
+        if hover { 0x00101018 } else { COLOR_TEXT },
+        3,
+    );
+    layout.clickable.push((btn_r, MenuAction::LoadRom));
+
+    let hint = "OR DRAG AND DROP A .NES FILE ONTO THIS WINDOW";
+    let hint_w = text_width(hint, 1);
+    draw_text(fb, fb_width, fb_height, cx - hint_w / 2, btn_r.y + btn_h + 16, hint, COLOR_TEXT_DIM, 1);
+    let hint2 = "BRING YOUR OWN LEGALLY-OBTAINED ROM - NONE IS INCLUDED";
+    let hint2_w = text_width(hint2, 1);
+    draw_text(fb, fb_width, fb_height, cx - hint2_w / 2, btn_r.y + btn_h + 30, hint2, COLOR_TEXT_DIM, 1);
+
+    if let Some(err) = error {
+        let err_w = text_width(err, 1);
+        draw_text(fb, fb_width, fb_height, cx - err_w / 2, btn_r.y + btn_h + 52, err, 0x00E06060, 1);
+    }
 
     layout
 }

@@ -15,7 +15,7 @@ mod menu;
 
 use std::collections::HashSet;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -233,52 +233,84 @@ fn resolve_rom_path(args: &Args) -> Option<PathBuf> {
     default.exists().then_some(default)
 }
 
-fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> Session {
-    let Some(path) = resolve_rom_path(args) else {
-        log::info!("No ROM specified and no ./baserom.nes found - running the engine-only placeholder demo. Pass a ROM path: contra-pc <path-to-your-rom.nes>");
-        return Session::Placeholder {
-            player: PlayerPhysics::new(120, 200),
-            save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
-            frame_count: 0,
-        };
-    };
+fn placeholder_session(rewind_capacity: usize) -> Session {
+    Session::Placeholder {
+        player: PlayerPhysics::new(120, 200),
+        save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
+        frame_count: 0,
+    }
+}
 
-    match contra_assets::NesRom::load(&path) {
-        Ok(rom) if rom.mapper == 2 => {
-            log::info!(
-                "Loaded {} (mapper {}, {} KiB PRG, MD5 {})",
-                path.display(),
-                rom.mapper,
-                rom.prg_rom.len() / 1024,
-                rom.md5_hex
-            );
-            let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
-            let nes = Nes::new_with_audio(rom.prg_rom, mirroring, audio_sample_rate);
-            Session::Emulator {
-                nes: Box::new(nes),
-                save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
-                frame_count: 0,
-            }
-        }
-        Ok(rom) => {
-            log::error!(
-                "{} uses mapper {}, but contra-nes only supports mapper 2 (UxROM) right now - falling back to the placeholder demo.",
-                path.display(),
-                rom.mapper
-            );
-            Session::Placeholder {
-                player: PlayerPhysics::new(120, 200),
-                save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
-                frame_count: 0,
-            }
+/// Tries to load `path` as a Contra ROM and build a real `Emulator`
+/// session. Used both at startup (CLI arg / `./baserom.nes`) and at
+/// runtime (the no-ROM screen's "Load ROM..." button and drag-and-drop) -
+/// one code path for "does this file work", so a ROM picked at runtime is
+/// validated exactly the same way as one passed on the command line.
+/// `Err` carries a short, user-facing reason suitable for the no-ROM
+/// screen's error line.
+fn try_load_rom(path: &Path, rewind_capacity: usize, audio_sample_rate: f64) -> Result<Session, String> {
+    let rom = contra_assets::NesRom::load(path).map_err(|e| format!("could not load: {e}"))?;
+    if rom.mapper != 2 {
+        return Err(format!("mapper {} not supported (only mapper 2 / UxROM)", rom.mapper));
+    }
+    log::info!(
+        "Loaded {} (mapper {}, {} KiB PRG, MD5 {})",
+        path.display(),
+        rom.mapper,
+        rom.prg_rom.len() / 1024,
+        rom.md5_hex
+    );
+    let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
+    let nes = Nes::new_with_audio(rom.prg_rom, mirroring, audio_sample_rate);
+    Ok(Session::Emulator {
+        nes: Box::new(nes),
+        save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
+        frame_count: 0,
+    })
+}
+
+/// Shared by the no-ROM screen's "Load ROM..." button and drag-and-drop:
+/// tries `path`, and on success replaces `session` and updates the window
+/// title in place; on failure records a short reason in `last_load_error`
+/// so the no-ROM screen can show it instead of failing silently.
+fn load_rom_into_session(
+    path: &Path,
+    rewind_capacity: usize,
+    audio_sample_rate: f64,
+    session: &mut Session,
+    window: &winit::window::Window,
+    last_load_error: &mut Option<String>,
+    routine: &mut GameRoutine,
+) {
+    match try_load_rom(path, rewind_capacity, audio_sample_rate) {
+        Ok(loaded) => {
+            *session = loaded;
+            *last_load_error = None;
+            window.set_title("contra-rewired");
+            // In case Escape/Tab was pressed while staring at the no-ROM
+            // screen (which has no menu of its own to open) - start the
+            // freshly loaded game unpaused rather than inheriting a
+            // dangling Paused state from before any ROM existed to pause.
+            *routine = GameRoutine::Playing;
         }
         Err(e) => {
-            log::error!("Could not load {}: {e} - falling back to the placeholder demo.", path.display());
-            Session::Placeholder {
-                player: PlayerPhysics::new(120, 200),
-                save_mgr: SaveStateManager::new(rewind_capacity.max(1)),
-                frame_count: 0,
-            }
+            log::error!("{}: {e}", path.display());
+            *last_load_error = Some(e);
+        }
+    }
+}
+
+fn load_session(args: &Args, rewind_capacity: usize, audio_sample_rate: f64) -> Session {
+    let Some(path) = resolve_rom_path(args) else {
+        log::info!("No ROM specified and no ./baserom.nes found - showing the Load ROM screen. Pass a ROM path, drop a ./baserom.nes next to the executable, or use the in-app file picker.");
+        return placeholder_session(rewind_capacity);
+    };
+
+    match try_load_rom(&path, rewind_capacity, audio_sample_rate) {
+        Ok(session) => session,
+        Err(e) => {
+            log::error!("{}: {e} - showing the Load ROM screen.", path.display());
+            placeholder_session(rewind_capacity)
         }
     }
 }
@@ -419,7 +451,7 @@ fn main() -> anyhow::Result<()> {
     let mut loaded_mods = load_mods();
     let window_title = match &session {
         Session::Emulator { .. } => "contra-rewired",
-        Session::Placeholder { .. } => "contra-rewired (no ROM loaded - engine placeholder demo)",
+        Session::Placeholder { .. } => "contra-rewired - load a ROM to play",
     };
 
     let event_loop = EventLoop::new()?;
@@ -438,8 +470,6 @@ fn main() -> anyhow::Result<()> {
     let mut surface = softbuffer::Surface::new(&context, window.clone())
         .map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
 
-    let mut placeholder_framebuffer = vec![0u32; (INTERNAL_W * INTERNAL_H) as usize];
-
     let bindings = config.input.player_bindings[0].clone();
     let mut action_state = ActionState::new();
     let mut routine = GameRoutine::Boot;
@@ -453,6 +483,7 @@ fn main() -> anyhow::Result<()> {
     let mut menu_state = MenuState::new();
     let mut mouse_pos: (i32, i32) = (0, 0);
     let mut last_menu_layout: Option<menu::MenuLayout> = None;
+    let mut last_load_error: Option<String> = None;
 
     let mut gilrs = Gilrs::new().ok();
     if gilrs.is_none() {
@@ -513,12 +544,19 @@ fn main() -> anyhow::Result<()> {
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     mouse_pos = (position.x as i32, position.y as i32);
-                    if routine == GameRoutine::Paused {
+                    if routine == GameRoutine::Paused || matches!(session, Session::Placeholder { .. }) {
                         window.request_redraw(); // keep hover highlighting live
                     }
                 }
                 WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                    if routine == GameRoutine::Paused {
+                    if matches!(session, Session::Placeholder { .. }) {
+                        if let Some(MenuAction::LoadRom) = last_menu_layout.as_ref().and_then(|l| l.hit_test(mouse_pos.0, mouse_pos.1)) {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("NES ROM", &["nes"]).pick_file() {
+                                load_rom_into_session(&path, rewind_capacity, audio_sample_rate, &mut session, &window, &mut last_load_error, &mut routine);
+                            }
+                            window.request_redraw();
+                        }
+                    } else if routine == GameRoutine::Paused {
                         if let Some(action) = last_menu_layout.as_ref().and_then(|l| l.hit_test(mouse_pos.0, mouse_pos.1)) {
                             apply_menu_action(
                                 action,
@@ -533,13 +571,24 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+                WindowEvent::DroppedFile(path) => {
+                    if matches!(session, Session::Placeholder { .. }) {
+                        load_rom_into_session(&path, rewind_capacity, audio_sample_rate, &mut session, &window, &mut last_load_error, &mut routine);
+                        window.request_redraw();
+                    }
+                }
                 WindowEvent::RedrawRequested => {
+                    if matches!(session, Session::Placeholder { .. }) {
+                        last_menu_layout =
+                            present_no_rom_screen(&mut surface, &window, mouse_pos, last_load_error.as_deref());
+                        return;
+                    }
                     let (fb_source, fb_width): (&[u32], u32) = match &session {
                         Session::Emulator { nes, .. } if nes.wide_width() > contra_nes::SCREEN_W && !nes.wide_framebuffer().is_empty() => {
                             (nes.wide_framebuffer(), nes.wide_width() as u32)
                         }
                         Session::Emulator { nes, .. } => (nes.framebuffer(), contra_nes::SCREEN_W as u32),
-                        Session::Placeholder { .. } => (&placeholder_framebuffer[..], INTERNAL_W),
+                        Session::Placeholder { .. } => unreachable!("handled above"),
                     };
 
                     if routine == GameRoutine::Paused {
@@ -615,24 +664,25 @@ fn main() -> anyhow::Result<()> {
                             // content down to match a narrower window.
                             nes.set_wide_width(if settings.widescreen { contra_nes::EXTENDED_WIDTH } else { contra_nes::SCREEN_W });
                             nes.set_unlimited_sprites(settings.unlimited_sprites);
-                        }
-                        session.step(&action_state, rewind_enabled);
-                        run_mods(&loaded_mods, &mut session);
-                        let samples = session.drain_audio();
-                        if let Some(audio) = &audio_output {
-                            if !settings.audio_muted {
-                                audio.push_samples(&samples);
+                            session.step(&action_state, rewind_enabled);
+                            run_mods(&loaded_mods, &mut session);
+                            let samples = session.drain_audio();
+                            if let Some(audio) = &audio_output {
+                                if !settings.audio_muted {
+                                    audio.push_samples(&samples);
+                                }
                             }
                         }
+                        // Session::Placeholder: no ROM loaded, nothing to
+                        // step - the no-ROM screen (see RedrawRequested)
+                        // is static aside from mouse hover, which already
+                        // triggers its own redraw via CursorMoved.
                     }
                     accumulator -= frame_duration;
                     stepped = true;
                 }
 
-                if stepped {
-                    if let Session::Placeholder { player, .. } = &session {
-                        render_placeholder(&mut placeholder_framebuffer, player, routine);
-                    }
+                if stepped && matches!(session, Session::Emulator { .. }) {
                     window.request_redraw();
                 }
 
@@ -727,25 +777,6 @@ fn update_action_state(action_state: &mut ActionState, bindings: &Bindings, held
     for (action, held) in combos {
         let was_pressed = held && !action_state.is_held(action);
         action_state.update(action, held, was_pressed, bindings.fire_mode);
-    }
-}
-
-fn render_placeholder(fb: &mut [u32], player: &PlayerPhysics, routine: GameRoutine) {
-    let bg = match routine {
-        GameRoutine::Paused => 0x00202020,
-        _ => 0x00104010,
-    };
-    fb.fill(bg);
-
-    let px = player.x.clamp(0, INTERNAL_W as i16 - 8) as u32;
-    let py = (player.y as u32).min(INTERNAL_H - 8);
-    for y in 0..8u32 {
-        for x in 0..8u32 {
-            let idx = ((py + y) * INTERNAL_W + (px + x)) as usize;
-            if idx < fb.len() {
-                fb[idx] = 0x00E0E040;
-            }
-        }
     }
 }
 
@@ -858,6 +889,21 @@ fn present_with_menu(
     Some(layout)
 }
 
+/// Presents the "no ROM loaded" screen (see `menu::draw_no_rom_screen`) -
+/// drawn directly at the window's native resolution, since there's no
+/// emulator framebuffer to blit under it.
+fn present_no_rom_screen(
+    surface: &mut softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>,
+    window: &winit::window::Window,
+    mouse: (i32, i32),
+    error: Option<&str>,
+) -> Option<menu::MenuLayout> {
+    let (mut buffer, size) = resize_and_lock(surface, window)?;
+    let layout = menu::draw_no_rom_screen(&mut buffer, size.width as usize, size.height as usize, mouse, error);
+    let _ = buffer.present();
+    Some(layout)
+}
+
 /// Applies a click's effect. The only place that turns a [`MenuAction`]
 /// into a real change to settings/emulator/window state - `menu.rs` itself
 /// never touches any of these directly.
@@ -873,7 +919,31 @@ fn apply_menu_action(
 ) {
     match action {
         MenuAction::SwitchTab(tab) => menu_state.tab = tab,
-        MenuAction::ToggleWidescreen => settings.widescreen = !settings.widescreen,
+        MenuAction::ToggleWidescreen => {
+            settings.widescreen = !settings.widescreen;
+            // Flipping the setting alone changes what `render_scanline`
+            // draws, but if the window is still sized for the narrow
+            // 256px view, `blit_scaled`'s fill-scaling just squeezes the
+            // wider content back down to fit - visually almost nothing
+            // changes. Resize the window's width to match, at whatever
+            // per-pixel scale is already in effect (so a window the user
+            // has already resized/zoomed keeps that scale, it just gets
+            // proportionally wider or narrower), the way other NES PC
+            // ports grow their window when widescreen is turned on.
+            // No-op in fullscreen/maximized, where the compositor owns
+            // the size and `request_inner_size` is ignored.
+            let (old_internal_w, new_internal_w) = if settings.widescreen {
+                (contra_nes::SCREEN_W, contra_nes::EXTENDED_WIDTH)
+            } else {
+                (contra_nes::EXTENDED_WIDTH, contra_nes::SCREEN_W)
+            };
+            let current = window.inner_size();
+            if current.width > 0 {
+                let scale = current.width as f64 / old_internal_w as f64;
+                let new_width = (new_internal_w as f64 * scale).round() as u32;
+                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, current.height));
+            }
+        }
         MenuAction::ToggleNoSpriteLimit => settings.unlimited_sprites = !settings.unlimited_sprites,
         MenuAction::TogglePixelPerfect => settings.pixel_perfect = !settings.pixel_perfect,
         MenuAction::ZoomDelta(d) => settings.zoom_percent = (settings.zoom_percent + d).clamp(50, 300),
@@ -901,6 +971,12 @@ fn apply_menu_action(
                 nes.poke_ram(RAM_NUM_CONTINUES, (current + delta).clamp(0, 9) as u8);
             }
         }
+        // Produced only by `menu::draw_no_rom_screen`'s layout, which is
+        // hit-tested separately in the `Session::Placeholder` branch of
+        // the mouse handler (opening a native file dialog needs the
+        // window handle and blocks briefly, which doesn't fit this
+        // function's "pure state mutation" contract) - never reaches here.
+        MenuAction::LoadRom => {}
     }
 }
 

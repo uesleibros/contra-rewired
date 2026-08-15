@@ -54,10 +54,8 @@ directly (`cargo run -p contra-pc -- path\to\your\baserom.nes`) or drop a
 
 - **Mapper 2 (UxROM) only.** That's what Contra (USA) uses, so it's enough
   for this project's purpose, but a ROM using a different mapper won't run
-  (`contra-pc` detects this and falls back to the placeholder demo rather
-  than failing silently).
-- **No audio.** The APU is a silent stub - see docs/FIDELITY.md and
-  ROADMAP.md.
+  (`contra-pc` detects this and shows the in-app Load ROM screen with the
+  reason, rather than failing silently).
 
 ## Mods and assets
 
