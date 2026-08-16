@@ -135,10 +135,26 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       (`contra-native::audio`, `contra-extract --dump-audio <dir>`) -
       cross-checked against the disassembly's own separately-shipped
       sample files since `contra-nes`'s APU doesn't emulate the DMC
-      channel yet (no live oracle to diff against there). The actual
-      music/most sound effects are a custom bytecode sequencer, not a
-      decodable asset - porting that is engine work, not extraction, and
-      hasn't been started. **Enemy placement - hard-coded spawns**: ported
+      channel yet (no live oracle to diff against there). **Following an
+      explicit "extract everything" directive, the sound_code bytecode
+      itself (every music track and sound effect's actual command data,
+      not just the 2 DPCM waveforms) is now half-extracted**: the
+      low-format half (`contra-native::sound_code`, sound *effects* - 44
+      of `sound_table_00`'s 94 entries) is ported and verified two ways -
+      by hand against 2 real sounds' raw bytes before writing any code,
+      then mechanically across every low-format entry at once
+      (`extract_sounds.rs`), where a real structural finding turned up
+      along the way (`sound_08` has a genuinely self-referential `$FE`
+      repeat, looping its own opening phrase) - and wired into
+      `contra-extract --dump-sound-codes <dir>`. The high-format half
+      (music/BGM - 50 entries, all the level themes/intro/ending) isn't
+      done: its grammar has runtime-state-dependent variable-length
+      commands the low format's doesn't, needing more careful, separate
+      verification before shipping (see docs/NATIVE_PORT.md's "Current
+      status" for the exact gap). Actually *playing* any of this
+      (low or high) still needs a real playback engine ported as CPU
+      logic - extraction alone doesn't make sound come out of speakers.
+      **Enemy placement - hard-coded spawns**: ported
       each outdoor level's fixed per-screen enemy list
       (`contra-native::enemy_spawn`) - not the *random* soldier generation
       levels also do at runtime, which is logic, not static data. Two real

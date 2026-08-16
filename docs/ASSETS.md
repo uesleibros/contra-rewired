@@ -89,11 +89,30 @@ documentation's prose/diagrams, and the bytes won. Verified against the
 docs' worked example through the real pointer-table walk, not just a
 synthetic test.
 
-Not done yet: Contra's actual music and most sound effects are a custom
-bytecode sequencer, not a decodable asset - reproducing that means
-porting a playback engine (closer to the CPU-logic-porting workstream
-than to extraction), and hasn't been started. Indoor-level enemy
-placement (levels 2 and 4) uses a different, undecoded format. See
+**Sound effects' actual bytecode is extracted now too, not just the DPCM
+waveforms.** Following an explicit "extract everything, nothing missing"
+directive: the DPCM samples above were only ever part of the story - the
+game's music and sound effects are really driven by a custom bytecode
+Contra's CPU interprets frame by frame, and that bytecode itself hadn't
+been touched. `contra-native::sound_code` ports the "low-format" half of
+that grammar (sound *effects* - footsteps, shots, explosions, pickups;
+44 of 94 total sound codes), verified by hand against 2 real sounds'
+bytes before any code was written, then mechanically against every
+low-format sound code at once - which also surfaced a real structural
+fact along the way (`sound_08`'s repeat command genuinely targets its own
+start address, looping part of itself). Wired into
+`contra-extract --dump-sound-codes <dir>`.
+
+Not done yet: the "high-format" half of the same bytecode grammar - all
+of Contra's actual *music* (every level theme, the intro, the ending) and
+percussion sound effects, the other 50 of 94 sound codes - has commands
+whose byte length depends on runtime state in ways the low format's
+doesn't, and wasn't shipped without the same verification rigor the low
+format got. And extracting bytecode is still not the same as *playing*
+it - turning either format into real audio needs a playback engine
+ported as CPU logic (closer to the CPU-logic-porting workstream than to
+extraction), which hasn't been started. Indoor-level enemy placement
+(levels 2 and 4) uses a different, undecoded format. See
 docs/NATIVE_PORT.md's "Current status" for the up-to-date breakdown.
 
 ## What `contra-extract` does today
@@ -145,6 +164,13 @@ enemy placements to a plain text file:
 
 ```
 cargo run -p contra-extract -- path\to\your\baserom.nes --dump-enemies .\assets\enemies
+```
+
+With `--dump-sound-codes <dir>`, it extracts every low-format sound
+effect's raw bytecode (deduplicated - shared blobs are written once):
+
+```
+cargo run -p contra-extract -- path\to\your\baserom.nes --dump-sound-codes .\assets\sound_codes
 ```
 
 `contra-pc` doesn't consume these files yet - today it still plays the ROM

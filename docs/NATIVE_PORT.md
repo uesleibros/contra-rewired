@@ -464,6 +464,48 @@ replacement for its real 6502 code, cycle for cycle.
       `sound_cmd_ptr_tbl` dispatch). Reproducing that means porting a real
       playback *engine*, the same category of work as `collision`/
       `player_physics`, not a one-time extraction - not started.
+      **Update, following an explicit "extract everything, nothing can be
+      missing" directive**: the DPCM samples above were genuinely only
+      part of Contra's audio - the game's actual sound_code bytecode
+      (every music track and sound effect's real command data) was
+      entirely unextracted. `contra-native::sound_code` now ports the
+      **low-format** half of that bytecode (`interpret_sound_byte`/
+      `read_low_sound_cmd`, `src/bank1.asm`) - the format used by sound
+      *effects* (footsteps, shots, explosions, pickups, etc. - 44 of
+      `sound_table_00`'s 94 entries). Verified two ways: (1) by hand,
+      tracing two real sounds' raw ROM bytes byte-by-byte against the
+      grammar before writing any code (`sound_03` = 17 bytes, `sound_05` =
+      55 bytes, both matching `nes-contra-us`'s own separately-shipped
+      `.bin` files' sizes exactly); (2) mechanically, across every single
+      low-format entry in `sound_table_00` at once
+      (`extract_sounds.rs`) - for entries with no shared/repeated
+      sub-blocks, the computed length matched the disassembly's `.bin`
+      file size exactly (6-for-6 checked); for entries that reference a
+      shared child via `$FD`/`$FE`, the computed length matched
+      `(sum of the disassembly's own split .bin files) + 2 address bytes
+      per distinct reference` in every case checked (9 more, including
+      `sound_08`, which turned out to have a genuinely
+      self-referential `$FE` - it repeats its own opening phrase by
+      pointing the repeat command back at its own start address, a real
+      structural finding, not a bug: the disassembly's own `.bin`
+      splitting omits self-referential address bytes it writes as
+      `.addr sound_08` symbolically instead of as raw incbin data, which
+      is exactly why a naive "does my length match the .bin file" check
+      would have looked wrong there without understanding why). Wired
+      into `contra-extract --dump-sound-codes <dir>`, which extracts
+      every low-format sound's raw bytecode - deduplicating shared blobs
+      so nothing is written twice - plus an index tying sound codes back
+      to files. **Still not done, and now the clearest remaining audio
+      gap**: the **high-format** half (`read_high_sound_cmd`/
+      `parse_percussion_cmd`) - every piece of actual music (level
+      themes, intro, ending, game over) plus percussion sound effects, 50
+      of `sound_table_00`'s 94 entries. Its grammar has commands whose
+      byte length depends on runtime-checked values in ways the low
+      format's doesn't (e.g. a vibrato command that reads a different
+      number of trailing bytes depending on whether the first one is
+      `$FF`), so it wasn't shipped without the same kind of verification
+      the low format got - see `contra_native::sound_code`'s module doc
+      comment.
 - [x] **Enemy placement - hard-coded spawns for outdoor levels.**
       `contra-native::enemy_spawn` ports the fixed, same-every-playthrough
       enemy placements each level defines per screen (`docs/Enemy

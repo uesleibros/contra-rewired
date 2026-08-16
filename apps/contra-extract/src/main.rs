@@ -27,14 +27,18 @@
 //! outdoor level's hard-coded enemy placements to a plain text file (see
 //! `crates/contra-native/src/enemy_spawn.rs`, verified against the
 //! disassembly's own worked example through the real pointer-table walk -
-//! see `crates/contra-nes/examples/extract_enemies.rs`). No emulation
-//! involved in any of the five.
+//! see `crates/contra-nes/examples/extract_enemies.rs`); and with
+//! `--dump-sound-codes <dir>`, extract every low-format sound_code's raw
+//! bytecode (sound *effects* - not music/BGM yet, see
+//! `crates/contra-native/src/sound_code.rs`'s doc comment for exactly
+//! what that means and why). No emulation involved in any of the six.
 
 mod audio;
 mod enemies;
 mod graphics;
 mod level;
 mod palette;
+mod sound_codes;
 
 use clap::Parser;
 use contra_assets::{NesRom, RomIdentity};
@@ -76,6 +80,12 @@ struct Args {
     /// skipped silently.
     #[arg(long, value_name = "DIR")]
     dump_enemies: Option<PathBuf>,
+
+    /// Extract every low-format sound_code's raw bytecode (sound
+    /// effects - not music/BGM yet) to this directory, one file per
+    /// distinct shared blob, plus an index.txt tying sound codes to files.
+    #[arg(long, value_name = "DIR")]
+    dump_sound_codes: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -145,6 +155,14 @@ fn main() -> anyhow::Result<()> {
     if let Some(out_dir) = &args.dump_enemies {
         let (written, skipped) = enemies::dump_all(&rom.prg_rom, out_dir)?;
         println!("\nWrote {written} level enemy list(s) to {} ({skipped} indoor/base level(s) noted as not-yet-decoded).", out_dir.display());
+    }
+
+    if let Some(out_dir) = &args.dump_sound_codes {
+        let (low, blobs, high) = sound_codes::dump_all(&rom.prg_rom, out_dir)?;
+        println!(
+            "\nWrote {blobs} distinct sound-effect blob(s) (from {low} low-format sound_code(s)) to {} ({high} high-format/music sound_code(s) noted as not-yet-decoded).",
+            out_dir.display()
+        );
     }
 
     Ok(())

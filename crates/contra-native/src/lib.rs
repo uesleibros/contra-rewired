@@ -70,4 +70,5 @@ pub mod graphics;
 pub mod level;
 pub mod palette;
 pub mod player_physics;
+pub mod sound_code;
 pub mod supertile;
