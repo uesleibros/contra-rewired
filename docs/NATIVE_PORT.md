@@ -612,7 +612,33 @@ replacement for its real 6502 code, cycle for cycle.
       boundaries (confirming `<` not `<=` at each threshold) and the
       real ASM's own "shouldn't happen" safety-fallback case
       (`x_pos=$ff`, where even the loosest threshold isn't satisfied).
-- [ ] Everything else, logic side. Thirteen routines out of what's
+- [x] **`add_scroll_to_enemy_pos::add_scroll_to_enemy_pos`**
+      (`crates/contra-native/src/add_scroll_to_enemy_pos.rs`) - ported
+      from `add_scroll_to_enemy_pos`/`add_horizontal_scroll` (`bank7.
+      asm`, `$e8a7`-`$e8c6`, sharing a "remove" tail with `remove_enemy`/
+      `set_sprite_0`, `$e809`-`$e813`): **the single most-reused routine
+      found in this codebase** - 82 real call sites (75 in `bank0.asm`,
+      7 in `bank7.asm`) - applied every frame to essentially every
+      enemy/bullet object to keep its position in sync with camera
+      scroll and flag it for removal once far enough off-screen. Only
+      touches one axis per call (`LEVEL_SCROLLING_TYPE` selects
+      horizontal-subtract-X or vertical-add-Y) - the actual removal
+      side effect (`remove_enemy` zeroing `ENEMY_ROUTINE`/`ENEMY_
+      SPRITES`) is *not* ported here, only the `should_remove` decision
+      a caller would need to act on - noted explicitly in this module's
+      own doc comment. Unit-tested (both axes, both removal boundaries
+      exactly at their real `<`/`>=` cutoffs, and the real 6502 wrap-
+      around-on-underflow behavior ported faithfully rather than
+      "fixed"). Live-verified (`VERIFY_ADD_SCROLL_TO_ENEMY_POS=1`,
+      hooking real entry `$e8a7` and all 3 real exits - vertical/no-
+      removal `$e8b8`, horizontal/no-removal `$e8c6`, and the shared
+      removed-tail `$e813` - comparing both the resulting position *and*
+      which exit fired against this port's own `should_remove`
+      prediction): **4427 real calls across a 9000-frame session - by
+      far the largest live-verification sample of any port in this
+      crate** - zero mismatches. Not yet integrated live, same status as
+      every routine above.
+- [ ] Everything else, logic side. Fourteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

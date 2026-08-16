@@ -1187,6 +1187,49 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} player-enemy-dist calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ADD_SCROLL_TO_ENEMY_POS").is_ok() {
+            // VERIFY_ADD_SCROLL_TO_ENEMY_POS=1: verification pass for
+            // `contra_native::add_scroll_to_enemy_pos::add_scroll_to_
+            // enemy_pos`. Real routine has 3 real exits: vertical/no-
+            // removal ($e8b8), horizontal/no-removal ($e8c6, right
+            // before the dead-code `bank_7_unused_label_02`), and the
+            // shared "removed" tail both branches' `remove_enemy_far`
+            // jumps into (`remove_enemy`/`set_sprite_0`'s own rts,
+            // $e813, right before `shared_enemy_routine_clear_sprite`).
+            // Position is written before the removal decision either
+            // way, so all 3 exits can be checked the same way; which
+            // exit actually fired is itself compared against this
+            // port's own `should_remove` prediction.
+            use contra_native::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos;
+            let mut pending: Option<(usize, u8, u8, u8, u8)> = None; // (x, scroll_type, frame_scroll, enemy_x, enemy_y)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE8A7 => {
+                        let x = cpu.x as usize;
+                        pending = Some((x, bus.ram[0x41], bus.ram[0x68], bus.ram[0x33E + x], bus.ram[0x324 + x]));
+                    }
+                    0xE8B8 | 0xE8C6 | 0xE813 => {
+                        if let Some((x, scroll_type, frame_scroll, enemy_x, enemy_y)) = pending.take() {
+                            let expected = add_scroll_to_enemy_pos(scroll_type, frame_scroll, enemy_x, enemy_y);
+                            let real_x = bus.ram[0x33E + x];
+                            let real_y = bus.ram[0x324 + x];
+                            let real_removed = cpu.pc == 0xE813;
+                            checked += 1;
+                            if expected.x_pos != real_x || expected.y_pos != real_y || expected.should_remove != real_removed {
+                                eprintln!(
+                                    "MISMATCH(add_scroll_to_enemy_pos) frame={frame} x={x} scroll_type={scroll_type:02X} frame_scroll={frame_scroll:02X} in=({enemy_x:02X},{enemy_y:02X}): expected {expected:?}, got x_pos={real_x:02X} y_pos={real_y:02X} should_remove={real_removed}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} add-scroll-to-enemy-pos calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

@@ -64,6 +64,7 @@
 //! audio/level-data extraction) is not started.
 
 pub mod audio;
+pub mod add_scroll_to_enemy_pos;
 pub mod bullet_physics;
 pub mod collision;
 pub mod create_enemy_bullet;
