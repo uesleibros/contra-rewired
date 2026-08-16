@@ -230,6 +230,26 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       See docs/NATIVE_PORT.md's "Current status" for the full breakdown,
       including what's still not started (the same envelope path wired
       into `MusicSlot`, and channel-priority arbitration).
+- [~] **A possible shortcut, evaluated hands-on:
+      [`mstan/nesrecomp`](https://github.com/mstan/nesrecomp)**, a static
+      6502->C recompiler, as a possibly-much-faster route to the same
+      "zero ROM dependency" logic-side goal above. Confirmed viable for
+      Contra specifically (its own docs list Contra's mapper, UxROM, as
+      unsupported - the runtime code actually already handles it
+      correctly), found and fixed a real bug in the process (bank-switch
+      tracking only followed register A, but Contra's bank routine uses
+      Y), built a bridge from this project's own verified extraction code
+      to nesrecomp's data-exclusion config, and - the concrete result -
+      **got a real recompiled build of Contra's ~6700 auto-discovered
+      functions to boot the real ROM and run 274+ real frames of the
+      actual game loop without crashing**, correctly identifying all 3
+      CPU vectors and falling back to interpretation for undiscovered
+      functions exactly as designed. Not a working alternative yet -
+      substantial data (collision maps, weapon/enemy-AI tables) isn't
+      excluded from discovery yet, and nothing has been confirmed on
+      screen - see docs/NATIVE_PORT.md's "A possible shortcut" section for
+      the full account. Whether to keep pushing this or treat it as a
+      side track remains open.
       **Enemy placement - hard-coded spawns**: ported
       each outdoor level's fixed per-screen enemy list
       (`contra-native::enemy_spawn`) - not the *random* soldier generation

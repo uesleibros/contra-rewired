@@ -837,14 +837,39 @@ for a game this size is almost certainly a small fraction of 5883, so
 substantial data is still misidentified as code (this project hasn't
 extracted collision maps, weapon/bullet tables, or enemy-AI state tables
 at all, so `emit_data_regions.rs` can't exclude what it doesn't know
-about yet) - and even a clean function list is still a long way from a
-*playable* recompilation, which additionally needs the full SDL2 runner
-built and a proper dispatch/trampoline configuration, work no game.toml
-example in nesrecomp's own repo treats as quick even for well-supported
-mappers. Whether to keep pushing this track, treat it as a
-complement to hand-porting, or set it aside is an open call - not
-resolved by this evaluation, which was scoped to answering "is this
-viable at all," not "is this the plan now."
+about yet).
+
+**Follow-up: it actually runs the real game.** Built a minimal runner
+executable (own `CMakeLists.txt`/`extras.c`, skipping the `recomp-ui`
+launcher/watchdog/verify-mode machinery FaxanaduRecomp's reference
+project carries - just the documented `game_extras.h` stub interface) via
+MSYS2's `ucrt64` toolchain (MinGW gcc + CMake + Ninja + SDL2, no Visual
+Studio needed) - real snags along the way, each with a real fix: a
+Windows path-length limit hit while working from a deep scratch
+directory (relocated to a short path); MinGW's SDL2main static lib needs
+listing *before* SDL2 on the link line, not after (GNU `ld` resolves
+undefined symbols left-to-right); the runner's `launcher.c` defines a
+plain `main()` rather than relying on SDL2's `main`->`SDL_main` macro
+rename, so linking against `SDL2main` at all was wrong for this codepath
+(`SDL_MAIN_HANDLED` + plain `SDL2` instead). Once linked, the resulting
+`ContraRecompExperiment.exe` - the real ROM's ~6700 functions, statically
+recompiled to C - **booted the real Contra ROM and ran 274+ real frames of
+the actual game loop without crashing**: correctly identified 8 PRG banks/
+mapper 2/all three CPU vectors (`RESET=$C001`, matching this project's own
+independently-confirmed reset address), opened a real audio device,
+and kept running - spurious `BRK`s from still-misidentified data get
+logged and silently skipped rather than crashing, and 2 genuine dispatch
+misses (calls to addresses the static discovery pass didn't find) fell
+through to the interpreter fallback exactly as designed, each logged as a
+ready-to-paste `extra_func` config line. This is a real, running,
+partially-native execution of Contra's actual code - not proof the port
+is "done" (most of what's executing 274 frames in is still the
+interpreter fallback for undiscovered functions, and nothing has been
+visually confirmed on screen yet), but a concrete, replicable answer to
+"is this viable at all": yes, further.
+
+Whether to keep pushing this track, treat it as a complement to
+hand-porting, or set it aside remains an open call.
 
 ## Where to look
 
