@@ -375,6 +375,31 @@ replacement for its real 6502 code, cycle for cycle.
       pixel-exact, not just plausible-looking (the blocky
       grass/foliage-and-vine tile art in it reads as text-like at a glance
       - that's genuine Contra level 1 art, not a bug).
+      **Generalized to the whole level, not just screen 0.** Level 1 has
+      exactly 13 screens (`level_1_supertiles_screen_00`-`_0c`) - confirmed
+      by reading `level_1_supertiles_screen_ptr_table`'s raw pointer bytes
+      directly rather than assuming: it holds 14 little-endian pointers,
+      the first 13 matching every real screen label in
+      `docs/rom-symbols.txt` exactly, and the 14th duplicating the first
+      (a defensive wrap-around entry, not a real 14th screen -
+      `level_2`'s own table starts immediately after). `extract_level.rs`
+      now decodes and renders all 13 screens side by side into one
+      3328x224px image, straight from PRG-ROM - a real, coherent Contra
+      level (sky/mountains fading into jungle canopy, the bridge, a
+      closing wall at the end), not just an isolated tile. **CHR content
+      across all 13 screens' distinct tiles (176 of them) matches live
+      CHR-RAM with 0 mismatches**, and screen 0's nametable+attribute
+      table are (still) proven byte-perfect the same way as before.
+      Screens 1-12 use the identical, already-proven decode path (and the
+      same independently-cross-checked pointer-table walk) but aren't
+      individually re-verified against live PPU state in this session -
+      reaching screen 1 in VRAM safely turned out to need scripted play
+      past the level's obstacles (a naive "hold right" attempt walked Bill
+      into something fatal well before the screen boundary, confirmed by
+      CHR-RAM and RAM state both flipping to a death/respawn sequence's) -
+      a materially different, larger task than verifying decoding, noted
+      here rather than either skipped silently or forced through with a
+      fragile hack.
 
 ## Where to look
 

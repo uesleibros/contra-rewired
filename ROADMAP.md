@@ -106,10 +106,21 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       `level_1_graphic_data`'s own literal 7-blob list gets **CHR content,
       nametable, and attribute table all to 0 mismatches simultaneously**
       against live PPU state, so the rendered screen is now proven
-      pixel-exact, not just plausible. See docs/NATIVE_PORT.md's "Current
-      status" for the full account. Audio and spawn/enemy-data extraction
-      haven't been started. Equally necessary as the logic-porting work
-      above, not a detail of it
+      pixel-exact, not just plausible. **Generalized to the whole level**:
+      confirmed level 1 has exactly 13 screens by reading the real pointer
+      table's raw bytes (not assumed), and now decodes/renders all 13 side
+      by side into one coherent 3328x224px level image straight from
+      PRG-ROM - CHR content across all 176 distinct tiles used still
+      matches live CHR-RAM with 0 mismatches; screen 0's nametable/
+      attributes stay proven byte-perfect; screens 1-12 share the same
+      proven decode path but aren't individually re-verified live (that
+      needs scripted play past the level's obstacles - a naive "hold
+      right" attempt got Bill killed before reaching screen 1, a
+      materially larger task than decoding, so it's left open rather than
+      hacked around). See docs/NATIVE_PORT.md's "Current status" for the
+      full account. Audio and spawn/enemy-data extraction haven't been
+      started. Equally necessary as the logic-porting work above, not a
+      detail of it
 
 ## Phase 1 - Fidelity, controls, and the two platforms
 

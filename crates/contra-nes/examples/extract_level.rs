@@ -151,10 +151,21 @@ fn main() {
     println!("wrote {} ({} screens, {img_w}x{img_h}px)", path.display(), LEVEL_1_SCREEN_COUNT);
 
     // --- Ground truth: actually play into level 1, read live PPU state.
-    // Contra double-buffers 2 screens' worth of nametable at a time (the
-    // current one plus the prefetched next one), so both screen 0 and
-    // screen 1 should already be resident in VRAM at boot without any
-    // scrolling input needed. ---
+    // NOTE: an earlier version of this held RIGHT for ~3000 extra frames
+    // to try to scroll far enough to force-load screen 1 into VRAM and
+    // verify it too - don't do that: at this walking speed it isn't
+    // enough to cross the screen boundary, but *is* enough to walk Bill
+    // into an obstacle and die (confirmed: CHR-RAM and RAM state both
+    // changed to a death/respawn sequence's, not screen 1's). Actually
+    // reaching screen 1 safely needs scripted play (jumping the level's
+    // obstacles), which is a different, much larger task than verifying
+    // decoding. Screens 1-12 use the exact same `decompress_screen`/
+    // `supertile_tiles`/`supertile_attribute_byte` path as screen 0
+    // (proven byte-perfect below), applied via the same pointer-table
+    // walk independently cross-checked against every `level_1_
+    // supertiles_screen_XX` label in `docs/rom-symbols.txt` - not
+    // separately re-verified against live PPU here, the same honest
+    // caveat `palette`'s per-level indices already carry.
     let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
     let mut nes = Nes::new(rom.prg_rom.clone(), mirroring);
     let start_after = 120u32;
@@ -181,25 +192,25 @@ fn main() {
         println!("MISMATCH: {chr_tile_diffs}/{} distinct tiles used across the level differ from live CHR-RAM.", used_tiles.len());
     }
 
-    // Screen 0 at nametable base $2000; screen 1 empirically resolved
-    // below by trying both plausible nametable bases and reporting which
-    // one actually matches, rather than assuming.
-    verify_screen_against_live(&nes, 0, &tile_grid, &all_screen_ids[0], &rom.prg_rom, 0x2000, 0x23C0);
-
-    let screen1_base_2400_diffs = count_nametable_diffs(&nes, 1, &tile_grid, level_tiles_w, 0x2400);
-    let screen1_base_2000_scrolled_diffs = count_nametable_diffs(&nes, 1, &tile_grid, level_tiles_w, 0x2000);
-    if screen1_base_2400_diffs == 0 {
-        verify_screen_against_live(&nes, 1, &tile_grid, &all_screen_ids[1], &rom.prg_rom, 0x2400, 0x27C0);
-    } else if screen1_base_2000_scrolled_diffs == 0 {
-        verify_screen_against_live(&nes, 1, &tile_grid, &all_screen_ids[1], &rom.prg_rom, 0x2000, 0x23C0);
-    } else {
-        println!(
-            "screen 1: neither nametable-base guess matched live PPU ($2400 base: {screen1_base_2400_diffs} diffs, $2000 base: {screen1_base_2000_scrolled_diffs} diffs) - not verified this run."
-        );
+    // Brute-force discovery instead of trusting a hand-traced guess at
+    // the addressing scheme (two guesses already turned out wrong): try
+    // every (physical nametable, decoded screen index) pair and report
+    // any exact nametable match. Whatever's actually resident in VRAM
+    // right now will show up as a 0-diff hit; nothing here assumes which.
+    for &(nt_base, attr_base, label) in &[(0x2000u16, 0x23C0u16, "$2000/$23C0"), (0x2400u16, 0x27C0u16, "$2400/$27C0")] {
+        for screen_index in 0..LEVEL_1_SCREEN_COUNT {
+            let nametable_diffs = nametable_diff_count(&nes, screen_index, &tile_grid, level_tiles_w, nt_base);
+            if nametable_diffs == 0 {
+                verify_screen_against_live(&nes, screen_index, &tile_grid, &all_screen_ids[screen_index], &rom.prg_rom, nt_base, attr_base);
+            } else if nametable_diffs < 40 {
+                // Close but not exact - worth surfacing while debugging.
+                println!("near-miss: screen {screen_index} vs {label} - {nametable_diffs}/{} nametable tiles differ", SCREEN_TILES_W * SCREEN_TILES_H);
+            }
+        }
     }
 }
 
-fn count_nametable_diffs(nes: &Nes, screen_index: usize, tile_grid: &[u8], level_tiles_w: usize, nametable_base: u16) -> usize {
+fn nametable_diff_count(nes: &Nes, screen_index: usize, tile_grid: &[u8], level_tiles_w: usize, nametable_base: u16) -> usize {
     let screen_x_offset = screen_index * SCREEN_TILES_W;
     let mut diffs = 0usize;
     for ty in 0..SCREEN_TILES_H {
