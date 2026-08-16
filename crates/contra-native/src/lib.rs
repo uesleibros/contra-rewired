@@ -65,6 +65,7 @@
 
 pub mod audio;
 pub mod collision;
+pub mod enemy_spawn;
 pub mod graphics;
 pub mod level;
 pub mod palette;

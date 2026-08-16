@@ -138,9 +138,24 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       channel yet (no live oracle to diff against there). The actual
       music/most sound effects are a custom bytecode sequencer, not a
       decodable asset - porting that is engine work, not extraction, and
-      hasn't been started. See docs/NATIVE_PORT.md's "Current status" for
-      the full account. Spawn/enemy-data extraction hasn't been started
-      either. Equally necessary as the logic-porting work above, not a
+      hasn't been started. **Enemy placement - hard-coded spawns**: ported
+      each outdoor level's fixed per-screen enemy list
+      (`contra-native::enemy_spawn`) - not the *random* soldier generation
+      levels also do at runtime, which is logic, not static data. Two real
+      mistakes surfaced and got corrected while porting this: a Y-position
+      bit-layout guess that looked right from the doc's diagram but only
+      matched the doc's own worked example with a different formula, and a
+      pointer-table off-by-one taken straight from the doc's prose that
+      produced a garbage/runaway decode - raw ROM bytes settled both,
+      overriding the docs where they disagreed. Verified through the real
+      pointer-table walk (`extract_enemies` example): level 1's 24
+      hard-coded enemies decode cleanly, screen 9 matches the doc's worked
+      example exactly. Wired into `contra-extract --dump-enemies <dir>`
+      for the 6 outdoor levels; the 2 indoor levels use an undecoded
+      format (no worked example to verify a pixel-offset formula against)
+      and say so in their output rather than guessing. See
+      docs/NATIVE_PORT.md's "Current status" for the full account.
+      Equally necessary as the logic-porting work above, not a
       detail of it
 
 ## Phase 1 - Fidelity, controls, and the two platforms

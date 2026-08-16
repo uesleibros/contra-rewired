@@ -19,12 +19,24 @@ pub enum ScrollingType {
     Vertical,
 }
 
+/// `LEVEL_LOCATION_TYPE` (header offset 0). The static level header table
+/// only ever stores `Outdoor`/`Indoor` - `$80`/`$ff` ("indoor boss") is a
+/// runtime-only value the game writes into RAM when a boss screen starts,
+/// never present in the ROM's own header data (`docs/Level Headers.md`:
+/// "the value is never #$80 in the level headers table").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocationType {
+    Outdoor,
+    Indoor,
+}
+
 /// The subset of a level header this crate's extraction pipeline needs -
 /// not a transcription of every documented field (see `docs/Level
 /// Headers.md` for the rest, e.g. collision-code tile boundaries, already
 /// covered by `contra_native::collision`'s own hand-verified constants).
 #[derive(Debug, Clone, Copy)]
 pub struct LevelHeader {
+    pub location_type: LocationType,
     pub scrolling_type: ScrollingType,
     /// PRG-ROM offset of this level's `level_X_supertiles_screen_ptr_table`
     /// (always bank 2).
@@ -52,6 +64,7 @@ fn mem_addr_at(prg_rom: &[u8], offset: usize) -> u16 {
 pub fn level_header(prg_rom: &[u8], level_index: usize) -> LevelHeader {
     let base = LEVEL_HEADERS_PRG_OFFSET + level_index * LEVEL_HEADER_LEN;
 
+    let location_type = if prg_rom[base] == 0 { LocationType::Outdoor } else { LocationType::Indoor };
     let scrolling_type = if prg_rom[base + 1] == 0 { ScrollingType::Horizontal } else { ScrollingType::Vertical };
 
     let screen_ptr_mem = mem_addr_at(prg_rom, base + 2);
@@ -60,6 +73,7 @@ pub fn level_header(prg_rom: &[u8], level_index: usize) -> LevelHeader {
     let level_stop_scroll = prg_rom[base + 24];
 
     LevelHeader {
+        location_type,
         scrolling_type,
         screen_ptr_table_prg_offset: 2 * 0x4000 + (screen_ptr_mem as usize & 0x3FFF),
         supertile_data_prg_offset: 3 * 0x4000 + (supertile_data_mem as usize & 0x3FFF),
@@ -96,6 +110,7 @@ mod tests {
         rom[base + 24] = 0x0b; // LEVEL_STOP_SCROLL
 
         let header = level_header(&rom, 0);
+        assert_eq!(header.location_type, LocationType::Outdoor);
         assert_eq!(header.scrolling_type, ScrollingType::Horizontal);
         assert_eq!(header.screen_ptr_table_prg_offset, 0x8001);
         assert_eq!(header.supertile_data_prg_offset, 0xC001);
@@ -106,7 +121,7 @@ mod tests {
     #[test]
     fn screen_prg_offset_resolves_a_pointer_table_entry() {
         let mut rom = vec![0u8; 0x20000];
-        let header = LevelHeader { scrolling_type: ScrollingType::Horizontal, screen_ptr_table_prg_offset: 0x8001, supertile_data_prg_offset: 0, palette_data_prg_offset: 0, screen_count: 13 };
+        let header = LevelHeader { location_type: LocationType::Outdoor, scrolling_type: ScrollingType::Horizontal, screen_ptr_table_prg_offset: 0x8001, supertile_data_prg_offset: 0, palette_data_prg_offset: 0, screen_count: 13 };
         rom[0x8001..0x8003].copy_from_slice(&0x801Du16.to_le_bytes());
         assert_eq!(screen_prg_offset(&rom, &header, 0), 0x801D);
     }

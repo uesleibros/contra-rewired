@@ -23,9 +23,15 @@
 //! `--dump-audio <dir>`, decode Contra's 2 DPCM samples to WAV (see
 //! `crates/contra-native/src/audio.rs` - standard 2A03 DMC decode, cross-
 //! checked against the disassembly's own separately-shipped copies of the
-//! same sample bytes). No emulation involved in any of the four.
+//! same sample bytes); and with `--dump-enemies <dir>`, write each
+//! outdoor level's hard-coded enemy placements to a plain text file (see
+//! `crates/contra-native/src/enemy_spawn.rs`, verified against the
+//! disassembly's own worked example through the real pointer-table walk -
+//! see `crates/contra-nes/examples/extract_enemies.rs`). No emulation
+//! involved in any of the five.
 
 mod audio;
+mod enemies;
 mod graphics;
 mod level;
 mod palette;
@@ -63,6 +69,13 @@ struct Args {
     /// WAV files in this directory. No emulation involved.
     #[arg(long, value_name = "DIR")]
     dump_audio: Option<PathBuf>,
+
+    /// Write each outdoor level's hard-coded enemy placements to a plain
+    /// text file in this directory. Indoor/base levels (2 and 4) aren't
+    /// decoded yet - noted as such in their output file rather than
+    /// skipped silently.
+    #[arg(long, value_name = "DIR")]
+    dump_enemies: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -127,6 +140,11 @@ fn main() -> anyhow::Result<()> {
     if let Some(out_dir) = &args.dump_audio {
         let count = audio::dump_all(&rom.prg_rom, out_dir)?;
         println!("\nWrote {count} DPCM sample WAV(s) to {}.", out_dir.display());
+    }
+
+    if let Some(out_dir) = &args.dump_enemies {
+        let (written, skipped) = enemies::dump_all(&rom.prg_rom, out_dir)?;
+        println!("\nWrote {written} level enemy list(s) to {} ({skipped} indoor/base level(s) noted as not-yet-decoded).", out_dir.display());
     }
 
     Ok(())

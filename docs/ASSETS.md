@@ -76,12 +76,25 @@ channel, so there's no live playback to diff against here - instead, the
 computed byte ranges were diffed against the disassembly's own
 separately-shipped copies of the same samples, and came back identical.
 
+**Enemy placement landed too, for outdoor levels.** Each level's
+hard-coded, same-every-playthrough enemy spawns (not the *random* soldier
+generation levels also do at runtime, which is gameplay logic, not
+static data) are ported to `contra-native::enemy_spawn` and decode
+straight from PRG-ROM. Getting this right took correcting two real
+mistakes along the way - a Y-position bit-layout read that matched the
+docs' diagram but not their own worked example, and a pointer-table
+lookup taken from the docs' prose that produced a garbage decode - both
+times, the actual ROM bytes turned out to disagree with the
+documentation's prose/diagrams, and the bytes won. Verified against the
+docs' worked example through the real pointer-table walk, not just a
+synthetic test.
+
 Not done yet: Contra's actual music and most sound effects are a custom
 bytecode sequencer, not a decodable asset - reproducing that means
 porting a playback engine (closer to the CPU-logic-porting workstream
-than to extraction), and hasn't been started. Enemy/spawn data hasn't
-been started either. See docs/NATIVE_PORT.md's "Current status" for the
-up-to-date breakdown.
+than to extraction), and hasn't been started. Indoor-level enemy
+placement (levels 2 and 4) uses a different, undecoded format. See
+docs/NATIVE_PORT.md's "Current status" for the up-to-date breakdown.
 
 ## What `contra-extract` does today
 
@@ -125,6 +138,13 @@ files, also straight from PRG-ROM:
 
 ```
 cargo run -p contra-extract -- path\to\your\baserom.nes --dump-audio .\assets\audio
+```
+
+With `--dump-enemies <dir>`, it writes each outdoor level's hard-coded
+enemy placements to a plain text file:
+
+```
+cargo run -p contra-extract -- path\to\your\baserom.nes --dump-enemies .\assets\enemies
 ```
 
 `contra-pc` doesn't consume these files yet - today it still plays the ROM

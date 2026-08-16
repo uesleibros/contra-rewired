@@ -464,6 +464,39 @@ replacement for its real 6502 code, cycle for cycle.
       `sound_cmd_ptr_tbl` dispatch). Reproducing that means porting a real
       playback *engine*, the same category of work as `collision`/
       `player_physics`, not a one-time extraction - not started.
+- [x] **Enemy placement - hard-coded spawns for outdoor levels.**
+      `contra-native::enemy_spawn` ports the fixed, same-every-playthrough
+      enemy placements each level defines per screen (`docs/Enemy
+      Routines.md`'s "Level Enemies" section) - not the *random* soldier
+      generation levels 1/3/5/6/7 also do at runtime
+      (`exe_soldier_generation`), which is real gameplay logic, not static
+      data, and isn't covered here. **Two real mistakes were made and
+      corrected while porting this, both worth keeping honest track of:**
+      (1) the doc's own diagram for the Y-position byte (`YYYYY AAA`)
+      implies `Y = byte >> 3`, but the doc's own worked example only
+      reproduces if `Y = byte & 0xF8` instead (top 5 bits, *not* shifted
+      down) - the worked example was trusted over the diagram, confirmed
+      by a test encoding that exact example; (2) the doc's prose ("the
+      first entry in this table is associated to the *second* screen of
+      the level") reads as describing a one-entry offset between a level's
+      enemy-screen pointer table and its real screens, and a first attempt
+      implemented exactly that - but reading the table's raw bytes
+      directly showed entry index equals screen index with **no** offset
+      (entry 9 resolves to exactly `level_1_enemy_screen_09`'s real
+      address), and trusting the prose instead produced a garbage/runaway
+      decode by reading one entry past the table's actual end. Both times,
+      the fix was the same principle: when documentation and raw ROM bytes
+      disagree, the bytes win. Verified via the real pointer-table walk
+      (not just a synthetic ROM): level 1's 24 hard-coded enemies decode
+      cleanly across its 12 non-empty screens, and screen 9 reproduces the
+      doc's worked example exactly end-to-end
+      (`cargo run -p contra-nes --release --example extract_enemies`).
+      Wired into `contra-extract --dump-enemies <dir>` for all 6 outdoor
+      levels; indoor levels (2, 4) use a different, 3-byte fixed format
+      this doesn't decode yet (no worked example exists in the docs to
+      verify a final pixel-offset formula against, so nothing is shipped
+      rather than shipping a guess) - their output files say so plainly
+      instead of silently producing nothing.
 
 ## Where to look
 
