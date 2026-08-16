@@ -65,8 +65,22 @@ visually (level 2's indoor corridors and doors, level 3's waterfalls, the
 `graphic_data_0a`/`_10` pair rendering as genuine mirror images of each
 other).
 
-Not done yet: audio (DPCM samples, music sequences) and enemy/spawn data
-haven't been started. See docs/NATIVE_PORT.md's "Current status" for the
+**Audio's first slice landed too: DPCM samples.** Contra's 2 raw DPCM
+(delta pulse-code modulation) waveforms - real audio data, not a
+bytecode - are ported to `contra-native::audio` and decode straight from
+PRG-ROM to WAV. The address/length encoding and delta-decode algorithm
+are standard 2A03 DMC hardware behavior, not Contra-specific, so what's
+actually ported is `dpcm_sample_data_tbl`, the small table saying which
+PRG bytes are sample data. `contra-nes`'s APU doesn't emulate the DMC
+channel, so there's no live playback to diff against here - instead, the
+computed byte ranges were diffed against the disassembly's own
+separately-shipped copies of the same samples, and came back identical.
+
+Not done yet: Contra's actual music and most sound effects are a custom
+bytecode sequencer, not a decodable asset - reproducing that means
+porting a playback engine (closer to the CPU-logic-porting workstream
+than to extraction), and hasn't been started. Enemy/spawn data hasn't
+been started either. See docs/NATIVE_PORT.md's "Current status" for the
 up-to-date breakdown.
 
 ## What `contra-extract` does today
@@ -106,7 +120,14 @@ nametable (every screen, side by side, fully colored) to
 cargo run -p contra-extract -- path\to\your\baserom.nes --dump-levels .\assets\levels
 ```
 
-`contra-pc` doesn't consume these PNGs yet - today it still plays the ROM
+With `--dump-audio <dir>`, it decodes both DPCM samples to 8-bit PCM WAV
+files, also straight from PRG-ROM:
+
+```
+cargo run -p contra-extract -- path\to\your\baserom.nes --dump-audio .\assets\audio
+```
+
+`contra-pc` doesn't consume these files yet - today it still plays the ROM
 directly through `contra-nes`, same as before. Extraction and "make
 `contra-pc` actually load the extracted files instead of the ROM" are
 separate steps; this is the first one.

@@ -130,9 +130,17 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       correctly via `contra-extract --dump-levels <dir>` - verified
       visually (level 2's corridors/doors, level 3's waterfalls) and via
       the `graphic_data_0a`/`_10` mirror-pair rendering as genuine mirror
-      images of each other. See docs/NATIVE_PORT.md's "Current status" for
-      the full account. Audio and spawn/enemy-data extraction haven't been
-      started. Equally necessary as the logic-porting work above, not a
+      images of each other. **Audio - first slice**: Contra's 2 DPCM
+      samples decode straight from PRG-ROM to WAV
+      (`contra-native::audio`, `contra-extract --dump-audio <dir>`) -
+      cross-checked against the disassembly's own separately-shipped
+      sample files since `contra-nes`'s APU doesn't emulate the DMC
+      channel yet (no live oracle to diff against there). The actual
+      music/most sound effects are a custom bytecode sequencer, not a
+      decodable asset - porting that is engine work, not extraction, and
+      hasn't been started. See docs/NATIVE_PORT.md's "Current status" for
+      the full account. Spawn/enemy-data extraction hasn't been started
+      either. Equally necessary as the logic-porting work above, not a
       detail of it
 
 ## Phase 1 - Fidelity, controls, and the two platforms

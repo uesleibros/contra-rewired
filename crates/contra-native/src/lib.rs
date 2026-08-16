@@ -63,6 +63,7 @@
 //! else in the game (realistically hundreds more logic routines, plus
 //! audio/level-data extraction) is not started.
 
+pub mod audio;
 pub mod collision;
 pub mod graphics;
 pub mod level;

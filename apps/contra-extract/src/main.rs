@@ -19,9 +19,13 @@
 //! (every screen) to one colored PNG apiece (see
 //! `crates/contra-native/src/{level,supertile}.rs`, proven byte-perfect
 //! for level 1 against live PPU state - see
-//! `crates/contra-nes/examples/extract_level.rs`). No emulation involved
-//! in any of the three.
+//! `crates/contra-nes/examples/extract_level.rs`); and with
+//! `--dump-audio <dir>`, decode Contra's 2 DPCM samples to WAV (see
+//! `crates/contra-native/src/audio.rs` - standard 2A03 DMC decode, cross-
+//! checked against the disassembly's own separately-shipped copies of the
+//! same sample bytes). No emulation involved in any of the four.
 
+mod audio;
 mod graphics;
 mod level;
 mod palette;
@@ -54,6 +58,11 @@ struct Args {
     /// level/graphic-data tables.
     #[arg(long, value_name = "DIR")]
     dump_levels: Option<PathBuf>,
+
+    /// Decode Contra's 2 DPCM samples straight from PRG-ROM to 8-bit PCM
+    /// WAV files in this directory. No emulation involved.
+    #[arg(long, value_name = "DIR")]
+    dump_audio: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -113,6 +122,11 @@ fn main() -> anyhow::Result<()> {
     if let Some(out_dir) = &args.dump_levels {
         let count = level::dump_all(&rom.prg_rom, out_dir)?;
         println!("\nWrote {count} level PNG(s) to {}.", out_dir.display());
+    }
+
+    if let Some(out_dir) = &args.dump_audio {
+        let count = audio::dump_all(&rom.prg_rom, out_dir)?;
+        println!("\nWrote {count} DPCM sample WAV(s) to {}.", out_dir.display());
     }
 
     Ok(())

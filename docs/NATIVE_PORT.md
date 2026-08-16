@@ -437,6 +437,33 @@ replacement for its real 6502 code, cycle for cycle.
       holds unchanged; levels 2-8 use the identical proven pipeline but
       aren't individually live-verified (same reachability caveat as
       screens 1-12 above).
+- [x] **Audio - first slice: DPCM samples.** Contra's 2 DPCM (delta
+      pulse-code modulation) samples - real raw waveform data, used by 3
+      percussion sound effects - are ported to `contra-native::audio`
+      (`dpcm_table_entry`/`decode_dpcm`) and extracted to WAV via
+      `contra-extract --dump-audio <dir>`. Unlike graphics/palette/level,
+      the address/length encoding and the delta-decode algorithm aren't
+      Contra-specific - they're standard 2A03 DMC hardware behavior
+      (`$4012`/`$4013` register formulas, LSB-first delta decode) - so
+      what's actually ported here is just
+      `dpcm_sample_data_tbl` (bank 1, `$88db`), the small table saying
+      *which* PRG bytes are sample data. `contra-nes`'s APU doesn't
+      emulate the DMC channel (see `crates/contra-nes/src/apu.rs`), so
+      there's no live playback to verify against the way graphics/
+      palette/level were - instead, the computed address/length
+      reproduced `docs/Sound Documentation.md`'s worked examples exactly,
+      and the resulting byte ranges were diffed (`cmp`) against
+      `nes-contra-us`'s own separately-shipped
+      `dpcm_sample_{00,01}.bin` files - both came back identical, an
+      independent cross-check even without an emulator oracle.
+      **What this doesn't cover, and why it's out of scope here:**
+      Contra's actual music and most sound effects aren't a decodable
+      "asset" at all - they're driven by a custom bytecode sequencer
+      (`docs/Sound Documentation.md`'s "sound_code Parsing" section: low/
+      high sound commands, percussion commands, note-period tables, a
+      `sound_cmd_ptr_tbl` dispatch). Reproducing that means porting a real
+      playback *engine*, the same category of work as `collision`/
+      `player_physics`, not a one-time extraction - not started.
 
 ## Where to look
 
