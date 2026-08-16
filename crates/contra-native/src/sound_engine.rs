@@ -82,18 +82,31 @@
 //! reentrancy to replicate), but it matters for verifying this module
 //! against `contra-nes`.
 //!
-//! **What's not verified yet**: the `lvl_config_pulse`/
-//! `pulse_volume_ptr_tbl` envelope path this module's `step_low` calls
-//! into for sustain frames is implemented per the reading above, but
-//! `pulse_volume_ptr_tbl`'s actual per-level byte contents haven't been
-//! transcribed from the ROM yet, so [`SoundSlot::step_low`] returns
-//! [`PulseVolumeSource::Envelope`] rather than a resolved value in that
-//! case - a caller with the real ROM bytes can resolve it, but this
-//! module doesn't claim to have done so. `LVL_PULSE_VOL_INDEX`'s
-//! never-reset-for-low-format persistence (see the module doc above) is
-//! modeled as ordinary per-slot state that only this module's caller
-//! resets (i.e., never, matching the real ROM's own behavior for these
-//! slots).
+//! **The volume-envelope path is now real, resolved, and verified** -
+//! `crate::sound_code::PULSE_VOLUME_PTR_TBL`/`pulse_volume_ptr_tbl_entry`/
+//! `walk_pulse_volume` (all verified byte-for-byte against the real ROM)
+//! let [`SoundSlot::step_low`]'s sustain path implement `@check_pulse_
+//! volume`'s full branch structure - the envelope-table read
+//! (`lvl_config_pulse`), the "table exhausted, switch to a plain
+//! decrescendo" transition (`disable_lvl_pulse_ctrl_exit`'s `0xFF`), and
+//! that decrescendo's own resume/pin-at-1 behavior
+//! (`handle_possible_decrescendo`/`resume_decrescendo`) - see
+//! [`PulseVolumeSource`] for what each resolves to. `lower_pulse_volume`
+//! itself (the *other* decrescendo entry point, gated by `SOUND_VOL_ENV`
+//! bit 7) is the one piece left unimplemented here, deliberately: it's
+//! provably unreachable for slots #$04/#$05 specifically, since their
+//! aliased `SOUND_VOL_ENV` source is always non-negative (see the
+//! aliasing section above) - real for [`MusicSlot`]'s pulse slots
+//! (#$00/#$01), not modeled there yet. Verified against real gameplay via
+//! `verify_sound_engine.rs`: 197/199 sustain-frame `PULSE_VOLUME`
+//! comparisons matched exactly for slot 5 across a 900-frame session; the
+//! 2 remaining mismatches trace to the same already-documented NMI-
+//! reentrancy verification-methodology gap (a stray, single-frame
+//! `SOUND_CHNL_REG_OFFSET` read caught mid-lag), not a bug in this path.
+//! `LVL_PULSE_VOL_INDEX`'s never-reset-for-low-format persistence (see
+//! the module doc above) is modeled as ordinary per-slot state that only
+//! `trigger()` resets (which the real ROM never does for these slots
+//! either).
 //!
 //! [`decode_low_command`]: crate::sound_code::decode_low_command
 
@@ -111,23 +124,38 @@ pub struct SharedScratch {
     pub sound_chnl_reg_offset: u8,
 }
 
-/// Where a sustain frame's pulse volume should come from - either it's
-/// already resolved (decrescendo countdown, or "no change this frame"),
-/// or it depends on `pulse_volume_ptr_tbl` data this module doesn't have
-/// transcribed (see the module doc comment's "What's not verified yet").
+/// Where a sustain frame's pulse volume came from this frame - resolved
+/// down to a real `PULSE_VOLUME` value where real ROM data makes that
+/// possible (ported from `@check_pulse_volume`'s full branch structure,
+/// `src/bank1.asm`, using [`crate::sound_code::PULSE_VOLUME_PTR_TBL`]/
+/// `pulse_volume_ptr_tbl_entry`/`walk_pulse_volume`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PulseVolumeSource {
-    /// No pulse-config write happens this frame (e.g. triangle/noise
-    /// slots skip this entirely, or the slot isn't due for maintenance).
+    /// No pulse-config write happens this frame - either the routine
+    /// exited without touching `PULSE_VOLUME` (`check_decrescendo_end_
+    /// pause`'s "not yet" case, `@exit`'s plain `rts`), or (triangle/
+    /// noise slots) this maintenance doesn't apply to begin with.
     Unchanged,
-    /// `lower_pulse_volume`'s simple decrescendo countdown applied
-    /// cleanly; `PULSE_VOLUME` is now this value (or the countdown
-    /// paused/expired - `None` means "stop adjusting, leave as-is").
+    /// `lower_pulse_volume`'s simple decrescendo countdown - the new
+    /// `PULSE_VOLUME` value, or `None` when it just hit zero
+    /// (`handle_sound_code_exit_01` clamps it back up by one and stops).
+    /// Provably unreachable for [`SoundSlot`] (slots #$04/#$05): it needs
+    /// `SOUND_VOL_ENV,x`'s real bit 7 set, but that variable is aliased
+    /// to always-non-negative RAM for those slots - see this module's
+    /// doc comment. Real, reachable state for [`MusicSlot`]'s pulse
+    /// slots (#$00/#$01), which have genuine `SOUND_VOL_ENV` data - not
+    /// wired into `MusicSlot::step_high` yet.
     Decrescendo(Option<u8>),
-    /// Needs `pulse_volume_ptr_tbl[table_index]`'s byte at
-    /// `read_offset` (and to know whether to advance `read_offset` for
-    /// next frame) - not resolved by this module; see the doc comment.
-    Envelope { table_index: u8, read_offset: u8 },
+    /// `resume_decrescendo`, entered once an envelope stream (or a
+    /// paused simple decrescendo) has exhausted itself - same countdown
+    /// shape as `Decrescendo`, kept as a separate variant since it's a
+    /// distinct real code path with its own doc trail.
+    ResumingDecrescendo(Option<u8>),
+    /// `lvl_config_pulse`/`lvl_pulse_volume_byte`: the real, resolved
+    /// `PULSE_VOLUME` byte read from `pulse_volume_ptr_tbl[table_index]`
+    /// at the slot's own persistent read cursor (`LVL_PULSE_VOL_INDEX,x`,
+    /// [`SoundSlot::lvl_pulse_vol_index`]), already masked `& 0x1F`.
+    Envelope(u8),
 }
 
 /// One sound slot's persistent state - the low-format-relevant subset of
@@ -164,6 +192,30 @@ pub struct SoundSlot {
     /// would clobber the outer return address) - this mirrors that same
     /// single-level limitation rather than supporting arbitrary nesting.
     pub child_return_offset: Option<usize>,
+    /// Which slot this is (`4` or `5`) - needed only to resolve `SOUND_
+    /// VOL_ENV,x`'s aliasing (see the module doc comment) when reading
+    /// the volume envelope; not used anywhere else.
+    pub slot_index: u8,
+    /// `SOUND_FLAGS,x` bit 2 - "envelope table exhausted/disabled, use
+    /// `PULSE_VOLUME` from a plain decrescendo countdown instead" - set
+    /// once by `disable_lvl_pulse_ctrl_exit` (an envelope stream's own
+    /// `0xFF`) and never cleared by this module (matching the real ROM:
+    /// only a fresh `trigger()` resets it).
+    pub envelope_disabled: bool,
+    /// `SOUND_FLAGS,x` bit 1 - "the paused/exhausted decrescendo should
+    /// resume this frame" (`check_decrescendo_end_pause`).
+    pub decrescendo_resuming: bool,
+    /// `DECRESCENDO_END_PAUSE,x` - compared against `cmd_length` to
+    /// decide when a paused/exhausted decrescendo resumes. Real hardware
+    /// sets this from `UNKNOWN_SOUND_00,x` via `calc_cmd_len_play_
+    /// percussion`'s high-format-only path (`sound_cmd_routine_01`'s
+    /// `unknown_00` field) - low format never writes it, so on real
+    /// hardware a freshly-triggered low-format slot inherits whatever
+    /// *stale* value was last there from unrelated processing. This
+    /// module can't replicate that staleness (no shared RAM model), so
+    /// it starts at `0` on every `trigger()` - a known, honest gap, not
+    /// a silent approximation.
+    pub decrescendo_end_pause: u8,
 }
 
 /// One frame's resolved outcome for a slot: `None` if nothing changed
@@ -182,23 +234,29 @@ pub struct FrameOutput {
 impl SoundSlot {
     /// `load_sound_code_entry`'s trigger initialization for a low-format
     /// sound - `sound_code_start` is the sound's own PRG-ROM offset
-    /// (e.g. from `sound_table_00`, already resolved).
-    pub fn trigger(&mut self, sound_code: u8, sound_code_start: usize) {
+    /// (e.g. from `sound_table_00`, already resolved). `slot_index` must
+    /// be `4` or `5` (see [`Self::slot_index`]'s doc comment).
+    pub fn trigger(&mut self, slot_index: u8, sound_code: u8, sound_code_start: usize) {
+        self.slot_index = slot_index;
         self.sound_code = sound_code;
         self.cmd_prg_offset = sound_code_start;
         self.cmd_length = 1; // forces an immediate command read next step
         self.active = true;
         self.repeat_count = 0;
         self.child_return_offset = None;
+        self.envelope_disabled = false;
+        self.decrescendo_resuming = false;
+        self.decrescendo_end_pause = 0;
         // VIBRATO_CTRL, SOUND_PITCH_ADJ are reset too in the real routine
         // but aren't modeled here yet (vibrato isn't used by Contra's
         // real sound data, and pitch-adjust is high-format-only).
     }
 
     /// Advances this slot by one frame. `prg_rom` must be the same ROM
-    /// `sound_code_start` was resolved against. Returns `None` if the
-    /// slot is inactive.
-    pub fn step_low(&mut self, prg_rom: &[u8]) -> Option<FrameOutput> {
+    /// `sound_code_start` was resolved against; `scratch` is this frame's
+    /// `SOUND_VOL_ENV,4`/`,5` aliasing source (see the module doc
+    /// comment). Returns `None` if the slot is inactive.
+    pub fn step_low(&mut self, prg_rom: &[u8], scratch: SharedScratch) -> Option<FrameOutput> {
         if !self.active {
             return None;
         }
@@ -214,7 +272,7 @@ impl SoundSlot {
                 cfg_low: self.cfg_low,
                 cfg_high: self.cfg_high,
                 period: self.period,
-                pulse_volume_source: self.sustain_volume_source(),
+                pulse_volume_source: self.sustain_volume_source(prg_rom, scratch),
             });
         }
 
@@ -313,12 +371,55 @@ impl SoundSlot {
         }
     }
 
-    fn sustain_volume_source(&mut self) -> PulseVolumeSource {
-        // Placeholder for @check_pulse_volume's real branch (decrescendo
-        // vs. lvl_config_pulse, gated by SOUND_FLAGS bits this struct
-        // doesn't track yet) - see the module doc comment's "What's not
-        // verified yet".
-        PulseVolumeSource::Unchanged
+    /// `@check_pulse_volume`'s full branch structure - see this module's
+    /// doc comment for the aliasing background and [`PulseVolumeSource`]
+    /// for what each outcome means.
+    fn sustain_volume_source(&mut self, prg_rom: &[u8], scratch: SharedScratch) -> PulseVolumeSource {
+        // `SOUND_VOL_ENV,x` bit 7 (`lower_pulse_volume`'s trigger) is
+        // provably unreachable here: the aliased value (see below) is
+        // always < 0x80 for both slots. Skipping straight to
+        // @check_volume_source's own branch matches real control flow
+        // exactly for these two slots specifically.
+        if !self.envelope_disabled {
+            let vol_env = match self.slot_index {
+                4 => scratch.init_sound_code,
+                5 => scratch.sound_chnl_reg_offset,
+                _ => unreachable!("SoundSlot only models slots 4 and 5"),
+            };
+            let entry_addr = crate::sound_code::pulse_volume_ptr_tbl_entry(prg_rom, vol_env);
+            let stream_start = bank1_prg_offset(entry_addr);
+            let byte = prg_rom[stream_start + self.lvl_pulse_vol_index as usize];
+            if byte >= 0xfe {
+                // 0xFE is provably dead in real data (see walk_pulse_
+                // volume's doc comment) - only the real 0xFF path here.
+                self.envelope_disabled = true;
+                return PulseVolumeSource::Unchanged;
+            }
+            self.lvl_pulse_vol_index = self.lvl_pulse_vol_index.wrapping_add(1);
+            self.pulse_volume = byte & 0x1f;
+            return PulseVolumeSource::Envelope(self.pulse_volume);
+        }
+
+        // handle_possible_decrescendo
+        if self.decrescendo_resuming {
+            // resume_decrescendo: dec, then `beq` checks the *result* for
+            // exactly zero (not a wrapped-negative check, unlike
+            // lower_pulse_volume) - handle_sound_code_exit_01 then
+            // increments it straight back to 1 and skips the config
+            // write, so PULSE_VOLUME pins at 1 from then on.
+            self.pulse_volume = self.pulse_volume.wrapping_sub(1);
+            if self.pulse_volume == 0 {
+                self.pulse_volume = 1;
+                return PulseVolumeSource::ResumingDecrescendo(None);
+            }
+            PulseVolumeSource::ResumingDecrescendo(Some(self.pulse_volume))
+        } else {
+            // check_decrescendo_end_pause
+            if self.cmd_length < self.decrescendo_end_pause {
+                self.decrescendo_resuming = true;
+            }
+            PulseVolumeSource::Unchanged
+        }
     }
 }
 
@@ -556,7 +657,8 @@ mod tests {
         // hand trace and real gameplay via trace_sound.rs).
         let data = [0x21, 0x30, 0x40, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x21, 0xf0, 0xf8, 0x20, 0x0a, 0xf8, 0x10, 0x0b, 0xff];
         let mut slot = SoundSlot::default();
-        slot.trigger(0x03, 0);
+        slot.trigger(4, 0x03, 0);
+        let scratch = SharedScratch::default();
 
         // Real trace: triggering sound_03 and stepping once lands on the
         // first note with cmd_length=1, cfg_low=4, cfg_high=0x30,
@@ -564,7 +666,7 @@ mod tests {
         // (frame=733 POST in the captured trace: len=0x01 cfglo=0x04
         // cfghi=0x30, and command pointer past both the SetLengthAndConfig
         // and first Note command).
-        let out = slot.step_low(&data).unwrap();
+        let out = slot.step_low(&data, scratch).unwrap();
         assert!(out.new_note);
         assert_eq!(out.cfg_low, 4);
         assert_eq!(out.cfg_high, 0x30);
@@ -575,7 +677,7 @@ mod tests {
         // Next frame: length_multiplier was 1, so this immediately reads
         // the next note too (matches the real trace's cmd advancing
         // every single frame for this specific sound).
-        let out2 = slot.step_low(&data).unwrap();
+        let out2 = slot.step_low(&data, scratch).unwrap();
         assert!(out2.new_note);
         assert_eq!(out2.cfg_low, 0);
         assert_eq!(out2.period, 0x00);

@@ -57,8 +57,10 @@ byte-identical against `contra-nes`'s live state before being trusted -
 frame-by-frame playback engine for that audio bytecode (not just decoding
 it, but actually stepping it forward in time the way the real 6502
 interpreter does) exists and is verified against real gameplay for both
-sound effects and music/percussion, with volume-envelope data and
-cross-channel priority arbitration still open. The **CPU game-logic side
+sound effects and music/percussion, including the real, verified
+volume-envelope table for sound effects; cross-channel priority
+arbitration and the same envelope path for music slots are still open.
+The **CPU game-logic side
 is still early** - two routines ported and verified
 (`collision::bg_collision`, `player_physics`) out of what's realistically
 hundreds across 8 PRG banks. The payoff, once enough of the logic side is
@@ -135,7 +137,7 @@ outright: click "LOAD ROM..." for a native file picker, or drag and drop a
 | Level editor, randomizer, netcode, roguelike, etc. | Not started - see ROADMAP.md |
 | **Native decompilation port** (`contra-native`, not yet used by `contra-pc` at runtime) | |
 | Asset extraction (graphics, palettes, all 8 levels, outdoor enemy spawns, DPCM samples, full sound_code bytecode) | Ported and verified byte-identical against `contra-nes`'s live state; `contra-extract` dumps all of it from a user's own ROM - see docs/NATIVE_PORT.md |
-| Audio playback engine (frame-by-frame sound_code interpreter, effects + music/percussion) | Built and verified against real gameplay; volume-envelope table data and cross-channel priority arbitration still open - see docs/NATIVE_PORT.md |
+| Audio playback engine (frame-by-frame sound_code interpreter, effects + music/percussion) | Built and verified against real gameplay, incl. the real volume-envelope table for sound effects (197/199 exact vs. real gameplay); the same envelope path for music slots and cross-channel priority arbitration still open - see docs/NATIVE_PORT.md |
 | CPU game logic (collision, physics, enemy AI, weapons, ...) | 2 routines ported and verified (`collision::bg_collision`, `player_physics`) out of realistically hundreds |
 
 See [ROADMAP.md](ROADMAP.md) for the full three-phase plan, with every item

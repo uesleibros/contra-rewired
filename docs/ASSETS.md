@@ -162,17 +162,19 @@ mismatches cluster around the same two already-understood causes above
 (trigger-frame observation timing, and NMI-reentrancy/lag), not new
 bugs.
 
-**Two of the three missing data tables are ported too, both verified
+**All three missing data tables are ported now, each verified
 byte-for-byte against the real ROM.** `sound_code::NOTE_PERIOD_TBL` (24
 real APU period values) resolves a music note's pitch; `sound_code::
 PERCUSSION_TBL` (8 sound codes) resolves which DMC sample or sound_code a
-percussion trigger actually plays. The volume-envelope table
-(`pulse_volume_ptr_tbl`) turned out to be a per-level array of pointers
-to many separate envelope byte streams - genuinely its own extraction
-workstream (comparable in scope to the enemy-spawn or level-data
-extraction already done elsewhere in this document), left for a
-follow-up rather than rushed. Still not started: that envelope data, and
-cross-slot channel-priority arbitration.
+percussion trigger actually plays; `sound_code::PULSE_VOLUME_PTR_TBL` (54
+pointers to volume-envelope byte streams, extracted programmatically and
+confirmed by mechanically walking all 54 real streams to a genuine
+terminator) resolves a note's volume envelope. That last one is wired
+into `sound_engine::SoundSlot`'s sustain path, turning what used to be a
+symbolic "not yet resolved" marker into a real, verified `PULSE_VOLUME`
+value - 197/199 exact matches against real gameplay across a 900-frame
+session. Still not started: wiring that same envelope path into the
+music-slot engine, and cross-slot channel-priority arbitration.
 
 Indoor-level enemy placement (levels 2 and 4) uses a different, undecoded
 format. See docs/NATIVE_PORT.md's "Current status" for the up-to-date

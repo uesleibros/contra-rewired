@@ -46,12 +46,15 @@
 
 use contra_nes::controller::*;
 use contra_nes::{Mirroring, Nes};
-use contra_native::sound_engine::SoundSlot;
+use contra_native::sound_engine::{SharedScratch, SoundSlot};
 
 const SOUND_CODE: u16 = 0x106;
 const SOUND_CMD_LENGTH: u16 = 0x100;
 const SOUND_CFG_LOW: u16 = 0x142;
 const SOUND_CFG_HIGH: u16 = 0x14e;
+const PULSE_VOLUME: u16 = 0x160;
+const INIT_SOUND_CODE: u16 = 0x0122;
+const SOUND_CHNL_REG_OFFSET: u16 = 0x0123;
 
 const SOUND_TABLE_00_PRG_OFFSET: usize = 0x48E8;
 
@@ -118,6 +121,14 @@ fn main() {
         nes.set_controller(0, buttons);
         nes.run_frame();
 
+        // SOUND_VOL_ENV,4/,5's aliasing source - see sound_engine's
+        // module doc comment. Sampled once per frame since it's shared
+        // (not per-slot) real RAM.
+        let scratch = SharedScratch {
+            init_sound_code: nes.peek_ram(INIT_SOUND_CODE),
+            sound_chnl_reg_offset: nes.peek_ram(SOUND_CHNL_REG_OFFSET),
+        };
+
         for (i, &slot) in slot_ids.iter().enumerate() {
             let real_code = nes.peek_ram(SOUND_CODE + slot);
             if real_code != 0 && prev_code[i] == 0 {
@@ -129,7 +140,7 @@ fn main() {
                 // (SOUND_CMD_LENGTH starts at 1), so that RAM already
                 // points past the start.
                 let mut engine = SoundSlot::default();
-                engine.trigger(real_code, sound_start_prg_offset(&prg_rom, real_code));
+                engine.trigger(slot as u8, real_code, sound_start_prg_offset(&prg_rom, real_code));
                 trackers[i].engine = Some(engine);
             }
 
@@ -137,18 +148,32 @@ fn main() {
                 if real_code == 0 {
                     trackers[i].engine = None;
                 } else {
-                    let out = engine.step_low(&prg_rom);
+                    let out = engine.step_low(&prg_rom, scratch);
                     trackers[i].checks += 1;
                     let real_cfg_low = nes.peek_ram(SOUND_CFG_LOW + slot);
                     let real_cfg_high = nes.peek_ram(SOUND_CFG_HIGH + slot);
                     let real_cmd_length = nes.peek_ram(SOUND_CMD_LENGTH + slot);
-                    let ok = out.is_some_and(|o| o.cfg_low == real_cfg_low && o.cfg_high == real_cfg_high && engine.cmd_length == real_cmd_length);
+                    let real_pulse_volume = nes.peek_ram(PULSE_VOLUME + slot);
+                    let ok = out.is_some_and(|o| {
+                        o.cfg_low == real_cfg_low
+                            && o.cfg_high == real_cfg_high
+                            && engine.cmd_length == real_cmd_length
+                            && (o.new_note || engine.pulse_volume == real_pulse_volume)
+                    });
                     if !ok {
                         trackers[i].mismatches += 1;
                         if trackers[i].mismatches <= 3 {
-                            println!(
-                                "frame={frame} slot={slot} MISMATCH out={out:?} real cfg_low={real_cfg_low:#04x} cfg_high={real_cfg_high:#04x} cmd_length={real_cmd_length:#04x} code={real_code:#04x}"
-                            );
+                            let cfg_ok = out.is_some_and(|o| o.cfg_low == real_cfg_low && o.cfg_high == real_cfg_high && engine.cmd_length == real_cmd_length);
+                            if cfg_ok {
+                                println!(
+                                    "frame={frame} slot={slot} PULSE_VOLUME MISMATCH engine={:#04x} real={real_pulse_volume:#04x} code={real_code:#04x}",
+                                    engine.pulse_volume
+                                );
+                            } else {
+                                println!(
+                                    "frame={frame} slot={slot} MISMATCH out={out:?} real cfg_low={real_cfg_low:#04x} cfg_high={real_cfg_high:#04x} cmd_length={real_cmd_length:#04x} code={real_code:#04x}"
+                                );
+                            }
                         }
                     }
                     if let Some(o) = out {

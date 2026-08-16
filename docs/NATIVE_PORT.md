@@ -717,17 +717,42 @@ replacement for its real 6502 code, cycle for cycle.
       `sound_code::PERCUSSION_TBL` (8 sound codes, `percussion_tbl` at
       CPU `$82CD`) resolves `HighNoteSource::Percussion`'s
       `percussion_tbl_index` to which DMC sample or sound_code
-      `play_percussive_sound` actually triggers. `pulse_volume_ptr_tbl`
-      (the volume-envelope table, referenced since the very first pass at
-      this workstream) turned out to be a substantially bigger table than
-      either - a per-level array of pointers to *many* separate envelope
-      byte streams (`lvl_1_pulse_volume_00`-`_07`, `lvl_2_...`, etc., one
-      set per level) - genuinely comparable in scope to the enemy-spawn or
-      level-data extraction workstreams (its own dedicated walk/verify
-      pass, not a quick add), so it's deliberately left for a follow-up
-      rather than rushed here. Full workspace build + test sweep green (47
-      `contra-native` tests, 32 `contra-nes` tests). Still not started:
-      `pulse_volume_ptr_tbl`'s real envelope data, and cross-slot
+      `play_percussive_sound` actually triggers.
+      **Follow-up, same session: the volume-envelope table
+      (`pulse_volume_ptr_tbl`) is ported and wired into the engine too.**
+      It turned out to be a flat, 54-entry pointer table (not split by
+      "level" at the code level despite the disassembly's own per-level
+      comment grouping - `SOUND_VOL_ENV,x`'s raw value indexes it
+      directly), each entry pointing to a separate volume-envelope byte
+      stream with a deliberately simple grammar (bytes are volume values
+      until a real `0xFF`; the `0xFE` control code is provably dead in
+      real data). Extracted programmatically from PRG-ROM (`sound_code::
+      PULSE_VOLUME_PTR_TBL`) rather than hand-transcribed, verified
+      byte-for-byte against the real ROM's 108 raw table bytes, and
+      cross-checked mechanically: all 54 real streams walk cleanly to a
+      genuine `0xFF` terminator with zero `0xFE` occurrences, confirming
+      the "dead code" claim empirically rather than just trusting the
+      disassembly's comment. Real hardware indexes this table with **no
+      bounds check** (`lda pulse_volume_ptr_tbl,y`), and slot 4's index
+      (the aliased `INIT_SOUND_CODE`) can genuinely exceed the table's 53
+      real entries - `sound_code::pulse_volume_ptr_tbl_entry` reproduces
+      that unchecked read against raw PRG-ROM bytes rather than panicking
+      or clamping, matching real behavior even in that edge case.
+      `sound_engine::SoundSlot`'s previously-placeholder sustain path now
+      implements `@check_pulse_volume`'s full reachable branch structure
+      (envelope-table read, table-exhausted transition, decrescendo
+      resume/pin-at-1) and resolves real `PULSE_VOLUME` values instead of
+      a symbolic "not yet resolved" marker - see `sound_engine`'s module
+      doc comment for exactly which branch (`lower_pulse_volume`) is
+      provably unreachable for these two slots specifically, and why.
+      Verified against real gameplay: 197/199 sustain-frame `PULSE_VOLUME`
+      comparisons matched exactly across a 900-frame session; the 2
+      remaining mismatches trace to the same already-documented NMI-
+      reentrancy verification-methodology gap, not a bug in the new logic.
+      Full workspace build + test sweep green (49 `contra-native` tests,
+      32 `contra-nes` tests). Still not started: wiring this same envelope
+      path into `MusicSlot` (slots #$00/#$01, where `lower_pulse_volume`
+      *is* reachable, unlike the low-format slots), and cross-slot
       channel-priority arbitration.
 - [x] **Enemy placement - hard-coded spawns for outdoor levels.**
       `contra-native::enemy_spawn` ports the fixed, same-every-playthrough

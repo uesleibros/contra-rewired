@@ -582,6 +582,93 @@ pub fn note_period(pitch_offset: u8) -> u16 {
 /// here only because the real ROM data is present regardless.
 pub const PERCUSSION_TBL: [u8; 8] = [0x02, 0x5a, 0x5b, 0x5a, 0x5b, 0x25, 0x5c, 0x5d];
 
+/// `pulse_volume_ptr_tbl` (`src/bank1.asm`, CPU address `$8001` - right
+/// after bank 1's own leading bank-number byte, so its PRG-ROM offset is
+/// [`bank1_prg_offset`]`(0x8001)`), verified byte-for-byte against the
+/// real ROM: 54 raw CPU addresses, each pointing to a separate volume-
+/// envelope byte stream (`lvl_x_pulse_volume_yy`). `lvl_config_pulse`
+/// indexes this table **flatly** by `SOUND_VOL_ENV,x`'s raw value
+/// (`SOUND_VOL_ENV,x * 2` as a byte offset) - the disassembly's own
+/// "level 1"-"level 7" comment groupings (reflected in this constant's
+/// doc-only grouping below) are organizational notes about which music
+/// track commonly uses that index range, not a separate runtime
+/// dispatch; nothing in the real code branches on "level number" here.
+/// Entries aren't address-sorted (e.g. index 40's `$a072` is *higher*
+/// than index 42's `$a088` but index 43 drops back to `$9e84`), so a
+/// stream's real length can only be found by walking forward from its
+/// own start until a `0xFF` terminator - see [`walk_pulse_volume`] -
+/// not by subtracting from the next table entry.
+#[rustfmt::skip]
+pub const PULSE_VOLUME_PTR_TBL: [u16; 54] = [
+    // "level 1" (indices 0-7)
+    0x91dd, 0x91e5, 0x91ea, 0x91f7, 0x9204, 0x9216, 0x9229, 0x923c,
+    // "level 2" (indices 8-15)
+    0xa3db, 0xa3e8, 0xa3ee, 0xa3f5, 0xa402, 0xa40f, 0xa706, 0xaa5f,
+    // "level 3" (indices 16-23)
+    0xaa6c, 0xaa73, 0xab04, 0xab11, 0xab1e, 0xab29, 0xaa78, 0x98ca,
+    // "level 4" (indices 24-31)
+    0x98d5, 0x98ea, 0x98f1, 0x98fd, 0x9904, 0x9909, 0x9915, 0x991c,
+    // "level 5" (indices 32-39)
+    0x9928, 0x9e71, 0x9e7d, 0x9c43, 0x9c50, 0x9c59, 0x9c65, 0xa064,
+    // "level 6" (indices 40-47)
+    0xa072, 0xa080, 0xa088, 0x9e84, 0x9e90, 0x9e9c, 0xa713, 0xa71b,
+    // "level 7" (indices 48-53, only 6 entries - no "level 8" group)
+    0xa728, 0xabd2, 0xabda, 0xabea, 0xabeb, 0xaa85,
+];
+
+/// `pulse_volume_ptr_tbl`'s CPU address (`$8001`) as a PRG-ROM offset -
+/// bank 1's fixed leading byte (`.byte $01`, the bank number) puts the
+/// table at [`bank1_prg_offset`]`(0x8001)` exactly.
+const PULSE_VOLUME_PTR_TBL_PRG_OFFSET: usize = 0x4001;
+
+/// Reads `pulse_volume_ptr_tbl[table_index]` **directly from raw PRG-ROM
+/// bytes** rather than [`PULSE_VOLUME_PTR_TBL`]'s curated 54-entry array -
+/// deliberately, because `lvl_config_pulse`'s real 6502 code does
+/// unchecked absolute-indexed addressing (`lda pulse_volume_ptr_tbl,y`)
+/// with **no bounds check** against the table's real size. For low-format
+/// slots #$04/#$05, the index fed in here is `SOUND_VOL_ENV,x`'s aliased
+/// value (see `sound_engine`'s module doc comment on that aliasing) -
+/// slot 5's is always the in-bounds `0x0C`, but slot 4's is
+/// `INIT_SOUND_CODE` (the most recently triggered sound code, up to
+/// `0x5D`), which can genuinely exceed the table's 53 real entries and
+/// read whatever ROM bytes happen to sit right after it - a real,
+/// deterministic (if nonsensical) hardware behavior this function
+/// reproduces exactly rather than panicking or clamping.
+pub fn pulse_volume_ptr_tbl_entry(prg_rom: &[u8], table_index: u8) -> u16 {
+    let base = PULSE_VOLUME_PTR_TBL_PRG_OFFSET + table_index as usize * 2;
+    u16::from_le_bytes([prg_rom[base], prg_rom[base + 1]])
+}
+
+/// Byte length of one `lvl_x_pulse_volume_yy` envelope stream starting at
+/// `prg_rom[start_offset]`, including the terminating `0xFF` - ported
+/// from `lvl_pulse_volume_byte`/`lvl_pulse_volume_ctrl_code`
+/// (`src/bank1.asm`). The grammar is deliberately simple: any byte
+/// `< 0xFE` is a volume value and the stream continues; `0xFF` ends it.
+/// `0xFE` ("set new read offset from the next byte") is real, decoded
+/// grammar in the ROM but is provably dead code - the disassembly's own
+/// comment states no real `lvl_x_pulse_volume_yy` byte is ever `0xFE`,
+/// confirmed by every one of the 54 real streams walking cleanly to a
+/// `0xFF` without needing it.
+pub fn walk_pulse_volume(prg_rom: &[u8], start_offset: usize) -> usize {
+    let mut pos = start_offset;
+    loop {
+        let b = prg_rom[pos];
+        pos += 1;
+        if b == 0xff {
+            return pos - start_offset;
+        }
+        assert_ne!(b, 0xfe, "real Contra data never uses the 0xFE control code - see this function's doc comment");
+    }
+}
+
+/// Decodes one `lvl_x_pulse_volume_yy` envelope stream into its real
+/// volume values (`& 0x1F`, matching `lvl_pulse_volume_byte`'s own
+/// mask), not including the terminating `0xFF`.
+pub fn decode_pulse_volume(prg_rom: &[u8], start_offset: usize) -> Vec<u8> {
+    let len = walk_pulse_volume(prg_rom, start_offset);
+    prg_rom[start_offset..start_offset + len - 1].iter().map(|b| b & 0x1f).collect()
+}
+
 /// Walks `walk_low` recursively through every child blob too, returning
 /// `(top_level_prg_offset, extent)` for the whole family - the top-level
 /// sound_code plus every `0xFD`/`0xFE`-referenced child, transitively.
@@ -845,6 +932,45 @@ mod tests {
         // disassembly's own worked frequency comments.
         assert_eq!(note_period(0), 0x06ae);
         assert_eq!(note_period(23), 0x01c5);
+    }
+
+    #[test]
+    fn pulse_volume_ptr_tbl_matches_the_real_108_rom_bytes() {
+        #[rustfmt::skip]
+        let real_bytes: [u8; 108] = [
+            0xdd, 0x91, 0xe5, 0x91, 0xea, 0x91, 0xf7, 0x91, 0x04, 0x92, 0x16, 0x92, 0x29, 0x92, 0x3c, 0x92,
+            0xdb, 0xa3, 0xe8, 0xa3, 0xee, 0xa3, 0xf5, 0xa3, 0x02, 0xa4, 0x0f, 0xa4, 0x06, 0xa7, 0x5f, 0xaa,
+            0x6c, 0xaa, 0x73, 0xaa, 0x04, 0xab, 0x11, 0xab, 0x1e, 0xab, 0x29, 0xab, 0x78, 0xaa, 0xca, 0x98,
+            0xd5, 0x98, 0xea, 0x98, 0xf1, 0x98, 0xfd, 0x98, 0x04, 0x99, 0x09, 0x99, 0x15, 0x99, 0x1c, 0x99,
+            0x28, 0x99, 0x71, 0x9e, 0x7d, 0x9e, 0x43, 0x9c, 0x50, 0x9c, 0x59, 0x9c, 0x65, 0x9c, 0x64, 0xa0,
+            0x72, 0xa0, 0x80, 0xa0, 0x88, 0xa0, 0x84, 0x9e, 0x90, 0x9e, 0x9c, 0x9e, 0x13, 0xa7, 0x1b, 0xa7,
+            0x28, 0xa7, 0xd2, 0xab, 0xda, 0xab, 0xea, 0xab, 0xeb, 0xab, 0x85, 0xaa,
+        ];
+        for (i, entry) in PULSE_VOLUME_PTR_TBL.iter().enumerate() {
+            let expected = u16::from_le_bytes([real_bytes[i * 2], real_bytes[i * 2 + 1]]);
+            assert_eq!(*entry, expected, "entry {i}");
+        }
+
+        // pulse_volume_ptr_tbl_entry (unchecked raw-ROM read) must agree
+        // with the curated array for every in-bounds index.
+        let mut prg_rom = vec![0u8; PULSE_VOLUME_PTR_TBL_PRG_OFFSET + real_bytes.len()];
+        prg_rom[PULSE_VOLUME_PTR_TBL_PRG_OFFSET..].copy_from_slice(&real_bytes);
+        for i in 0..PULSE_VOLUME_PTR_TBL.len() {
+            assert_eq!(pulse_volume_ptr_tbl_entry(&prg_rom, i as u8), PULSE_VOLUME_PTR_TBL[i], "index {i}");
+        }
+    }
+
+    #[test]
+    fn lvl_1_pulse_volume_00_and_01_match_their_real_bytes_and_lengths() {
+        // Real bytes at $91dd (lvl_1_pulse_volume_00) and $91e5
+        // (lvl_1_pulse_volume_01, which starts exactly 8 bytes later -
+        // consistent with pulse_volume_ptr_tbl's own address delta,
+        // confirming the walker's terminator detection independently).
+        let data = [0x05, 0x06, 0x07, 0x06, 0x05, 0x04, 0x03, 0xff, 0x03, 0x04, 0x03, 0x02, 0xff];
+        assert_eq!(walk_pulse_volume(&data, 0), 8);
+        assert_eq!(decode_pulse_volume(&data, 0), vec![5, 6, 7, 6, 5, 4, 3]);
+        assert_eq!(walk_pulse_volume(&data, 8), 5);
+        assert_eq!(decode_pulse_volume(&data, 8), vec![3, 4, 3, 2]);
     }
 
     #[test]

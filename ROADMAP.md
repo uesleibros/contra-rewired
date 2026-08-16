@@ -217,17 +217,19 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       new-note commands is the clearest evidence the core decoding logic
       is right. See docs/NATIVE_PORT.md's "Current status" for the full
       breakdown.
-      **Same session: two of the three missing data tables are ported
-      too**, both verified byte-for-byte against the real ROM -
-      `NOTE_PERIOD_TBL` (24 real APU periods) and `PERCUSSION_TBL` (8
-      sound codes). `pulse_volume_ptr_tbl` (the volume-envelope table)
-      turned out to be a per-level array of pointers to many separate
-      envelope byte streams - its own dedicated extraction workstream,
-      comparable in scope to enemy-spawn/level-data extraction, left for a
-      follow-up rather than rushed. See docs/NATIVE_PORT.md's "Current
-      status" for the full breakdown, including what's still not started
-      (`pulse_volume_ptr_tbl`'s real data, and channel-priority
-      arbitration).
+      **Same session: all three missing data tables are ported now**,
+      each verified byte-for-byte against the real ROM - `NOTE_PERIOD_TBL`
+      (24 real APU periods), `PERCUSSION_TBL` (8 sound codes), and
+      `pulse_volume_ptr_tbl` (54 pointers to volume-envelope byte streams,
+      extracted programmatically and confirmed by mechanically walking all
+      54 real streams to a genuine terminator). That last one is now wired
+      into `sound_engine::SoundSlot`'s previously-placeholder sustain path
+      too - real `PULSE_VOLUME` values instead of a symbolic marker,
+      verified 197/199 exact against real gameplay (the 2 remaining are
+      the already-documented NMI-reentrancy methodology gap, not a bug).
+      See docs/NATIVE_PORT.md's "Current status" for the full breakdown,
+      including what's still not started (the same envelope path wired
+      into `MusicSlot`, and channel-priority arbitration).
       **Enemy placement - hard-coded spawns**: ported
       each outdoor level's fixed per-screen enemy list
       (`contra-native::enemy_spawn`) - not the *random* soldier generation
