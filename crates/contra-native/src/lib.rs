@@ -48,11 +48,10 @@
 //!
 //! ## Current status
 //!
-//! Just started - see docs/NATIVE_PORT.md. `collision::bg_collision` is the
-//! first port, chosen because it's small, self-contained, referenced by a
-//! lot of other game logic (soldier generation, player collision, the
-//! `get_bg_collision` Lua debug scripts already published in
-//! `nes-contra-us/docs/lua_scripts`), and has no dependency on any other
-//! not-yet-ported routine.
+//! Just started - see docs/NATIVE_PORT.md for the up-to-date list.
+//! `collision::bg_collision` and `player_physics` are ported and verified
+//! so far; everything else in the game (realistically hundreds more
+//! routines) is not.
 
 pub mod collision;
+pub mod player_physics;

@@ -21,22 +21,33 @@ change to what this project fundamentally *is*: a real, decompilation-style
 port (Ship of Harkinian/SM64-decomp style) instead of an emulator with
 quality-of-life layers on top. Full plan, methodology, and honest current
 status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
-- [x] **Verified byte-matching source located**
-      (`vermiceli/nes-contra-us`) and **instruction-hook infrastructure
-      built** (`Nes::run_frame_with_hook`) to use `contra-nes` itself as a
-      reference oracle - real gameplay run through the emulator becomes
-      test cases a native port must reproduce exactly, which is what makes
-      this tractable without months of unverifiable guessing
-- [x] **First routine ported and verified**: `collision::bg_collision`
+- [x] **Verified byte-matching source, personally confirmed** - built
+      `cc65` from source (MSYS2 mingw64 gcc/make) and reassembled
+      `vermiceli/nes-contra-us` against our own `baserom.nes`: byte-for-byte
+      identical (`cmp` clean, matching MD5s), not just a trusted claim
+      anymore. Also unlocked `docs/rom-symbols.txt` - a full address table
+      for ~4000 named routines/variables extracted from the build's debug
+      symbols, replacing manual ROM-byte-searching for anything it covers
+- [x] **Instruction-hook infrastructure built** (`Nes::run_frame_with_hook`)
+      to use `contra-nes` itself as a reference oracle - real gameplay run
+      through the emulator becomes test cases a native port must reproduce
+      exactly, which is what makes this tractable without months of
+      unverifiable guessing
+- [x] **Two routines ported and verified**: `collision::bg_collision` and
+      `player_physics::{apply_gravity, integrate_y_position}`
       (`crates/contra-native`) - zero mismatches against real gameplay
-      across multiple thousand-frame sessions
+      across multiple thousand-frame sessions each, including stage jumps
+      for varied terrain/state. The gravity port surfaced a real
+      methodology lesson - some routines have more than one genuine entry
+      point, and hooking only the "obvious" combined one can silently
+      verify almost nothing - see docs/NATIVE_PORT.md
 - [ ] **Everything else** - realistically hundreds more routines. No
       specific next-routine commitment or timeline; docs/NATIVE_PORT.md is
       the place this gets updated as real ports land
 - [ ] **Integration**: a verified port doesn't run in place of the emulated
       routine yet - that needs a hook that redirects execution (compute the
       native version's effect, write it back, skip past the 6502 code) and
-      hasn't been built. Not worth building before there's more than one
+      hasn't been built. Worth starting now that there's more than one
       routine to switch in - tracked in docs/NATIVE_PORT.md
 - [ ] **The actual payoff features this unlocks** - widescreen-aware enemy
       spawning being the clearest one (see docs/FIDELITY.md's "Enemies/

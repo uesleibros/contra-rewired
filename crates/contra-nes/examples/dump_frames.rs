@@ -225,6 +225,73 @@ fn main() {
                     nes.peek_ram(0x0578 + o),
                 );
             }
+        } else if std::env::var("VERIFY_PLAYER_GRAVITY").is_ok() {
+            // VERIFY_PLAYER_GRAVITY=1: verification pass for
+            // `contra_native::player_physics`. `apply_gravity` and
+            // `integrate_y_position` (= `player_jumping_set_y_pos`) are
+            // hooked *independently* at their own entries/exits, not just
+            // via the combined `apply_gravity_set_y_pos` entry - most real
+            // jump processing (`set_jump_status_and_y_velocity`) calls
+            // `apply_gravity` directly and conditionally calls
+            // `player_jumping_set_y_pos` separately (skipping it on a
+            // frame that scrolled vertically instead), so hooking only the
+            // combined entry sees near zero real calls. Hooking both
+            // routines' own entries/exits catches every real invocation
+            // pattern, since even the combined-entry path's `jsr
+            // apply_gravity` still passes through `apply_gravity`'s own
+            // entry, and its `rts` returns straight into `player_jumping_
+            // set_y_pos`'s own entry immediately after.
+            use contra_native::player_physics::{apply_gravity, integrate_y_position, YPositionState, YVelocity};
+            let mut pending_gravity: Option<(u8, YVelocity)> = None;
+            let mut pending_integrate: Option<(u8, YVelocity, YPositionState)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xD9EC => {
+                        pending_gravity = Some((cpu.x, YVelocity { fract: bus.ram[0xC4 + x], fast: bus.ram[0xC6 + x] }));
+                    }
+                    0xD9F9 => {
+                        if let Some((px, v)) = pending_gravity.take() {
+                            let px = px as usize;
+                            let expected = apply_gravity(v);
+                            let (real_fract, real_fast) = (bus.ram[0xC4 + px], bus.ram[0xC6 + px]);
+                            checked += 1;
+                            if expected.fract != real_fract || expected.fast != real_fast {
+                                eprintln!(
+                                    "MISMATCH(gravity) frame={frame} player={px} in={v:?}: expected fract=${:02X} fast=${:02X}, got fract=${real_fract:02X} fast=${real_fast:02X}",
+                                    expected.fract, expected.fast
+                                );
+                            }
+                        }
+                    }
+                    0xD9CB => {
+                        let v = YVelocity { fract: bus.ram[0xC4 + x], fast: bus.ram[0xC6 + x] };
+                        let state = YPositionState { y_pos: bus.ram[0x031A + x], jump_coefficient: bus.ram[0x94 + x], hidden: bus.ram[0xBA + x] };
+                        pending_integrate = Some((cpu.x, v, state));
+                    }
+                    0xD9E9 => {
+                        if let Some((px, v, state)) = pending_integrate.take() {
+                            let px = px as usize;
+                            let expected = integrate_y_position(v, state);
+                            let real_jump_coeff = bus.ram[0x94 + px];
+                            let real_y_pos = bus.ram[0x031A + px];
+                            let real_hidden = cpu.a;
+                            checked += 1;
+                            if expected.jump_coefficient != real_jump_coeff || expected.y_pos != real_y_pos || expected.hidden != real_hidden {
+                                eprintln!(
+                                    "MISMATCH(integrate) frame={frame} player={px} in={v:?}/{state:?}: expected jump_coeff=${:02X} y_pos=${:02X} hidden=${:02X}, got jump_coeff=${real_jump_coeff:02X} y_pos=${real_y_pos:02X} hidden=${real_hidden:02X}",
+                                    expected.jump_coefficient, expected.y_pos, expected.hidden
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            });
+            if frame % 200 == 0 && checked > 0 {
+                eprintln!("frame={frame}: {checked} player-gravity calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
