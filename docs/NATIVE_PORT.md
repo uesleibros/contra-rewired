@@ -466,7 +466,30 @@ replacement for its real 6502 code, cycle for cycle.
       failure path (`bullet_gen_exit`, no free slot) wasn't observed live
       this session - noted honestly, matches this port's unit test only
       so far. Not yet integrated live, same status as every routine above.
-- [ ] Everything else, logic side. Eight routines out of what's
+- [x] **`create_enemy_bullet_angle_a`**
+      (`crates/contra-native/src/create_enemy_bullet.rs`, same module) -
+      ported from `create_enemy_bullet_angle_a`/`create_enemy_bullet_if_
+      attack_enabled` (`bank7.asm`, `$f2bf`-`$f2e3`): `create_enemy_
+      bullet`'s real caller one level up. Computes the aim quadrant from
+      a raw angle byte (`quadrant_from_angle`, a direct mechanical
+      translation of the real chained `cmp #$07`/`cmp #$12`/`cmp #$0d`
+      sequence rather than a derived bucket list), then gates on
+      `ENEMY_ATTACK_FLAG` - except for one bullet type (the level 1
+      boss's large cannonball) that always fires regardless. Unit-tested
+      (all 4 quadrant boundaries exhaustively, the type-bits-vs-angle-bits
+      masking, both gating outcomes, the always-fire override). Live-
+      verified (`VERIFY_CREATE_ENEMY_BULLET_ANGLE_A=1`, hooking real entry
+      `$f2bf` - before the routine's own first two instructions move
+      `a`/`y` into `$0a`/`$06`, so the registers are read directly - and
+      the same two real exits `create_enemy_bullet` uses, since both real
+      failure reasons, attack-flag declined or `create_enemy_bullet`'s
+      own "no free slot", funnel to the identical shared exit): 17 real
+      calls across a 9000-frame session, with **both real outcomes
+      observed** - 12 successes (`ENEMY_ATTACK_FLAG=1`) and 5 real gate
+      rejections (`ENEMY_ATTACK_FLAG=0`, correctly producing no bullet) -
+      zero mismatches on either path. Not yet integrated live, same
+      status as every routine above.
+- [ ] Everything else, logic side. Nine routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

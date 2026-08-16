@@ -1,14 +1,20 @@
-//! Native port of `@create_enemy_bullet`/`set_bullet_velocities`/
-//! `bullet_gen_exit` (`src/bank7.asm`, CPU `$f2e4`-`$f333`) - the real
-//! "spawn an enemy bullet object" routine, composing three already-
-//! ported building blocks exactly the way the real ASM does:
+//! Native port of Contra's enemy-bullet creation chain, `src/bank7.asm`,
+//! CPU `$f2bf`-`$f333`: [`create_enemy_bullet`] (`@create_enemy_bullet`/
+//! `set_bullet_velocities`/`bullet_gen_exit`) is the real "spawn an enemy
+//! bullet object" routine, composing three already-ported building
+//! blocks exactly the way the real ASM does:
 //! [`crate::enemy_slots::find_next_enemy_slot`] (claim a slot),
 //! [`crate::initialize_enemy::initialize_enemy`] (set up its baseline
 //! fields), then [`crate::bullet_physics::calc_bullet_velocities`]
-//! (compute and write its velocity). A capstone of sorts - the first
-//! port in this crate that's *purely* composition of prior, independently
-//! live-verified routines, with no new 6502 control flow of its own
-//! beyond a couple of small caller-side transforms (see below).
+//! (compute and write its velocity) - the first port in this crate
+//! that's *purely* composition of prior, independently live-verified
+//! routines, with no new 6502 control flow of its own beyond a couple of
+//! small caller-side transforms (see below). [`create_enemy_bullet_angle_a`]
+//! (`create_enemy_bullet_angle_a`/`create_enemy_bullet_if_attack_enabled`)
+//! is its real caller one level up: computes the aim quadrant from a raw
+//! angle byte ([`quadrant_from_angle`]), gates on `ENEMY_ATTACK_FLAG`
+//! (except for one bullet type that always fires), then delegates to
+//! [`create_enemy_bullet`].
 //!
 //! ## Two caller-side transforms, not delegated to the routines below
 //!
@@ -89,6 +95,53 @@ pub fn create_enemy_bullet(
     Some(CreatedBullet { slot, enemy_type: ENEMY_TYPE_BULLET, hp: init.hp, fields })
 }
 
+/// `bullet_type_and_angle`'s top-3-bits value (`& 0xe0`) that always
+/// fires regardless of `ENEMY_ATTACK_FLAG` - the level 1 boss's large
+/// cannonball (type `1`, i.e. `0x20` once shifted into bits 5-7).
+const ALWAYS_FIRE_TYPE_BITS: u8 = 0x20;
+
+/// Native port of `create_enemy_bullet_angle_a`'s own quadrant
+/// computation (`bank7.asm`, `$f2bf`-`$f2d7`) - the one piece of new
+/// logic in that routine [`create_enemy_bullet`] doesn't already cover
+/// (which takes `quadrant` as a given input rather than computing it):
+/// buckets the angle (bits 0-4 of `bullet_type_and_angle`) into one of
+/// the 4 quadrant codes via two chained unsigned comparisons, exactly
+/// mirroring the real `cmp #$07`/`cmp #$12`/`cmp #$0d` sequence rather
+/// than a derived closed-form bucket list.
+pub fn quadrant_from_angle(bullet_type_and_angle: u8) -> u8 {
+    let angle = bullet_type_and_angle & 0x1f;
+    let mut y = if (7..18).contains(&angle) { 2 } else { 0 };
+    if angle >= 13 {
+        y += 1;
+    }
+    y
+}
+
+/// Native port of `create_enemy_bullet_angle_a` through
+/// `create_enemy_bullet_if_attack_enabled` into [`create_enemy_bullet`]
+/// itself (`bank7.asm`, `$f2bf`-`$f333`) - computes the quadrant from the
+/// angle via [`quadrant_from_angle`], then only actually spawns the
+/// bullet if `enemy_attack_flag` is nonzero *or* the bullet's type is the
+/// one that always fires regardless (see [`ALWAYS_FIRE_TYPE_BITS`]).
+#[allow(clippy::too_many_arguments)]
+pub fn create_enemy_bullet_angle_a(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_attack_flag: u8,
+    bullet_type_and_angle: u8,
+    speed_code: u8,
+    y_pos: u8,
+    x_pos: u8,
+) -> Option<CreatedBullet> {
+    let quadrant = quadrant_from_angle(bullet_type_and_angle);
+    let always_fires = bullet_type_and_angle & 0xe0 == ALWAYS_FIRE_TYPE_BITS;
+    if !always_fires && enemy_attack_flag == 0 {
+        return None;
+    }
+    create_enemy_bullet(prg_rom, enemy_routine, current_level, bullet_type_and_angle, speed_code, quadrant, y_pos, x_pos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +203,58 @@ mod tests {
         // aim_dir=0's X base ($ff) is nonzero, so speed 0 (halved) vs. 7
         // actually differ - a meaningful check, unlike Y's base ($00).
         assert_ne!(with_8.fields.x_velocity_fract, with_0.fields.x_velocity_fract);
+    }
+
+    #[test]
+    fn quadrant_from_angle_matches_the_real_boundaries() {
+        // Boundaries per the real cmp #$07/#$12/#$0d sequence: [0,7)->0,
+        // [7,13)->2, [13,18)->3, [18,32)->1 (angle masked to 5 bits, so
+        // this covers the full domain including values past the table's
+        // real 0-23 range).
+        for angle in 0..7u8 {
+            assert_eq!(quadrant_from_angle(angle), 0, "angle={angle}");
+        }
+        for angle in 7..13u8 {
+            assert_eq!(quadrant_from_angle(angle), 2, "angle={angle}");
+        }
+        for angle in 13..18u8 {
+            assert_eq!(quadrant_from_angle(angle), 3, "angle={angle}");
+        }
+        for angle in 18..32u8 {
+            assert_eq!(quadrant_from_angle(angle), 1, "angle={angle}");
+        }
+    }
+
+    #[test]
+    fn quadrant_from_angle_only_looks_at_the_low_5_bits() {
+        // A bullet-type-and-angle byte with type bits set (e.g. $23 =
+        // type 1, angle 3) must compute the same quadrant as angle 3
+        // alone.
+        assert_eq!(quadrant_from_angle(0x23), quadrant_from_angle(0x03));
+    }
+
+    #[test]
+    fn angle_a_does_not_fire_when_attack_flag_clear_and_not_always_fire_type() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT]; // plenty of free slots
+        // type bits = 0x00 (regular bullet, not the always-fire cannonball)
+        assert_eq!(create_enemy_bullet_angle_a(&rom, &routine, 0, 0, 0x00, 3, 10, 20), None);
+    }
+
+    #[test]
+    fn angle_a_fires_when_attack_flag_set() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let result = create_enemy_bullet_angle_a(&rom, &routine, 0, 1, 0x00, 3, 10, 20);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn angle_a_always_fires_for_the_level_1_boss_cannonball_type_regardless_of_attack_flag() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        // type bits = 0x20 (level 1 boss large cannonball), attack flag clear
+        let result = create_enemy_bullet_angle_a(&rom, &routine, 0, 0, 0x20, 3, 10, 20);
+        assert!(result.is_some());
     }
 }

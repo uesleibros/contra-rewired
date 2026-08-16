@@ -828,6 +828,86 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} create-enemy-bullet calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_CREATE_ENEMY_BULLET_ANGLE_A").is_ok() {
+            // VERIFY_CREATE_ENEMY_BULLET_ANGLE_A=1: verification pass for
+            // `contra_native::create_enemy_bullet::create_enemy_bullet_
+            // angle_a`. Entry ($f2bf) takes its inputs in registers a/y
+            // (bullet_type_and_angle/speed), stored to $0a/$06 by the
+            // routine's own first two instructions - hook *before* those
+            // run to read the real registers. Both real failure paths
+            // (attack-flag gate declined, or no free slot once
+            // `create_enemy_bullet` itself runs) funnel to the same
+            // shared exit as `create_enemy_bullet`'s own failure case
+            // ($f333, end of `bullet_gen_exit`) - no need to distinguish
+            // which one fired, the pure function returns `None` either
+            // way for the same real inputs.
+            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+            let mut pending: Option<([u8; ENEMY_SLOT_COUNT], u8, u8, u8, u8, u8, u8)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF2BF => {
+                        let mut snapshot = [0u8; ENEMY_SLOT_COUNT];
+                        snapshot.copy_from_slice(&bus.ram[0x04B8..0x04B8 + ENEMY_SLOT_COUNT]);
+                        pending = Some((
+                            snapshot,
+                            bus.ram[0x30], // current_level
+                            bus.ram[0x8E], // enemy_attack_flag
+                            cpu.a,         // bullet_type_and_angle
+                            cpu.y,         // speed_code
+                            bus.ram[0x08], // y_pos
+                            bus.ram[0x09], // x_pos
+                        ));
+                    }
+                    0xF32E | 0xF333 => {
+                        if let Some((snapshot, current_level, attack_flag, angle, speed, y_pos, x_pos)) = pending.take() {
+                            let expected = contra_native::create_enemy_bullet::create_enemy_bullet_angle_a(
+                                &prg_rom_copy,
+                                &snapshot,
+                                current_level,
+                                attack_flag,
+                                angle,
+                                speed,
+                                y_pos,
+                                x_pos,
+                            );
+                            let succeeded = cpu.pc == 0xF32E;
+                            checked += 1;
+                            match (expected, succeeded) {
+                                (None, false) => {
+                                    if cpu.a != 1 {
+                                        eprintln!(
+                                            "MISMATCH(create_enemy_bullet_angle_a) frame={frame}: expected failure a=1, got a={:02X}",
+                                            cpu.a
+                                        );
+                                    }
+                                }
+                                (Some(b), true) => {
+                                    let real_type = bus.ram[0x528 + b.slot as usize];
+                                    let real_hp = bus.ram[0x578 + b.slot as usize];
+                                    let real_fields = read_enemy_clear_fields(bus, b.slot as usize);
+                                    if cpu.a != 0 || real_type != b.enemy_type || real_hp != b.hp || real_fields != b.fields {
+                                        eprintln!(
+                                            "MISMATCH(create_enemy_bullet_angle_a) frame={frame} slot={}: expected {b:?}, got type={real_type:02X} hp={real_hp:02X} fields={real_fields:?} a={:02X}",
+                                            b.slot, cpu.a
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    eprintln!(
+                                        "MISMATCH(create_enemy_bullet_angle_a) frame={frame}: pure fn disagreed with which real exit fired (expected={expected:?}, real_exit_succeeded={succeeded})"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} create-enemy-bullet-angle-a calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
