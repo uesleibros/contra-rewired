@@ -375,7 +375,68 @@ replacement for its real 6502 code, cycle for cycle.
       many different slot indices, confirming the scan itself is
       exercised, not just a single trivial case), zero mismatches. Also not
       yet integrated live, same status as the two routines above.
-- [ ] Everything else, logic side. Five routines out of what's
+- [x] **`enemy_clear`** (`crates/contra-native/src/enemy_clear.rs`) -
+      ported from the `clear_enemy_*` family (`bank7.asm`, `$edf1`-`$ee46`):
+      3 real, reachable entry points (`clear_sprite_and_pt_3`,
+      `clear_enemy_custom_vars`, `clear_enemy_pt_2`) that zero
+      progressively wider, chained subsets of one enemy slot's fields.
+      The routine's own top label, `clear_enemy` (`$edfc`, which also
+      clears `ENEMY_ROUTINE`/`ENEMY_HP`/`ENEMY_TYPE`), is *not* ported -
+      its only caller (`bank_7_unused_label_07`) is the disassembly's own
+      documented dead code, genuinely unreachable. Unit-tested per entry
+      point (sentinel-filled struct, assert exactly the right fields hit
+      zero and every other field is untouched - including confirming
+      `clear_enemy_custom_vars` and `clear_enemy_pt_4` are byte-for-byte
+      identical, as the real ASM's shared fallthrough implies). Live-
+      verified (`VERIFY_ENEMY_CLEAR=1`, hooking all 3 real entry addresses
+      to snapshot every relevant field's pre-call value, and the one
+      shared exit - the `rts` right after `clear_enemy_pt_4`'s stores,
+      `$ee46` - to compare the real post-call RAM against the pure
+      function applied to that snapshot): 60 real calls across a
+      9000-frame session, zero mismatches. All 60 were the widest entry
+      point, `clear_enemy_pt_2` (`initialize_enemy`'s own real caller,
+      the universal per-spawn helper) - which transitively exercises
+      `clear_enemy_pt_3`/`_pt_4` for free, but means the other two named
+      entry points (`clear_sprite_and_pt_3`'s extra `sprites` clear,
+      `clear_enemy_custom_vars`) are unit-tested only so far, not yet
+      seen live (they need a dropped weapon pickup / specific enemy-death
+      state the current scripted playthrough doesn't reach) - noted
+      honestly rather than claimed as fully live-verified. Not yet
+      integrated live, same status as every routine above.
+- [x] **`initialize_enemy`** (`crates/contra-native/src/initialize_enemy.rs`)
+      - ported from `initialize_enemy` (`bank7.asm`, `$ee47`-`$ee8b`): the
+      universal "set up a freshly-claimed enemy slot" helper, composing
+      the already-ported `enemy_clear::clear_enemy_pt_2` with a per-
+      `(ENEMY_TYPE, CURRENT_LEVEL)` property lookup (`ENEMY_STATE_WIDTH`/
+      `ENEMY_SCORE_COLLISION`/`ENEMY_HP`/`ENEMY_VAR_A`, from
+      `enemy_prop_ptr_tbl`/`enemy_prop_00`-`_07`, `$ee8d`-`$efb7`).
+      **The property lookup reads raw PRG-ROM bytes at runtime instead of
+      a hand-transcribed table** - the disassembly's own inline comments
+      turned out to be unreliable evidence of the real indexing scheme
+      (they restart mid-table more than once, and one table is prefixed
+      with a section comment - `"; level 3 enemies"` above `enemy_prop_06`
+      - that flatly contradicts `enemy_prop_ptr_tbl`'s own real level
+      assignment for that label). Rather than guess, this port replicates
+      the CPU's exact byte-offset arithmetic (`ENEMY_TYPE < $10` selects
+      a shared pointer, else `CURRENT_LEVEL*2` selects a per-level one;
+      the actual record read is at `table_ptr + ENEMY_TYPE*4`, using the
+      raw type byte unadjusted) directly against the ROM's bytes - the
+      same approach `graphics`/`level`/`enemy_spawn` already use for
+      data too ambiguous or bulky to hand-copy. See this module's own doc
+      comment for the full reasoning; see this module's tests for the
+      routine's fields (`InitializedEnemy`'s `routine`/`hp`/`fields`,
+      wrapping `EnemyClearFields`) around synthetic PRG-ROM data. Live-
+      verified (`VERIFY_INITIALIZE_ENEMY=1`, hooking the real entry
+      address `$ee47` for `ENEMY_TYPE`/`CURRENT_LEVEL`, and the routine's
+      own single internal `rts` at `$ee8c` - immediately before the
+      `enemy_prop_ptr_tbl` label, one exit for every real caller - for the
+      real result): 60 real calls across a 9000-frame session, with real,
+      observed `ENEMY_TYPE` values `$01`-`$06` (shared-table path) *and*
+      `$12` (per-level-table path, `CURRENT_LEVEL=$00`) - confirming both
+      real branches of the property lookup, not just the common case -
+      zero mismatches. Not yet integrated live, same status as every
+      routine above.
+- [ ] Everything else, logic side. Seven routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

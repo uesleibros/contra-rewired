@@ -43,6 +43,34 @@ fn draw_rect_outline(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, bw: i3
     }
 }
 
+/// Reads one enemy slot's `enemy_clear`-relevant fields straight from real
+/// RAM - shared by `VERIFY_ENEMY_CLEAR` and `VERIFY_INITIALIZE_ENEMY`.
+fn read_enemy_clear_fields(bus: &contra_nes::bus::NesBus, x: usize) -> contra_native::enemy_clear::EnemyClearFields {
+    contra_native::enemy_clear::EnemyClearFields {
+        attributes: bus.ram[0x5A8 + x],
+        y_pos: bus.ram[0x324 + x],
+        x_pos: bus.ram[0x33E + x],
+        y_vel_accum: bus.ram[0x4C8 + x],
+        x_vel_accum: bus.ram[0x4D8 + x],
+        sprites: bus.ram[0x30A + x],
+        sprite_attr: bus.ram[0x358 + x],
+        y_velocity_fract: bus.ram[0x4F8 + x],
+        x_velocity_fract: bus.ram[0x518 + x],
+        y_velocity_fast: bus.ram[0x4E8 + x],
+        x_velocity_fast: bus.ram[0x508 + x],
+        animation_delay: bus.ram[0x538 + x],
+        var_a: bus.ram[0x548 + x],
+        attack_delay: bus.ram[0x558 + x],
+        frame: bus.ram[0x568 + x],
+        state_width: bus.ram[0x598 + x],
+        score_collision: bus.ram[0x588 + x],
+        var_1: bus.ram[0x5B8 + x],
+        var_2: bus.ram[0x5C8 + x],
+        var_3: bus.ram[0x5D8 + x],
+        var_4: bus.ram[0x5E8 + x],
+    }
+}
+
 fn save_png(path: &std::path::Path, fb: &[u32], w: usize, h: usize) {
     let file = std::fs::File::create(path).unwrap();
     let w_buf = BufWriter::new(file);
@@ -116,6 +144,12 @@ fn main() {
     let rom = contra_assets::NesRom::load(rom_path).expect("failed to load ROM");
     eprintln!("mapper={} prg_kib={} md5={}", rom.mapper, rom.prg_rom.len() / 1024, rom.md5_hex);
     let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
+    // VERIFY_INITIALIZE_ENEMY needs the raw PRG-ROM bytes itself (see
+    // `contra_native::initialize_enemy`'s doc comment for why it reads
+    // ROM bytes directly rather than a hand-transcribed table) - kept as
+    // a separate owned copy since `Nes::new` below takes ownership of
+    // `rom.prg_rom`.
+    let prg_rom_copy = rom.prg_rom.clone();
     let mut nes = Nes::new(rom.prg_rom, mirroring);
 
     // EXHAUSTIVE_BG_COLLISION_CYCLES=1: replaces both earlier cycle-cost
@@ -617,6 +651,104 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-slot calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ENEMY_CLEAR").is_ok() {
+            // VERIFY_ENEMY_CLEAR=1: verification pass for
+            // `contra_native::enemy_clear`'s 3 real, reachable entry
+            // points. All funnel into one shared exit (the `rts` right
+            // after `clear_enemy_pt_4`'s stores, $ee46) - hook entry to
+            // snapshot every touched field's *pre* value (enough fields
+            // to cover the widest entry point, `clear_enemy_pt_2`), hook
+            // the shared exit to read the *post* state and compare
+            // against applying the matching pure Rust function to the
+            // snapshot.
+            use contra_native::enemy_clear::{
+                clear_enemy_custom_vars, clear_enemy_pt_2, clear_sprite_and_pt_3, EnemyClearFields,
+            };
+            #[derive(Clone, Copy, Debug)]
+            enum EnemyClearEntry {
+                SpriteAndPt3,
+                CustomVars,
+                Pt2,
+            }
+            let mut pending: Option<(EnemyClearFields, usize, EnemyClearEntry)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xEDF1 | 0xEDF8 | 0xEE0A => {
+                        let x = cpu.x as usize;
+                        let entry = match cpu.pc {
+                            0xEDF1 => EnemyClearEntry::SpriteAndPt3,
+                            0xEDF8 => EnemyClearEntry::CustomVars,
+                            _ => EnemyClearEntry::Pt2,
+                        };
+                        pending = Some((read_enemy_clear_fields(bus, x), x, entry));
+                    }
+                    0xEE46 => {
+                        if let Some((before, x, entry)) = pending.take() {
+                            let mut expected = before;
+                            match entry {
+                                EnemyClearEntry::SpriteAndPt3 => clear_sprite_and_pt_3(&mut expected),
+                                EnemyClearEntry::CustomVars => clear_enemy_custom_vars(&mut expected),
+                                EnemyClearEntry::Pt2 => clear_enemy_pt_2(&mut expected),
+                            }
+                            let real = read_enemy_clear_fields(bus, x);
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(enemy_clear) frame={frame} x={x} before={before:?}: expected {expected:?}, got {real:?}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-clear calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_INITIALIZE_ENEMY").is_ok() {
+            // VERIFY_INITIALIZE_ENEMY=1: verification pass for
+            // `contra_native::initialize_enemy::initialize_enemy`. Normal
+            // jsr/rts with many real call sites - hook entry ($ee47) to
+            // capture ENEMY_TYPE[x] (already set by *this* routine's own
+            // caller) and CURRENT_LEVEL, and hook the routine's own single
+            // internal `rts` ($ee8c, immediately before the
+            // `enemy_prop_ptr_tbl` label - initialize_enemy has exactly
+            // one exit, no per-call-site workaround needed) to compare
+            // real ENEMY_ROUTINE/HP/the enemy_clear fields against
+            // `initialize_enemy` applied to the real PRG-ROM bytes.
+            let mut pending: Option<(usize, u8, u8)> = None; // (x, enemy_type, current_level)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xEE47 => {
+                        let x = cpu.x as usize;
+                        pending = Some((x, bus.ram[0x528 + x], bus.ram[0x30]));
+                    }
+                    0xEE8C => {
+                        if let Some((x, enemy_type, current_level)) = pending.take() {
+                            let expected = contra_native::initialize_enemy::initialize_enemy(&prg_rom_copy, enemy_type, current_level);
+                            let real = contra_native::initialize_enemy::InitializedEnemy {
+                                routine: bus.ram[0x4B8 + x],
+                                hp: bus.ram[0x578 + x],
+                                fields: read_enemy_clear_fields(bus, x),
+                            };
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(initialize_enemy) frame={frame} x={x} enemy_type=${enemy_type:02X} level=${current_level:02X}: expected {expected:?}, got {real:?}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} initialize-enemy calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();
