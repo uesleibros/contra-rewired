@@ -763,7 +763,35 @@ replacement for its real 6502 code, cycle for cycle.
       adding 4, not `$68` - the rounding step genuinely firing, not just
       passing through boundary-aligned inputs) - zero mismatches. Not yet
       integrated live, same status as every routine above.
-- [ ] Everything else, logic side. Twenty routines out of what's
+- [x] **`soldier::soldier_routine_00`** (`crates/contra-native/src/
+      soldier.rs`) - ported from `soldier_routine_00` (`bank0.asm`,
+      `$861e`-`$8633`): the soldier enemy's first AI state, run once
+      right after spawning - nudges its position down slightly (so it
+      visually stands on the ground) and sets a per-attribute initial
+      animation delay before advancing to `soldier_routine_01`. **This
+      crate's first composed enemy AI state** - every step is a call
+      into an already independently-verified building block
+      (`add_scroll_to_enemy_pos`, `update_enemy_pos::remove_enemy`,
+      `enemy_position_utils::add_4_to_enemy_y_pos`, `enemy_routine_
+      transition::set_enemy_delay_adv_routine`), no new arithmetic of
+      its own beyond a 4-bit attribute shift and a 4-entry table lookup -
+      the real ASM composes the exact same 4 calls. Faithfully ported
+      the real "runs regardless" ordering too: even when `add_scroll_to_
+      enemy_pos` decides to remove the enemy, the rest of the routine
+      (position offset, animation delay store, guarded routine advance)
+      still executes - the guard on the last step just naturally rejects
+      since removal already zeroed `ENEMY_ROUTINE`. Unit-tested (the
+      normal-advance path cross-checked against each composed step
+      called directly, all 4 real animation-delay-table entries, and the
+      off-screen-removal path's "still runs the rest, guard rejects"
+      behavior). Live-verified (`VERIFY_SOLDIER_ROUTINE_00=1`, hooking
+      real entry `$861e` and the same 2 shared exits `enemy_routine_
+      transition`'s own pass uses): 11 real calls across a 9000-frame
+      session, zero mismatches - the first full multi-step enemy AI
+      state confirmed correct end-to-end against real gameplay, not just
+      its individual pieces in isolation. Not yet integrated live, same
+      status as every routine above.
+- [ ] Everything else, logic side. Twenty-one routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

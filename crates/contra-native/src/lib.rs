@@ -83,6 +83,7 @@ pub mod palette;
 pub mod player_enemy_distance;
 pub mod player_physics;
 pub mod quadrant_aim_dir;
+pub mod soldier;
 pub mod sound_code;
 pub mod sound_engine;
 pub mod supertile;

@@ -1685,6 +1685,58 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} vert-scroll-y-add calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_SOLDIER_ROUTINE_00").is_ok() {
+            // VERIFY_SOLDIER_ROUTINE_00=1: verification pass for
+            // `contra_native::soldier::soldier_routine_00` - this
+            // crate's first *composed* enemy AI state port. Real entry
+            // $861e; real exits are the same 2 shared ones `enemy_
+            // routine_transition`'s own verification pass uses ($e796
+            // success, $e813 guard-rejected/removed), since this routine
+            // ends with a real `jmp set_enemy_delay_adv_routine`.
+            use contra_native::soldier::soldier_routine_00;
+            let mut pending: Option<(usize, u8, u8, u8, u8, u8, u8, u8)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x861E => {
+                        let x = cpu.x as usize;
+                        pending = Some((
+                            x,
+                            bus.ram[0x41],       // level_scrolling_type
+                            bus.ram[0x68],       // frame_scroll
+                            bus.ram[0xFC],       // vertical_scroll
+                            bus.ram[0x33E + x],  // enemy_x_pos
+                            bus.ram[0x324 + x],  // enemy_y_pos
+                            bus.ram[0x5A8 + x],  // enemy_attributes
+                            bus.ram[0x4B8 + x],  // current_routine
+                        ));
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some((x, scroll_type, frame_scroll, vscroll, x_pos, y_pos, attrs, routine)) = pending.take() {
+                            let expected = soldier_routine_00(scroll_type, frame_scroll, vscroll, x_pos, y_pos, attrs, routine);
+                            let real_x = bus.ram[0x33E + x];
+                            let real_y = bus.ram[0x324 + x];
+                            let real_routine = bus.ram[0x4B8 + x];
+                            let real_delay = bus.ram[0x538 + x];
+                            checked += 1;
+                            let mismatch = expected.scroll.x_pos != real_x
+                                || expected.y_pos_after_offset != real_y
+                                || expected.delayed_routine.routine_update.routine != real_routine
+                                || expected.delayed_routine.animation_delay != real_delay;
+                            if mismatch {
+                                eprintln!(
+                                    "MISMATCH(soldier_routine_00) frame={frame} in=(scroll_type={scroll_type:02X} frame_scroll={frame_scroll:02X} vscroll={vscroll:02X} x={x_pos:02X} y={y_pos:02X} attrs={attrs:02X} routine={routine:02X}): expected {expected:?}, got x={real_x:02X} y={real_y:02X} routine={real_routine:02X} delay={real_delay:02X}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} soldier-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
