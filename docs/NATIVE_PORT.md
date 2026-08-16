@@ -592,7 +592,27 @@ replacement for its real 6502 code, cycle for cycle.
       fixed by the harness fix alone making all 207 pass with no other
       change). Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Twelve routines out of what's
+- [x] **`find_far_segment::find_far_segment_for_a` / `find_far_segment_for_x_pos`**
+      (`crates/contra-native/src/find_far_segment.rs`) - ported from
+      `find_far_segment_for_a`/`find_far_segment_for_x_pos` (`bank7.asm`,
+      `$ed4c`-`$ed66`): buckets an X position into a 0-6 "horizontal
+      segment" code by scanning 7 ascending thresholds tightest-first.
+      **No live verification this time** - both real callers found
+      (`create_roller`, `grenade_launcher_routine_01`) are indoor/base-
+      level-only enemies, unreachable by this project's current
+      scripted playthrough (level 1, outdoor) - documented honestly in
+      this module's own doc comment rather than silently skipped.
+      Confidence instead rests on an exhaustive test cross-checking
+      *every one of the 256 possible inputs* against an independently-
+      written re-implementation of the real 6502 loop's own control flow
+      (not just this port's more idiomatic version) - the first port in
+      this crate verified this way instead of via `contra-nes` gameplay
+      capture, appropriate for a small pure table lookup with a fully
+      enumerable input domain. Also unit-tested: hand-traced bucket
+      boundaries (confirming `<` not `<=` at each threshold) and the
+      real ASM's own "shouldn't happen" safety-fallback case
+      (`x_pos=$ff`, where even the loosest threshold isn't satisfied).
+- [ ] Everything else, logic side. Thirteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

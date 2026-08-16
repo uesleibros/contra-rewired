@@ -70,6 +70,7 @@ pub mod create_enemy_bullet;
 pub mod enemy_clear;
 pub mod enemy_slots;
 pub mod enemy_spawn;
+pub mod find_far_segment;
 pub mod graphics;
 pub mod initialize_enemy;
 pub mod level;
