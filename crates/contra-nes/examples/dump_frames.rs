@@ -1647,6 +1647,44 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-routine-transition calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_VERT_SCROLL_Y_ADD").is_ok() {
+            // VERIFY_VERT_SCROLL_Y_ADD=1: verification pass for
+            // `contra_native::enemy_position_utils::add_a_with_vert_
+            // scroll_to_enemy_y_pos`/`add_4_to_enemy_y_pos`. Both real
+            // entries ($eb88 preset a=4, $eb8a general) share one real
+            // exit ($eba3, right before `update_nametable_tiles_set_
+            // delay`).
+            use contra_native::enemy_position_utils::add_a_with_vert_scroll_to_enemy_y_pos;
+            let mut pending: Option<(u8, u8, u8)> = None; // (a, vertical_scroll, enemy_y_pos)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xEB88 => pending = Some((0x04, bus.ram[0xFC], bus.ram[0x324 + x])),
+                    0xEB8A => {
+                        if pending.is_none() {
+                            pending = Some((cpu.a, bus.ram[0xFC], bus.ram[0x324 + x]));
+                        }
+                    }
+                    0xEBA3 => {
+                        if let Some((a, vertical_scroll, before)) = pending.take() {
+                            let expected = add_a_with_vert_scroll_to_enemy_y_pos(a, vertical_scroll, before);
+                            let real = bus.ram[0x324 + x];
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(vert_scroll_y_add) frame={frame} a={a:02X} vscroll={vertical_scroll:02X} before={before:02X}: expected {expected:02X}, got {real:02X}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} vert-scroll-y-add calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

@@ -746,7 +746,24 @@ replacement for its real 6502 code, cycle for cycle.
       guard-rejection case (`ENEMY_ROUTINE` already `0`) wasn't reached
       this session, noted honestly. Not yet integrated live, same status
       as every routine above.
-- [ ] Everything else, logic side. Nineteen routines out of what's
+- [x] **`enemy_position_utils::add_4_to_enemy_y_pos` / `add_a_with_vert_scroll_to_enemy_y_pos`**
+      (same module) - a real, *non-trivial* Y adder despite the small-
+      utility family it sits in: rather than a plain `pos + a`, it rounds
+      `ENEMY_Y_POS` down to the nearest 16-pixel boundary **relative to
+      the current `VERTICAL_SCROLL` phase** first (real ASM comment:
+      "accounting for `VERTICAL_SCROLL` overflow on vertical levels").
+      Unit-tested (a hand-traced worked example, confirming it's not a
+      plain add for non-boundary-aligned input, the boundary-aligned
+      no-op case, and that a different `VERTICAL_SCROLL` phase genuinely
+      shifts the result for the same position). Live-verified
+      (`VERIFY_VERT_SCROLL_Y_ADD=1`, hooking both real entries and their
+      one shared exit): 17 real calls across a 9000-frame session,
+      including a real, observed non-boundary-aligned input (`before=
+      $64` under `VERTICAL_SCROLL=$e0` correctly stayed at `$64` after
+      adding 4, not `$68` - the rounding step genuinely firing, not just
+      passing through boundary-aligned inputs) - zero mismatches. Not yet
+      integrated live, same status as every routine above.
+- [ ] Everything else, logic side. Twenty routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
