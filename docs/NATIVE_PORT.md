@@ -923,6 +923,49 @@ misexecuting function, a missing precondition this session doesn't know
 about yet, or something else) - a real, narrower target for whoever
 continues this, not a guess about where the gap is.
 
+**Root-caused and fixed - and it's much bigger than the title screen.**
+Added a temporary diagnostic (`extras.c`'s `game_post_nmi` hook, printing
+`GAME_ROUTINE_INDEX`/`$18` - the real top-level game-state-machine index,
+confirmed via `docs/rom-symbols.txt` and cross-checked directly against
+`src/bank7.asm`'s `exe_game_routine`/`game_routine_pointer_table`) and
+found the real bug: `GAME_ROUTINE_INDEX` was incrementing by exactly 1
+*every single frame* from boot, regardless of any real game condition -
+while `GAME_ROUTINE_INIT_FLAG` and the delay timer it should gate on sat
+frozen the entire time, proving the individual `game_routine_XX` handlers
+weren't running their real logic at all. The cause: `run_routine_from_
+tbl_below` (`$C857`) is the classic 6502 "read the return address off the
+stack, treat it as an inline jump-table base, jump to `table[A]`" trick -
+the table lives as raw bytes immediately after the `JSR` that calls it,
+and the routine never really returns to its caller. Contra uses this
+*shared helper* for four different major systems (`run_game_routine`,
+`run_level_routine`, `run_player_state_routine`, `adjust_bullet_
+velocity`), all silently broken the same way: naively recompiled, there's
+no real 6502 stack to read a "return address" from, so it read garbage
+and jumped somewhere undefined every time - explaining not just the
+frozen title screen but likely a meaningful share of the false-positive/
+dispatch-miss noise seen throughout this whole evaluation. Fixed with a
+single `[[inline_dispatch]] addr = 0xC857` config line (pointing at the
+*shared helper's own address*, not each of the four call sites
+individually - confirmed via the generated code, which now emits a real
+`switch (g_cpu.A) { case 0: ...; case 1: ...; }` with the correct,
+discovered function addresses for every entry instead of a broken direct
+call). Verified with the same diagnostic: `GAME_ROUTINE_INDEX` now stays
+correctly fixed at `1` for exactly 255 frames while `HORIZONTAL_SCROLL`
+(`$FD`) counts up one per frame and wraps - the real intro scroll-in
+animation, bit-for-bit the shape the disassembly describes - then
+transitions cleanly through the real "PLAY SELECT" wait state. **Replayed
+the scripted Start-press test against this fixed build: it worked.**
+`GAME_ROUTINE_INDEX` advanced 3 -> 4 -> 5 in response to the real Start
+edge, `game_routine_04`'s `init_score_player_lives` ran, and the
+nametable dump at frame 900 shows **real, correct level 1 (jungle)
+gameplay terrain** - mountains, water, grass-covered rock platforms, and
+a power-up item box, matching real Contra's actual opening level exactly.
+This is no longer just "boots and shows a title screen": a real,
+previously-blocking bug is now understood, fixed, and confirmed to
+unblock actual gameplay-level content, from a single-line config change
+once the real root cause was found - not a guess, not a partial
+workaround.
+
 Whether to keep pushing this track, treat it as a complement to
 hand-porting, or set it aside remains an open call.
 

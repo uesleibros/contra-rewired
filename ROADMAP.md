@@ -246,12 +246,25 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       correctly** (Konami logo, Contra logo, menu text, copyright text,
       all pixel-legible - confirmed via a nametable dump, after an
       initial screenshot patch's own bug wrongly suggested a black
-      screen). Not a working alternative yet - substantial data
-      (collision maps, weapon/enemy-AI tables) isn't excluded from
-      discovery yet, and gameplay itself hasn't been reached - see
+      screen). **Follow-up: found and fixed the real bug blocking
+      gameplay, and confirmed it unblocks real level content.** The
+      title screen looked frozen because `run_routine_from_tbl_below`
+      ($C857) - a shared 6502 "inline jump-table embedded right after the
+      JSR" trick Contra uses for 4 major systems (game routine, level
+      routine, player state, bullet velocity) - doesn't survive naive
+      static recompilation (there's no real 6502 stack to read a "return
+      address" out of anymore), so the whole top-level game-state machine
+      was silently jumping to garbage every frame. One config line
+      (`[[inline_dispatch]] addr = 0xC857`) fixed all 4 sites at once -
+      confirmed via a diagnostic showing `GAME_ROUTINE_INDEX` now holds
+      correctly for the real 255-frame intro scroll instead of
+      free-running, and via replaying the scripted Start-press test
+      against the fixed build: the state machine advanced correctly, and
+      **the frame dump shows real, correct level 1 (jungle) gameplay
+      terrain** - mountains, water, rock platforms, a power-up box. See
       docs/NATIVE_PORT.md's "A possible shortcut" section for the full
       account. Whether to keep pushing this or treat it as a side track
-      remains open.
+      remains open, but it's no longer just a title-screen demo.
       **Enemy placement - hard-coded spawns**: ported
       each outdoor level's fixed per-screen enemy list
       (`contra-native::enemy_spawn`) - not the *random* soldier generation
