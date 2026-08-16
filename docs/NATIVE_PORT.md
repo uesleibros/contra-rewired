@@ -891,23 +891,37 @@ crashing" - it's correctly executing enough of Contra's real boot
 sequence (CHR-RAM population, nametable/attribute writes, palette setup)
 to produce the exact real title screen a player would see.
 
-**Next concrete blocker found, not guessed: simulated Start presses don't
-advance past the title screen.** Used the runner's scripted-input system
-(`--script`, plain-text `HOLD`/`WAIT`/`RELEASE`/`ASSERT_RAM8` commands) to
-hold `START` for 10 and separately 60 frames, at two different points -
-still the exact same title screen hundreds of frames later. Checked
-whether this is a "controller code wasn't discovered" repeat of the
-CHR-RAM false lead first: `load_controller_state`/`read_controller_state`
-(`$C35B`/`$C397`, confirmed via `docs/rom-symbols.txt`) **are** both
-discovered and called from a real site (`$C09A`) - not the same failure
-mode as before. Went one level deeper with `ASSERT_RAM8`, checking `$00`
-(where `load_controller_state` stores player 1's raw input byte) while
-`START` (`0x10`) was held: **got `0x33`, not `0x10`** - the controller-
-reading code path runs, but whatever ends up in `$00` doesn't match a
-clean "only Start is held" read. Not root-caused yet (would need
-tracing `read_controller_state`'s own internals - the actual `$4016`
-shift-register protocol - for where `$00`'s value actually comes from),
-but a real, tested lead for whoever picks this up next, not a guess.
+**Chased down, corrected, and narrowed: simulated Start presses don't
+advance past the title screen, but input reading itself is confirmed
+correct.** Used the runner's scripted-input system (`--script`, plain-text
+`HOLD`/`WAIT`/`RELEASE`/`ASSERT_RAM8`/`WAIT_RAM8` commands) to hold
+`START`; still the exact same title screen hundreds of frames later.
+First lead (`ASSERT_RAM8` on `$00` showing `0x33` instead of `0x10`)
+turned out to be a **testing mistake, not a bug** - caught and corrected
+rather than left standing: reading `read_controller_state`'s real
+assembly (`src/bank7.asm`) shows `$00`/`$01` are only a *scratch backup*
+`load_controller_state` uses internally for its own documented double-
+read confirmation (a real, deliberate workaround for a genuine NES DMC/
+DPCM hardware bug - reads the controller twice and falls back to the
+last known-good value if they disagree), not the stable value game logic
+actually consults. That's `CONTROLLER_STATE_DIFF` (`$F5`, confirmed via
+`docs/rom-symbols.txt`) - a one-frame edge signal (sets only on the exact
+frame a button transitions released->pressed) several real routines key
+off directly (`dec_theme_delay_check_user_input`, `level_routine_07`,
+pause handling). Re-tested against *that* address with `WAIT_RAM8`
+instead of a fixed-delay `ASSERT_RAM8`, to catch the single right frame:
+**`$F5` correctly reads `0x10` at exactly the expected frame** the moment
+`START` starts being held. Input reading, the DMC-bug double-read
+workaround, and edge detection are all confirmed correct in the
+recompiled code - a real, positive, tested result, not just a ruled-out
+false lead. Re-checked the screen at frame 600 (300 frames after the
+confirmed-correct edge) anyway: still the identical title screen. The
+blocker is now narrowed to somewhere *after* input detection - whichever
+game-state-machine logic is supposed to react to a confirmed-correct
+Start signal and change what's on screen isn't doing so (undiscovered/
+misexecuting function, a missing precondition this session doesn't know
+about yet, or something else) - a real, narrower target for whoever
+continues this, not a guess about where the gap is.
 
 Whether to keep pushing this track, treat it as a complement to
 hand-porting, or set it aside remains an open call.
