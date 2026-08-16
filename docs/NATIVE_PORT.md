@@ -130,6 +130,19 @@ build and run exactly as before without it.
 1. **Find it.** Read the relevant disassembly file(s) from
    `vermiceli/nes-contra-us` (fetched from GitHub - not vendored in this
    repo) for the routine in question, understand what it does and why.
+   **Optional accelerant**: `tools/nesrecomp-reference/` has a reference
+   build of [`mstan/nesrecomp`](https://github.com/mstan/nesrecomp) (a
+   static 6502->C recompiler) already configured for Contra - once built
+   (see that directory's README), its `generated/contra_full.c` has a
+   mechanically-translated `func_<ADDR>` for most real routines (register
+   moves, flags, and memory access already made explicit), which is
+   usually faster to read than re-deriving the same thing from raw 6502
+   by hand, especially for longer routines. **It's a reading aid only,
+   never a source of truth** - it can have the same kind of gaps this
+   project found and fixed while evaluating nesrecomp itself (wrong
+   function boundaries, misidentified data, dispatch patterns that
+   silently break without the right config) - step 4 below is still the
+   only thing that makes a port real, exactly as it always has been.
 2. **Locate its real CPU address**, if a hook will be needed to verify it
    (not always necessary - some routines are pure functions of inputs
    already available another way). Look it up in `docs/rom-symbols.txt`
@@ -285,12 +298,33 @@ replacement for its real 6502 code, cycle for cycle.
       update, every single airborne frame, for reasons even the original
       disassembly's own comment says aren't fully understood - real,
       verified behavior of the original game, ported faithfully regardless.
-- [ ] Everything else, logic side. Two routines out of what's realistically
-      hundreds across 8 PRG banks - `bank7.asm` alone (the fixed,
-      always-mapped bank) is close to 11,000 lines of assembly by itself.
-      No claim is made here about which routine comes next or on what
-      timeline; this file should be updated as real ports land, the same
-      way ROADMAP.md tracks everything else.
+- [x] **`bullet_physics::adjust_bullet_velocity`**
+      (`crates/contra-native/src/bullet_physics.rs`) - ported from
+      `adjust_bullet_velocity`/`bullet_velocity_adjust_00`-`_07` (`bank7.
+      asm`, `$f3a5`-`$f419`; speed code 8/2x is real ROM data but is
+      genuinely unreachable - the only caller masks with `& 0x07` before
+      dispatch - so it isn't ported, per this crate's standing policy). The
+      first port built using the `tools/nesrecomp-reference` accelerant
+      (nesrecomp's mechanically-translated C as a faster first read of the
+      routine, alongside the raw 6502) - still verified the normal way, not
+      against the generated C. Hand-verified against the disassembly's own
+      3 worked examples (speed codes 0, 6, 7) as unit tests, then against
+      real gameplay (`VERIFY_BULLET_VELOCITY=1`, hooking entry at `$f3a5`
+      and both real call sites' return addresses at `$f345`/`$f359`, since
+      the routine dispatches via the same `run_routine_from_tbl_below`
+      inline-jump-table pattern as `game_routine`/`level_routine`/
+      `player_state` and never executes its own `rts`): 24 real calls
+      captured across a 3600-frame session (all real weapon fire hit speed
+      code 3, one of the routine's data-dependent-branch cases), zero
+      mismatches. Not yet integrated live (`HookAction::ReturnNow`) - unit-
+      and gameplay-verified only so far, same status `bg_collision` and
+      `player_physics` had before their own integration passes.
+- [ ] Everything else, logic side. Three routines out of what's
+      realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
+      fixed, always-mapped bank) is close to 11,000 lines of assembly by
+      itself. No claim is made here about which routine comes next or on
+      what timeline; this file should be updated as real ports land, the
+      same way ROADMAP.md tracks everything else.
 - [x] **Asset extraction - started: graphics, first slice proven
       byte-perfect.** `graphics::decompress`/`apply_chr_writes`
       (`crates/contra-native/src/graphics.rs`) is a native Rust port of

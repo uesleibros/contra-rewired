@@ -491,6 +491,42 @@ fn main() {
             if frame % 200 == 0 && checked > 0 {
                 eprintln!("frame={frame}: {checked} player-gravity calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_BULLET_VELOCITY").is_ok() {
+            // VERIFY_BULLET_VELOCITY=1: verification pass for
+            // `contra_native::bullet_physics::adjust_bullet_velocity`.
+            // The real routine ($f3a5) dispatches via `run_routine_from_
+            // tbl_below`'s inline-jump-table trick, so every case handler's
+            // own `rts` returns straight to *this* routine's caller, not to
+            // `adjust_bullet_velocity` itself - hooking its own exit isn't
+            // possible. Instead: hook entry ($f3a5) to capture inputs, and
+            // hook the instruction right after each of the two real call
+            // sites ($f342/$f356, i.e. $f345/$f359) to capture the result.
+            let mut pending: Option<(u8, u8, u8)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF3A5 => {
+                        pending = Some((bus.ram[0x04], bus.ram[0x05], bus.ram[0x06]));
+                    }
+                    0xF345 | 0xF359 => {
+                        if let Some((frac, fast, speed_code)) = pending.take() {
+                            let expected = contra_native::bullet_physics::adjust_bullet_velocity(frac, fast, speed_code);
+                            let real = (bus.ram[0x04], bus.ram[0x05]);
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(bullet_velocity) frame={frame} in=(frac=${frac:02X} fast=${fast:02X} speed=${speed_code:02X}): expected {expected:?}, got {real:?}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} bullet-velocity calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

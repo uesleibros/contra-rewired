@@ -1,0 +1,220 @@
+[game]
+output_prefix = "contra"
+
+[mapper]
+# set_rom_bank_to_y ($C139) is the actual bank-switch write; load_bank_number
+# ($C133) is the common call-site wrapper most of bank7.asm's "ldy #$0N; jsr
+# load_bank_number" pattern actually targets. Both take the bank number via Y,
+# not A - real Contra data (see src/bank7.asm in the disassembly this project
+# already verified byte-for-byte against the real ROM).
+bank_switch = [0xC133, 0xC139]
+
+# run_routine_from_tbl_below (src/bank7.asm $C857): a shared "read the
+# return address off the stack, use it as an inline jump-table base, jump
+# to table[A]" helper - the classic 6502 trick where the table is embedded
+# as raw bytes immediately after the JSR, and the routine never actually
+# returns to its caller. Marking the shared helper's own address (not each
+# call site) so it applies to every JSR that targets it.
+[[inline_dispatch]]
+addr = 0xC857  # run_routine_from_tbl_below itself
+
+[[data_region]]
+bank = 1
+start = 0x8001
+end = 0x806d
+
+[[data_region]]
+bank = 1
+start = 0x82cd
+end = 0x82d5
+
+[[data_region]]
+bank = 1
+start = 0x86d5
+end = 0x8705
+
+[[data_region]]
+bank = 1
+start = 0x88e8
+end = 0x91dd
+
+[[data_region]]
+bank = 1
+start = 0x924e
+end = 0x98d5
+
+[[data_region]]
+bank = 1
+start = 0x9929
+end = 0x9c50
+
+[[data_region]]
+bank = 1
+start = 0x9c71
+end = 0x9e7d
+
+[[data_region]]
+bank = 1
+start = 0x9ea8
+end = 0xa072
+
+[[data_region]]
+bank = 1
+start = 0xa092
+end = 0xa3e8
+
+[[data_region]]
+bank = 1
+start = 0xa41c
+end = 0xa713
+
+[[data_region]]
+bank = 1
+start = 0xa735
+end = 0xaa6c
+
+[[data_region]]
+bank = 1
+start = 0xaa92
+end = 0xab04
+
+[[data_region]]
+bank = 1
+start = 0xab34
+end = 0xabd2
+
+[[data_region]]
+bank = 1
+start = 0xabec
+end = 0xae9d
+
+[[data_region]]
+bank = 2
+start = 0x8001
+end = 0x801b
+
+[[data_region]]
+bank = 2
+start = 0x801d
+end = 0x8214
+
+[[data_region]]
+bank = 2
+start = 0x8236
+end = 0x824a
+
+[[data_region]]
+bank = 2
+start = 0x8276
+end = 0x82a4
+
+[[data_region]]
+bank = 2
+start = 0x8300
+end = 0x83c0
+
+[[data_region]]
+bank = 2
+start = 0x842c
+end = 0x84e0
+
+[[data_region]]
+bank = 2
+start = 0x84e4
+end = 0x86b9
+
+[[data_region]]
+bank = 2
+start = 0x86bb
+end = 0x893f
+
+[[data_region]]
+bank = 2
+start = 0x8941
+end = 0x8b9f
+
+[[data_region]]
+bank = 2
+start = 0x8ba1
+end = 0x8e5d
+
+[[data_region]]
+bank = 2
+start = 0x8e5f
+end = 0x9013
+
+[[data_region]]
+bank = 2
+start = 0xb319
+end = 0xb419
+
+[[data_region]]
+bank = 2
+start = 0xb513
+end = 0xb523
+
+[[data_region]]
+bank = 2
+start = 0xb82b
+end = 0xb8aa
+
+[[data_region]]
+bank = 2
+start = 0xb90d
+end = 0xb91f
+
+[[data_region]]
+bank = 2
+start = 0xb921
+end = 0xb9af
+
+[[data_region]]
+bank = 2
+start = 0xba48
+end = 0xba72
+
+[[data_region]]
+bank = 2
+start = 0xba74
+end = 0xbcbf
+
+[[data_region]]
+bank = 2
+start = 0xbcc0
+end = 0xbd3d
+
+[[data_region]]
+bank = 4
+start = 0x8001
+end = 0x886c
+
+[[data_region]]
+bank = 4
+start = 0x99fc
+end = 0xaa2d
+
+[[data_region]]
+bank = 5
+start = 0x8001
+end = 0xaddf
+
+[[data_region]]
+bank = 6
+start = 0x8001
+end = 0xb262
+
+[[data_region]]
+bank = 7
+start = 0xc8e3
+end = 0xc8fd
+
+[[data_region]]
+bank = 7
+start = 0xc950
+end = 0xc9a1
+
+[[data_region]]
+bank = 7
+start = 0xd227
+end = 0xd371
+

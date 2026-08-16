@@ -1,0 +1,25 @@
+diff --git a/recompiler/src/function_finder.c b/recompiler/src/function_finder.c
+index ea3626c..7003e93 100644
+--- a/recompiler/src/function_finder.c
++++ b/recompiler/src/function_finder.c
+@@ -1174,12 +1174,15 @@ static int walk_function(const NESRom *rom, FunctionList *list,
+             uint16_t target = lo | ((uint16_t)hi << 8);
+ 
+             /* ── Bank switch detection ─────────────────────────────────
+-             * If JSR target is a known bank-switch routine and A holds a
+-             * known constant, update effective_bank for subsequent target
+-             * resolution in this function walk. */
++             * If JSR target is a known bank-switch routine and A or Y
++             * holds a known constant, update effective_bank for subsequent
++             * target resolution in this function walk. Some games (e.g.
++             * Contra, UxROM) pass the bank number in Y rather than A -
++             * prefer A when both happen to be known simultaneously, since
++             * that was the original, tested behavior for A-only games. */
+             for (int bi = 0; bi < cfg->bank_switch_count; bi++) {
+-                if (target == cfg->bank_switches[bi].addr && known_a != -1) {
+-                    int new_bank = known_a;
++                if (target == cfg->bank_switches[bi].addr && (known_a != -1 || known_y != -1)) {
++                    int new_bank = (known_a != -1) ? known_a : known_y;
+                     /* Clamp to valid switchable bank range */
+                     if (new_bank >= rom->prg_banks - 1)
+                         new_bank = rom->prg_banks - 2;

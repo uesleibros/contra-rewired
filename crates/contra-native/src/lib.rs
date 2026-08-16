@@ -64,6 +64,7 @@
 //! audio/level-data extraction) is not started.
 
 pub mod audio;
+pub mod bullet_physics;
 pub mod collision;
 pub mod enemy_spawn;
 pub mod graphics;
