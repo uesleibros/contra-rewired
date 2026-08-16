@@ -750,13 +750,21 @@ replacement for its real 6502 code, cycle for cycle.
       hardware property) - `palette::NES_MASTER_PALETTE` is its own copy,
       kept byte-identical to `contra_nes::ppu::NES_PALETTE` by an
       assertion in the same verification example, so `contra-native` still
-      doesn't depend on the emulator crate at all. Not done: which palette
-      group applies to which *tile* (the attribute table / super-tile
-      palette assignment) isn't wired up yet, so today's colored output
-      uses one fixed palette across a whole tile sheet rather than the
-      real per-tile assignment; and only level 1's indexes have been
-      exercised so far (the other 7 levels' headers use the same decode
-      path but haven't been individually verified).
+      doesn't depend on the emulator crate at all.
+      **Update: per-tile palette assignment is wired up now (this note was
+      stale - it landed as part of the "Super-tiles" work below, which
+      also proved the attribute table byte-perfect, but this specific
+      bullet was never updated to say so).** Both `extract_level.rs`
+      (`crates/contra-nes`) and `contra-extract --dump-levels`
+      (`apps/contra-extract/src/level.rs`) read each super-tile's real
+      attribute byte (`supertile::supertile_attribute_byte`/`attribute_
+      quadrants`) and pick that specific tile's real palette from it,
+      not one fixed palette across the whole sheet - see the "Super-
+      tiles" bullet immediately below for the byte-perfect live-PPU proof
+      of the attribute table itself. Still true as originally noted: only
+      level 1's palette indexes have been individually live-verified
+      against real PPU state; the other 7 levels use the identical proven
+      decode path but aren't separately re-verified.
 - [x] **Super-tiles: nametable + attribute-table layout, both proven
       byte-perfect.** `supertile::decompress_screen` ports
       `read_supertiles_screen_ptr_table`/`load_supertile_indexes_starting_
