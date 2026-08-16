@@ -52,10 +52,17 @@ Harkinian/SM64-decomp work. Concretely, that's **two** things, not one:
 
 Neither piece is optional for calling this "done"; a port that ported
 every CPU routine but still decoded graphics from the ROM's compressed CHR
-data at runtime, or vice versa, would still be emulating *something*. Both
-are real, substantial, and not yet started beyond the game-logic piece
-above - tracked here as they begin, the same honest way everything else in
-this document is.
+data at runtime, or vice versa, would still be emulating *something*. The
+two tracks are at very different stages: **assets are substantially
+along** - graphics, palettes, all 8 levels' layout, outdoor enemy spawns,
+DPCM samples, and the full sound_code audio bytecode (all 94 sounds) all
+decode straight from PRG-ROM and are proven byte-identical against
+`contra-nes`'s live state, with a verified frame-by-frame playback engine
+for that audio bytecode too (see "Current status" below for exactly
+what's done versus still open - volume envelopes, channel-priority
+arbitration). **Game logic is still early** - two routines ported and
+verified out of realistically hundreds. Tracked here as each piece lands,
+the same honest way everything else in this document is.
 
 ## Why this is realistic here specifically
 

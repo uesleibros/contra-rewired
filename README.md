@@ -44,10 +44,24 @@ approximated from documentation, but translated instruction-for-instruction
 from a verified byte-matching disassembly, and checked against real
 gameplay captured through the emulator before being trusted (see
 [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) for the full methodology and
-current status - it's genuinely just started, one routine in). This is the
-same kind of project as Ship of Harkinian or the SM64 decompilation ports,
-scaled to what one contributor can verify incrementally rather than
-claiming to be there already. The payoff, once enough of the game is
+current status). This is the same kind of project as Ship of Harkinian or
+the SM64 decompilation ports, scaled to what one contributor can verify
+incrementally rather than claiming to be there already. Two very different
+speeds so far: the **asset side is substantially along** - graphics
+(CHR/RLE decompression), palettes, all 8 levels' nametable/attribute
+layout, outdoor-level enemy spawns, DPCM audio samples, and Contra's full
+sound_code bytecode (every music track and sound effect, all 94 sounds)
+all decode straight from PRG-ROM with no emulation, each proven
+byte-identical against `contra-nes`'s live state before being trusted -
+`contra-extract` can dump all of it from a user's own ROM today. A
+frame-by-frame playback engine for that audio bytecode (not just decoding
+it, but actually stepping it forward in time the way the real 6502
+interpreter does) exists and is verified against real gameplay for both
+sound effects and music/percussion, with volume-envelope data and
+cross-channel priority arbitration still open. The **CPU game-logic side
+is still early** - two routines ported and verified
+(`collision::bg_collision`, `player_physics`) out of what's realistically
+hundreds across 8 PRG banks. The payoff, once enough of the logic side is
 ported this way: things that are currently impossible to fix from outside
 a sealed 6502 binary - like enemies spawning aware of a wider-than-256px
 widescreen camera (see docs/FIDELITY.md's "Enemies/bullets/collision"
@@ -119,6 +133,10 @@ outright: click "LOAD ROM..." for a native file picker, or drag and drop a
 | Mod manifest, registry, Lua host | **Working end-to-end**: `contra-pc --features mods` loads scripts from `./mods/` and applies their PPU writes live every frame - see `mods/rgb-character/` and docs/MODDING.md |
 | Menu / UI | Built on `egui` + `wgpu` (mouse-driven pause menu with Settings/Mods/Debug tabs, real Load ROM screen with native file picker + drag-and-drop) - see "Controls" above |
 | Level editor, randomizer, netcode, roguelike, etc. | Not started - see ROADMAP.md |
+| **Native decompilation port** (`contra-native`, not yet used by `contra-pc` at runtime) | |
+| Asset extraction (graphics, palettes, all 8 levels, outdoor enemy spawns, DPCM samples, full sound_code bytecode) | Ported and verified byte-identical against `contra-nes`'s live state; `contra-extract` dumps all of it from a user's own ROM - see docs/NATIVE_PORT.md |
+| Audio playback engine (frame-by-frame sound_code interpreter, effects + music/percussion) | Built and verified against real gameplay; volume-envelope table data and cross-channel priority arbitration still open - see docs/NATIVE_PORT.md |
+| CPU game logic (collision, physics, enemy AI, weapons, ...) | 2 routines ported and verified (`collision::bg_collision`, `player_physics`) out of realistically hundreds |
 
 See [ROADMAP.md](ROADMAP.md) for the full three-phase plan, with every item
 tagged by what's actually done versus planned.
@@ -134,7 +152,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-64 tests, all green, no ROM or window required - the emulator core is
+124 tests, all green, no ROM or window required - the emulator core is
 validated with small original hand-assembled 6502 programs (see
 `crates/contra-nes/src/cpu.rs` and `nes.rs`), not against Contra itself.
 

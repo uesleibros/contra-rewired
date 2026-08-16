@@ -14,7 +14,7 @@ save-state format, and replay format in `contra-core` already have fields
 for most of it (see [ARCHITECTURE.md](docs/ARCHITECTURE.md)). What's missing
 is the actual game - see the note at the bottom.
 
-## The native port - cross-cutting, just started
+## The native port - cross-cutting, in progress
 
 Separate from the three phases below because it isn't a feature, it's a
 change to what this project fundamentally *is*: a real, decompilation-style

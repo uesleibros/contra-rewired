@@ -6,7 +6,8 @@
 contra-rewired/
 ├── crates/
 │   ├── contra-nes/       from-scratch NES emulation core: 6502/2A03 CPU, 2C02
-│   │                     PPU, mapper 2 (UxROM), APU stub, controller. Runs
+│   │                     PPU, mapper 2 (UxROM), real APU (pulse/triangle/
+│   │                     noise, DMC not yet implemented), controller. Runs
 │   │                     the user's own ROM directly - see docs/FIDELITY.md.
 │   │                     No game-specific code; doesn't know it's Contra.
 │   │
@@ -14,6 +15,18 @@ contra-rewired/
 │   │                     config schema, input mapping, save states, replays,
 │   │                     difficulty, checkpoints, the top-level state machine.
 │   │                     No rendering, audio, windowing, or filesystem UI code.
+│   │
+│   ├── contra-native/    real decompilation-based port: routines and asset
+│   │                     formats translated instruction-for-instruction from
+│   │                     a verified byte-matching disassembly, each checked
+│   │                     against real gameplay captured through `contra-nes`
+│   │                     before being trusted. Two tracks at very different
+│   │                     stages - asset extraction (graphics, palettes,
+│   │                     levels, enemy spawns, audio bytecode + playback
+│   │                     engine) is substantially along; CPU game logic
+│   │                     (collision, physics, AI, ...) has 2 routines done
+│   │                     out of realistically hundreds. Not yet wired into
+│   │                     `contra-pc` at runtime - see docs/NATIVE_PORT.md.
 │   │
 │   ├── contra-assets/    legal ROM loading/validation.
 │   │                     Ships zero Konami-owned bytes - see docs/ASSETS.md.
