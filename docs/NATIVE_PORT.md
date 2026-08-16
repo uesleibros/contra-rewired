@@ -566,7 +566,33 @@ replacement for its real 6502 code, cycle for cycle.
       ported faithfully anyway, flagged rather than removed, the same
       treatment this crate already gives `adjust_bullet_velocity`'s speed
       code 8 and the dead-code `clear_enemy` top label.
-- [ ] Everything else, logic side. Eleven routines out of what's
+- [x] **`player_enemy_distance::player_enemy_x_dist` / `player_enemy_y_dist`**
+      (`crates/contra-native/src/player_enemy_distance.rs`) - ported from
+      `player_enemy_x_dist`/`player_enemy_y_dist` (`bank7.asm`, `$ecf5`-
+      `$ed4b`, sharing a tail at `lda_closer_distance`, `$ed24`): the
+      single most-reused routine ported in this crate so far - 21 real
+      `jsr player_enemy_x_dist` call sites alone, across nearly every
+      enemy AI routine in `bank0.asm`. Computes each player's absolute
+      distance to the enemy on one axis (`u8::abs_diff`, equivalent to
+      the real `sec`/`sbc`/overflow-flip idiom), overrides a non-normal
+      player's distance with a sentinel (`$fe` p1, `$ff` p2 - deliberately
+      unequal so p1 wins a tie when *both* are inactive, matching the
+      disassembly's own documented behavior), then picks whichever is
+      smaller. Unit-tested (both players active, both directions of
+      "closer", each single-player-inactive fallback, and the documented
+      both-inactive tie-break). Live-verified (`VERIFY_PLAYER_ENEMY_
+      DIST=1`, hooking both real entries `$ecf5`/`$ed0e` and their one
+      shared exit `$ed4b`): 207 real calls across a 9000-frame session -
+      by far the largest sample of any port in this crate - zero
+      mismatches, **after finding and fixing a bug in the verification
+      harness itself** (it had the X-axis and Y-axis branches reading
+      each other's `SPRITE_X_POS`/`SPRITE_Y_POS` addresses - a mistake in
+      the hook code, not in the ported routine; caught immediately by the
+      first run showing real, non-trivial mismatches, then confirmed
+      fixed by the harness fix alone making all 207 pass with no other
+      change). Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Twelve routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

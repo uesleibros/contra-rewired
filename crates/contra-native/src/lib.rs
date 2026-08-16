@@ -74,6 +74,7 @@ pub mod graphics;
 pub mod initialize_enemy;
 pub mod level;
 pub mod palette;
+pub mod player_enemy_distance;
 pub mod player_physics;
 pub mod quadrant_aim_dir;
 pub mod sound_code;

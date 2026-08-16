@@ -1129,6 +1129,64 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} aim-and-create-enemy-bullet calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_PLAYER_ENEMY_DIST").is_ok() {
+            // VERIFY_PLAYER_ENEMY_DIST=1: verification pass for
+            // `contra_native::player_enemy_distance::player_enemy_x_dist`/
+            // `player_enemy_y_dist`. Both real routines share one exit
+            // (`lda_closer_distance`'s own `rts`, $ed4b, right before the
+            // `find_far_segment_for_x_pos` label) - hook both real
+            // entries ($ecf5 X, $ed0e Y) to snapshot inputs and which
+            // axis was requested, and that one shared exit for the result.
+            use contra_native::player_enemy_distance::{player_enemy_x_dist, player_enemy_y_dist};
+            #[derive(Clone, Copy)]
+            enum Axis {
+                X,
+                Y,
+            }
+            let mut pending: Option<(Axis, [u8; 2], u8, [u8; 2])> = None; // (axis, sprite_pos, enemy_pos, player_state)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xECF5 => {
+                        pending = Some((
+                            Axis::X,
+                            [bus.ram[0x334], bus.ram[0x335]], // SPRITE_X_POS
+                            bus.ram[0x33E + x],                // ENEMY_X_POS
+                            [bus.ram[0x90], bus.ram[0x91]],
+                        ));
+                    }
+                    0xED0E => {
+                        pending = Some((
+                            Axis::Y,
+                            [bus.ram[0x31A], bus.ram[0x31B]], // SPRITE_Y_POS
+                            bus.ram[0x324 + x],                // ENEMY_Y_POS
+                            [bus.ram[0x90], bus.ram[0x91]],
+                        ));
+                    }
+                    0xED4B => {
+                        if let Some((axis, sprite_pos, enemy_pos, player_state)) = pending.take() {
+                            let expected = match axis {
+                                Axis::X => player_enemy_x_dist(sprite_pos, enemy_pos, player_state),
+                                Axis::Y => player_enemy_y_dist(sprite_pos, enemy_pos, player_state),
+                            };
+                            let real_index = cpu.y;
+                            let real_distance = cpu.a;
+                            checked += 1;
+                            if expected.player_index != real_index || expected.distance != real_distance {
+                                eprintln!(
+                                    "MISMATCH(player_enemy_dist) frame={frame} sprite_pos={sprite_pos:?} enemy_pos={enemy_pos:02X} states={player_state:?}: expected {expected:?}, got index={real_index:02X} distance={real_distance:02X}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} player-enemy-dist calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
