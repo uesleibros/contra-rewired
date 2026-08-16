@@ -576,6 +576,48 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} calc_bullet_velocities calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ENEMY_SLOT").is_ok() {
+            // VERIFY_ENEMY_SLOT=1: verification pass for
+            // `contra_native::enemy_slots::find_next_enemy_slot`/`_6_to_0`.
+            // Normal jsr/rts, but with 13 real call sites across 3 banks -
+            // rather than hook every site's return address, hook the one
+            // shared internal exit label both entry points funnel through
+            // (`find_enemy_routine_slot_exit`, $edd8) to read the real
+            // result (x register + zero flag) directly, and hook both real
+            // entry points ($edce full scan, $edca restricted-to-6 scan)
+            // to snapshot ENEMY_ROUTINE ($04b8, 16 bytes) and which variant
+            // was entered.
+            use contra_native::enemy_slots::{find_next_enemy_slot, find_next_enemy_slot_6_to_0, ENEMY_SLOT_COUNT};
+            let mut pending: Option<([u8; ENEMY_SLOT_COUNT], bool)> = None; // (snapshot, is_restricted_6to0)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xEDCE | 0xEDCA => {
+                        let mut snapshot = [0u8; ENEMY_SLOT_COUNT];
+                        snapshot.copy_from_slice(&bus.ram[0x04B8..0x04B8 + ENEMY_SLOT_COUNT]);
+                        pending = Some((snapshot, cpu.pc == 0xEDCA));
+                    }
+                    0xEDD8 => {
+                        if let Some((snapshot, restricted)) = pending.take() {
+                            let expected =
+                                if restricted { find_next_enemy_slot_6_to_0(&snapshot) } else { find_next_enemy_slot(&snapshot) };
+                            let real_zero = cpu.status & contra_nes::cpu::FLAG_Z != 0;
+                            let real = if real_zero { Some(cpu.x) } else { None };
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(enemy_slot) frame={frame} restricted={restricted} snapshot={snapshot:?}: expected {expected:?}, got {real:?}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-slot calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

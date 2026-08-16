@@ -349,7 +349,33 @@ replacement for its real 6502 code, cycle for cycle.
       negation paths and neither), and 3 different speed codes - zero
       mismatches. Also not yet integrated live, same status as the routine
       above.
-- [ ] Everything else, logic side. Four routines out of what's
+- [x] **`enemy_slots::find_next_enemy_slot` / `find_next_enemy_slot_6_to_0`**
+      (`crates/contra-native/src/enemy_slots.rs`) - ported from
+      `find_next_enemy_slot`/`find_next_enemy_slot_6_to_0` (`bank7.asm`,
+      `$edca`-`$edd9`, sharing a loop body at `find_next_enemy_slot_x_to_0`).
+      Scans `ENEMY_ROUTINE` (16 bytes, `$04b8`) from a starting slot down
+      to 0, returning the first (highest-indexed) free slot, `None` if
+      none are free below the start - the general-purpose "claim a slot in
+      the shared enemy/bullet/pickup object pool" utility almost every
+      spawn path in the game calls first; the most-called routine ported
+      so far (13 real `jsr` sites across banks 0, 2, and 7, vs. 1-4 for
+      every prior port). The restricted `_6_to_0` variant is real
+      soldier-generation's own reservation scheme (`bank2.asm`'s
+      `exe_soldier_generation` path) - keeps random soldier spawns out of
+      the top slots so bosses/bullets/hard-coded placements can't get
+      crowded out. Unit-tested against synthetic slot arrays (all-free,
+      all-occupied, the slot-0 edge case, the restricted variant's own
+      ceiling). Live-verified (`VERIFY_ENEMY_SLOT=1`, hooking both real
+      entry points at `$edce`/`$edca` for the `ENEMY_ROUTINE` snapshot and
+      the one shared internal exit label, `find_enemy_routine_slot_exit`
+      at `$edd8`, for the real x-register/zero-flag result - no per-call-
+      site workaround needed, unlike `adjust_bullet_velocity`): 67 real
+      calls across a 9000-frame session (52 full-range, 15 restricted,
+      confirming both variants are genuinely reachable; results spanned
+      many different slot indices, confirming the scan itself is
+      exercised, not just a single trivial case), zero mismatches. Also not
+      yet integrated live, same status as the two routines above.
+- [ ] Everything else, logic side. Five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

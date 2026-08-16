@@ -66,6 +66,7 @@
 pub mod audio;
 pub mod bullet_physics;
 pub mod collision;
+pub mod enemy_slots;
 pub mod enemy_spawn;
 pub mod graphics;
 pub mod level;
