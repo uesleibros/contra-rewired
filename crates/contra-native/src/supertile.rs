@@ -65,6 +65,31 @@ pub fn decompress_screen(data: &[u8], expected_len: usize) -> Vec<u8> {
     out
 }
 
+/// How many bytes [`decompress_screen`] would consume from `data` to
+/// produce `expected_len` super-tile IDs - same control flow, tracking
+/// only the position. Useful for callers that need a screen blob's exact
+/// byte extent (e.g. to declare it as a known data region).
+pub fn decompress_screen_len(data: &[u8], expected_len: usize) -> usize {
+    let mut pos = 0usize;
+    let mut count = 0usize;
+
+    while count < expected_len {
+        let b = data[pos];
+        pos += 1;
+        if b < 0x80 {
+            count += 1;
+        } else if b < 0xf0 {
+            let n = (b & 0x7f) as usize;
+            pos += 1; // the repeated payload byte
+            count += n;
+        } else {
+            count += 8; // row back-reference, no extra source bytes
+        }
+    }
+
+    pos
+}
+
 /// One super-tile's 16 pattern-table tile indices (a 4x4 grid, row-major:
 /// `tiles[row*4+col]`), read directly from `level_X_supertile_data` -
 /// plain data, no compression (`docs/Level Headers.md`: "This data is not
@@ -99,6 +124,7 @@ mod tests {
     fn literal_bytes_pass_through_unchanged() {
         let data = [0x01, 0x02, 0x03];
         assert_eq!(decompress_screen(&data, 3), vec![0x01, 0x02, 0x03]);
+        assert_eq!(decompress_screen_len(&data, 3), 3);
     }
 
     #[test]
@@ -106,6 +132,7 @@ mod tests {
         // 0x85 = repeat count 5 (0x80 | 5), then value 0x07
         let data = [0x85, 0x07, 0x01];
         assert_eq!(decompress_screen(&data, 6), vec![0x07, 0x07, 0x07, 0x07, 0x07, 0x01]);
+        assert_eq!(decompress_screen_len(&data, 6), 3);
     }
 
     #[test]
@@ -117,6 +144,7 @@ mod tests {
         assert_eq!(&out[0..8], &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         assert_eq!(&out[8..16], &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         assert_eq!(out[16], 0x09);
+        assert_eq!(decompress_screen_len(&data, 17), data.len());
     }
 
     #[test]

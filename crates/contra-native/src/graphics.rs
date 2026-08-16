@@ -137,6 +137,39 @@ pub fn decompress(data: &[u8], flip: bool) -> Vec<PpuWrite> {
     segments
 }
 
+/// How many bytes [`decompress`] would consume from `data` before hitting
+/// its terminating `0xFF` - same control flow, but tracking only the
+/// position instead of building the write list. Useful for callers that
+/// need a blob's exact byte extent (e.g. to declare it as a known data
+/// region) without needing the decoded pixel writes themselves.
+pub fn decompressed_len(data: &[u8], flip: bool) -> usize {
+    let mut pos = 0usize;
+    let mut first_segment = true;
+    loop {
+        pos += 2; // segment header (PPU address)
+        if flip && first_segment {
+            pos += 2;
+        }
+        first_segment = false;
+
+        loop {
+            let b = data[pos];
+            pos += 1;
+            if b == 0xff {
+                return pos;
+            }
+            if b == 0x7f {
+                break;
+            }
+            if b < 0x7f {
+                pos += 1; // one repeated payload byte
+            } else {
+                pos += (b & 0x7f) as usize; // literal run
+            }
+        }
+    }
+}
+
 /// `level_graphic_data_tbl` (bank 7, fixed bank, CPU `$c8e3`): 13 2-byte
 /// pointers (levels 1-8, level-2-boss, level-4-boss, 2 intro contexts,
 /// ending), each pointing to that context's own 0xFF-terminated list of
@@ -245,6 +278,7 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].ppu_addr, 0x0000);
         assert_eq!(segments[0].bytes, vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x1f, 0x07, 0x04, 0xc0]);
+        assert_eq!(decompressed_len(&compressed, false), compressed.len());
     }
 
     #[test]

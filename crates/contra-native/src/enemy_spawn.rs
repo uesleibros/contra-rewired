@@ -121,6 +121,25 @@ pub fn decompress_outdoor_enemy_screen(data: &[u8]) -> Vec<EnemySpawn> {
     spawns
 }
 
+/// How many bytes [`decompress_outdoor_enemy_screen`] would consume from
+/// `data` before hitting its terminating `0xFF` - same control flow,
+/// tracking only the position. Useful for callers that need a screen
+/// blob's exact byte extent (e.g. to declare it as a known data region).
+pub fn decompress_outdoor_enemy_screen_len(data: &[u8]) -> usize {
+    let mut pos = 0usize;
+    loop {
+        let x = data[pos];
+        pos += 1;
+        if x == 0xff {
+            return pos;
+        }
+        let rt = data[pos];
+        pos += 1;
+        let repeat = (rt >> 6) & 0x03;
+        pos += repeat as usize + 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +169,7 @@ mod tests {
         let data = [0x50, 0x05, 0x60, 0xff]; // soldier, no repeat
         let spawns = decompress_outdoor_enemy_screen(&data);
         assert_eq!(spawns, vec![EnemySpawn { x: 0x50, y: 0x60, enemy_type: 0x05, attribute: 0 }]);
+        assert_eq!(decompress_outdoor_enemy_screen_len(&data), data.len());
     }
 
     #[test]

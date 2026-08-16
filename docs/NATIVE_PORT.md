@@ -788,6 +788,64 @@ replacement for its real 6502 code, cycle for cycle.
       rather than shipping a guess) - their output files say so plainly
       instead of silently producing nothing.
 
+## A possible shortcut: static recompilation (evaluated, not adopted yet)
+
+Everything above is hand-porting: read the real assembly, translate one
+routine at a time, verify each against `contra-nes`. That's slow by
+construction - "realistically hundreds more routines" is the honest
+scope. [`mstan/nesrecomp`](https://github.com/mstan/nesrecomp) is a
+different approach entirely: a **static recompiler** that translates an
+*entire* 6502 ROM to C at build time (not an emulator - `JSR` becomes a C
+function call, branches become `goto`s), with an interpreter fallback for
+anything its function-discovery pass doesn't confidently identify as
+code. If it worked well for Contra, it could reach "zero ROM dependency"
+for the *logic* side far faster than routine-by-routine porting - the
+same payoff this whole document is working toward, via a different route.
+
+**Evaluated, not chosen yet** - this is a real, hands-on finding, not a
+plan:
+
+- Its own compatibility table lists UxROM (Contra's mapper) as "Not yet
+  supported," but the runtime code (`runner/src/mapper.c`) already
+  implements it correctly (bank switching, fixed-last-bank behavior) -
+  the table was just stale.
+- It genuinely runs against the real Contra ROM without crashing:
+  auto-discovery found ~7000 candidate functions on the first pass.
+- Found and locally fixed a real bug: the static analyzer's bank-switch
+  tracking only followed register A at the `JSR` call site, but Contra's
+  bank-switch routine (`set_rom_bank_to_y`, `$C139`) takes the bank
+  number in Y - a one-line fix (also check `known_y`) took "bank switches
+  detected" from 0 to 794 on Contra's ROM. Likely relevant to any other
+  UxROM/Y-convention game trying this tool, not just Contra.
+- Built a reusable bridge from this project's own verified extraction
+  code to nesrecomp's `[[data_region]]` config (which tells its function
+  finder "this is data, not code"): `contra_native::graphics::
+  decompressed_len`, `contra_native::supertile::decompress_screen_len`,
+  and `contra_native::enemy_spawn::decompress_outdoor_enemy_screen_len`
+  (new - mirror their sibling decode functions but return consumed byte
+  length instead of decoded content) plus the sound_code walkers already
+  built for this project's own extraction pipeline let `contra-nes/
+  examples/emit_data_regions.rs` (new, exploratory - not part of the
+  native port or any shipped binary) auto-generate accurate data regions
+  instead of hand-transcribing addresses. Feeding all of it in dropped
+  auto-discovered functions from ~7000 to 5883 as real data got correctly
+  excluded, and cross-referencing confirmed several of nesrecomp's own
+  flagged "false positive suspects" really were inside verified real data.
+
+**What this is not yet**: a working alternative. A real function count
+for a game this size is almost certainly a small fraction of 5883, so
+substantial data is still misidentified as code (this project hasn't
+extracted collision maps, weapon/bullet tables, or enemy-AI state tables
+at all, so `emit_data_regions.rs` can't exclude what it doesn't know
+about yet) - and even a clean function list is still a long way from a
+*playable* recompilation, which additionally needs the full SDL2 runner
+built and a proper dispatch/trampoline configuration, work no game.toml
+example in nesrecomp's own repo treats as quick even for well-supported
+mappers. Whether to keep pushing this track, treat it as a
+complement to hand-porting, or set it aside is an open call - not
+resolved by this evaluation, which was scoped to answering "is this
+viable at all," not "is this the plan now."
+
 ## Where to look
 
 - `crates/contra-native/` - the ported code itself; each module's doc
