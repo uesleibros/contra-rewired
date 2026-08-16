@@ -23,11 +23,14 @@
 //! `--dump-audio <dir>`, decode Contra's 2 DPCM samples to WAV (see
 //! `crates/contra-native/src/audio.rs` - standard 2A03 DMC decode, cross-
 //! checked against the disassembly's own separately-shipped copies of the
-//! same sample bytes); and with `--dump-enemies <dir>`, write each
-//! outdoor level's hard-coded enemy placements to a plain text file (see
-//! `crates/contra-native/src/enemy_spawn.rs`, verified against the
-//! disassembly's own worked example through the real pointer-table walk -
-//! see `crates/contra-nes/examples/extract_enemies.rs`); and with
+//! same sample bytes); and with `--dump-enemies <dir>`, write every
+//! level's hard-coded enemy placements to a plain text file - both
+//! outdoor levels' format (see `crates/contra-native/src/enemy_spawn.rs`,
+//! verified against the disassembly's own worked example through the
+//! real pointer-table walk - see `crates/contra-nes/examples/
+//! extract_enemies.rs`) and indoor/base levels' different fixed format
+//! (live-verified via `VERIFY_INDOOR_ENEMY_SPAWN=1` in `crates/contra-nes/
+//! examples/dump_frames.rs`); and with
 //! `--dump-sound-codes <dir>`, extract every sound_code's raw bytecode -
 //! sound effects, music, and percussion alike (see
 //! `crates/contra-native/src/sound_code.rs`'s doc comment for the grammar
@@ -154,8 +157,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(out_dir) = &args.dump_enemies {
-        let (written, skipped) = enemies::dump_all(&rom.prg_rom, out_dir)?;
-        println!("\nWrote {written} level enemy list(s) to {} ({skipped} indoor/base level(s) noted as not-yet-decoded).", out_dir.display());
+        let written = enemies::dump_all(&rom.prg_rom, out_dir)?;
+        println!("\nWrote {written} level enemy list(s) to {}.", out_dir.display());
     }
 
     if let Some(out_dir) = &args.dump_sound_codes {

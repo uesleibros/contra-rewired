@@ -1197,11 +1197,37 @@ replacement for its real 6502 code, cycle for cycle.
       doc's worked example exactly end-to-end
       (`cargo run -p contra-nes --release --example extract_enemies`).
       Wired into `contra-extract --dump-enemies <dir>` for all 6 outdoor
-      levels; indoor levels (2, 4) use a different, 3-byte fixed format
-      this doesn't decode yet (no worked example exists in the docs to
-      verify a final pixel-offset formula against, so nothing is shipped
-      rather than shipping a guess) - their output files say so plainly
-      instead of silently producing nothing.
+      levels.
+      **Update: indoor/base levels (2, 4) are decoded too now, closing
+      this asset-extraction gap.** The blocker noted above (no worked
+      example in the docs to verify a pixel-offset formula against) is
+      resolved differently than originally anticipated: instead of
+      needing a documented worked example, `contra_native::enemy_spawn::
+      decompress_indoor_enemy_screen` was ported straight from the real
+      reader routine (`load_enemy_indoor_level`, `bank2.asm`) and
+      verified the same way every CPU-logic routine in this project is -
+      against real gameplay, via `VERIFY_INDOOR_ENEMY_SPAWN=1` (`crates/
+      contra-nes/examples/dump_frames.rs`) combined with `JUMP_STAGE` to
+      reach an indoor level. Reading the real code (not the doc's own
+      diagram) also caught two real mistakes the doc alone would have
+      produced: the position byte's nibble order is `YYYY XXXX`, not
+      `XXXX YYYY` as the doc's diagram implies, and the `C`/`D` position-
+      adjustment flags each add **8**, not the `7` their own `adc #$07`
+      instruction looks like in isolation (the real addition includes an
+      implicit `+1` from a carry the preceding `asl` left set). A third,
+      genuine control-flow subtlety was found and root-caused during
+      verification itself, not guessed: the *shared* exit both the "no
+      data for this screen" check and the ordinary "no more enemies on
+      this screen" (a real, expected 0xFF terminator) check jump to is
+      the **same** address - the routine's own separate, local `rts` is
+      reached only by the edge case of exactly 16 enemies with no
+      terminator, which real screens may never hit. One real screen from
+      each indoor level (level 2's and level 4's own screen 0) came back
+      with zero mismatches. `contra-extract --dump-enemies <dir>` now
+      decodes and writes all 8 levels, no exceptions - level 2's real
+      output spans 7 screens (41 hard-coded enemies total, screen 0
+      matching the live-verified capture exactly, screen 6 a distinct
+      16-enemy boss room).
 
 ## A possible shortcut: static recompilation (evaluated, not adopted yet)
 

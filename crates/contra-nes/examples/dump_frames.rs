@@ -290,6 +290,15 @@ fn main() {
                     nes.bus.ram[0x30],
                 );
             }
+            // VERIFY_INDOOR_ENEMY_SPAWN only: once the jumped-to level has
+            // had time to settle into its "in-level" routine, force
+            // ENEMY_SCREEN_READ_OFFSET back to 0 to guarantee a fresh,
+            // real `load_enemy_indoor_level` pass triggers - the jump
+            // itself only clears it once, and by the time the level
+            // settles real gameplay may have already advanced it past 0.
+            if std::env::var("VERIFY_INDOOR_ENEMY_SPAWN").is_ok() && frame == start_after + 750 {
+                nes.poke_ram(0x82, 0);
+            }
         }
         // PC_TRACE_FRAME=N: tallies every instruction address the CPU
         // executes during frame N into a histogram and prints the most
@@ -1405,6 +1414,86 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-collision-flags calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_INDOOR_ENEMY_SPAWN").is_ok() {
+            // VERIFY_INDOOR_ENEMY_SPAWN=1 (use with JUMP_STAGE=1 or 3 to
+            // reach an indoor level): verification pass for
+            // `contra_native::enemy_spawn::decompress_indoor_enemy_screen`.
+            // The resolved screen-data pointer is already sitting in
+            // $0a/$0b (bank2.asm's own `load_screen_enemy_data` prefix
+            // resolves it before `load_enemy_indoor_level` is even
+            // called), so the real 2-level pointer-table indirection this
+            // project already trusts doesn't need to be redone here.
+            // Reads the actual bytes via `bus.mapper.read` (the
+            // emulator's own live bank mapping) rather than independently
+            // recomputing a PRG-ROM file offset - the switchable-bank
+            // number active for bank2.asm's own code isn't a fixed
+            // constant to assume, and guessing it wrong silently reads
+            // the wrong bank's bytes.
+            let mut pending: Option<Vec<u8>> = None; // 64 real bytes read via the live mapper
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    // $b4c6 = the `cmp #$ff` right after the real `lda
+                    // ($0a),y` (verified by counting instruction lengths
+                    // from $b4af: 2+2+2+2+2+2+2+2+3+2+2 = 23 bytes, all
+                    // confirmed zero-page/immediate/jsr-abs modes via
+                    // rom-symbols.txt's own addresses) - hooking $b4af
+                    // itself and reading $0a/$0b there looked identical
+                    // to this in testing but produced a real mismatch:
+                    // `cpu.a` here is the actual byte the CPU's own `cmp`
+                    // just compared, so this is the ground truth, not an
+                    // assumption about timing.
+                    0xB4C6 if bus.ram[0x82] == 1 => {
+                        let addr = u16::from_le_bytes([bus.ram[0x0a], bus.ram[0x0b]]);
+                        let data: Vec<u8> = (0..64u16).map(|i| bus.mapper.read(addr.wrapping_add(i))).collect();
+                        pending = Some(data);
+                    }
+                    // Both real exits land here for the same reason: the
+                    // mid-loop "no more enemies" check (position byte ==
+                    // $ff, the terminator every real screen with fewer
+                    // than 16 enemies actually hits) branches to the same
+                    // $b4ae `load_screen_enemy_data_exit` the "no data at
+                    // all" (cores == $ff) check uses - $b512 (this
+                    // routine's own local `rts`) is reached only in the
+                    // edge case of exactly 16 enemies with no terminator
+                    // at all, which real data may never exercise. Both
+                    // exits get the identical real-RAM comparison.
+                    0xB4AE | 0xB512 => {
+                        if let Some(data) = pending.take() {
+                            let expected = contra_native::enemy_spawn::decompress_indoor_enemy_screen(&data);
+                            checked += 1;
+                            if let Some(screen) = &expected {
+                                let real_cores = bus.ram[0x86];
+                                let mut mismatch = real_cores != screen.cores_to_destroy;
+                                let mut real_spawns = Vec::new();
+                                for (i, expected_spawn) in screen.spawns.iter().enumerate() {
+                                    let slot = 15 - i;
+                                    let real_spawn = contra_native::enemy_spawn::EnemySpawn {
+                                        x: bus.ram[0x33E + slot],
+                                        y: bus.ram[0x324 + slot],
+                                        enemy_type: bus.ram[0x528 + slot],
+                                        attribute: bus.ram[0x5A8 + slot],
+                                    };
+                                    if real_spawn != *expected_spawn {
+                                        mismatch = true;
+                                    }
+                                    real_spawns.push(real_spawn);
+                                }
+                                if mismatch {
+                                    eprintln!(
+                                        "MISMATCH(indoor_enemy_spawn) frame={frame} real_cores={real_cores:02X}: expected {screen:?}, got real_spawns={real_spawns:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-enemy-spawn calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();
