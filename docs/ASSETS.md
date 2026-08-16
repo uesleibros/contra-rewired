@@ -111,13 +111,72 @@ already-scanned range instead, retracing its own tail to the same
 terminator). Wired into `contra-extract --dump-sound-codes <dir>` - all
 94 sound codes, 232 distinct blobs, from the real ROM.
 
-Not done yet: extracting bytecode is still not the same as *playing* it -
-every one of those bytes is a program, not a sound. Turning it into real
-audio needs a playback engine (the bytecode interpreter plus 2A03 APU
-register driving) ported as CPU logic - closer to the CPU-logic-porting
-workstream than to extraction - which hasn't been started. Indoor-level
-enemy placement (levels 2 and 4) uses a different, undecoded format. See
-docs/NATIVE_PORT.md's "Current status" for the up-to-date breakdown.
+**A playback engine - the piece that actually turns this bytecode into
+sound - has genuinely started too**, but it's a much bigger undertaking
+than extraction, and only the first slice is done:
+`contra_native::sound_code::decode_low_command` decodes low-format bytes
+into their real meaning (note pitch/volume, config commands), verified
+against a real sound effect's full command sequence by hand. Reading deep
+enough into the real interpreter to write that showed the actual scope of
+what's left: real-time per-frame state (a countdown timer gates when the
+next command is read, so this can't be a one-shot decode), a
+decrescendo/volume-envelope system reading a per-level table not yet
+ported, and priority arbitration across all 6 sound slots competing for 4
+physical APU channels - realistically on the order of the *entire* rest
+of the CPU-logic-porting workstream, not a small remaining piece.
+
+**A real, steppable engine now exists for the two sound-effect slots.**
+`contra_native::sound_engine::SoundSlot` handles trigger initialization,
+note-by-note reading, and full `0xFD`/`0xFE`/`0xFF` control-flow
+(child-jump/repeat/end), mechanically verified frame-by-frame against
+real gameplay rather than hand-picked examples
+(`contra-nes/examples/verify_sound_engine.rs`). That verification caught
+a real bug in the *tool itself* (it was seeding a sound's start address
+from RAM sampled after the trigger frame had already advanced past it -
+fixed by resolving the address from `sound_table_00` directly, the same
+way the real trigger routine does), and traced the remaining mismatches
+to their true cause: real Contra's game loop runs entirely inside the
+NMI handler, and during any lag-heavy stretch a second NMI can genuinely
+reenter it before the first finishes - real, edge-triggered 6502
+behavior `contra-nes`'s cycle-accurate emulation faithfully reproduces -
+so sound processing can run more than once per visual frame. That's a
+verification-methodology gap (the tool steps once per frame; real
+hardware doesn't always), not an engine bug, and it doesn't affect the
+eventual native PC port, which has no 6502 cycle budget to blow.
+
+**High-format (music) and percussion now have a real, verified engine
+too.** `contra_native::sound_code::decode_high_command` and
+`contra_native::sound_engine::MusicSlot` mirror the low-format pieces
+above - hand-verified against two real sounds byte-for-byte first
+(TITLE's music and its percussion track, both matched on the first
+attempt), then mechanically verified across all 4 music slots during real
+gameplay. That verification caught a second real trigger-address bug: a
+multi-slot sound (like the TITLE theme, which spans all 4 music slots)
+sets the per-slot "currently playing" variable to the *original*
+triggering code for every slot it touches, not that slot's own table
+entry - the fix walks consecutive table entries for the one whose
+embedded slot number actually matches, the same way the real trigger
+routine does. One slot's 23-for-23 matched note-trigger commands is the
+clearest evidence the core decoding logic is right; the remaining
+mismatches cluster around the same two already-understood causes above
+(trigger-frame observation timing, and NMI-reentrancy/lag), not new
+bugs.
+
+**Two of the three missing data tables are ported too, both verified
+byte-for-byte against the real ROM.** `sound_code::NOTE_PERIOD_TBL` (24
+real APU period values) resolves a music note's pitch; `sound_code::
+PERCUSSION_TBL` (8 sound codes) resolves which DMC sample or sound_code a
+percussion trigger actually plays. The volume-envelope table
+(`pulse_volume_ptr_tbl`) turned out to be a per-level array of pointers
+to many separate envelope byte streams - genuinely its own extraction
+workstream (comparable in scope to the enemy-spawn or level-data
+extraction already done elsewhere in this document), left for a
+follow-up rather than rushed. Still not started: that envelope data, and
+cross-slot channel-priority arbitration.
+
+Indoor-level enemy placement (levels 2 and 4) uses a different, undecoded
+format. See docs/NATIVE_PORT.md's "Current status" for the up-to-date
+breakdown.
 
 ## What `contra-extract` does today
 

@@ -340,6 +340,14 @@ pub struct Apu {
     sample_acc_timer: f64,
     #[serde(skip)]
     pub sample_buffer: Vec<f32>,
+    /// Raw byte last written to each APU register (`$4000-$401F`,
+    /// indexed by `addr - 0x4000`), kept alongside the decoded internal
+    /// state above - for debug tooling (verifying a native sound_code
+    /// engine's computed writes against what the real 6502 code actually
+    /// wrote) that wants ground-truth register bytes rather than
+    /// re-deriving them from `Pulse`/`Noise`'s decoded fields.
+    #[serde(skip)]
+    pub last_write: [u8; 0x20],
 }
 
 impl Apu {
@@ -357,6 +365,7 @@ impl Apu {
             sample_rate,
             sample_acc_timer: 0.0,
             sample_buffer: Vec::new(),
+            last_write: [0; 0x20],
         }
     }
 
@@ -376,6 +385,9 @@ impl Apu {
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
+        if (0x4000..0x4020).contains(&addr) {
+            self.last_write[(addr - 0x4000) as usize] = value;
+        }
         match addr {
             0x4000 => self.pulse1.write_ctrl(value),
             0x4001 => self.pulse1.write_sweep(value),

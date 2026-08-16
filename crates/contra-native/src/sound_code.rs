@@ -149,7 +149,7 @@ pub struct SoundCodeExtent {
 /// Converts a bank-1-relative CPU memory address (as read from an
 /// `0xFD`/`0xFE` command's address bytes) to a PRG-ROM offset. All of
 /// Contra's sound_code data lives in bank 1.
-fn bank1_prg_offset(mem_addr: u16) -> usize {
+pub(crate) fn bank1_prg_offset(mem_addr: u16) -> usize {
     0x4000 + (mem_addr as usize & 0x3FFF)
 }
 
@@ -233,6 +233,76 @@ pub fn walk_low(prg_rom: &[u8], start_offset: usize) -> SoundCodeExtent {
     }
 
     SoundCodeExtent { length: pos - start_offset, child_prg_offsets: children }
+}
+
+/// One decoded low-format command - the *meaning* behind a unit
+/// `walk_low` already knows the byte-length of. This is the first real
+/// step toward a playback engine (see this module's top doc comment):
+/// turning bytes into the values `interpret_sound_byte` itself computes
+/// (`SOUND_LENGTH_MULTIPLIER`, `SOUND_CFG_HIGH`/`_LOW`, the APU note
+/// period), not yet the frame-by-frame state machine that actually
+/// drives APU registers over time (real-time state - `SOUND_CMD_LENGTH`
+/// countdown, decrescendo, channel-priority arbitration across all 6
+/// sound slots - is a substantially larger, separate piece of work, not
+/// covered here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowCommand {
+    /// Case 1 (`0x20`-`0x2F`): sets `SOUND_LENGTH_MULTIPLIER` and the
+    /// APU config register's high nibble for subsequent notes.
+    SetLengthAndConfig { length_multiplier: u8, cfg_high: u8 },
+    /// Case 2 (`0x10` exactly): enables/adjusts (or, if `value == 0`,
+    /// disables) the pulse channel's hardware sweep unit.
+    Sweep { value: u8 },
+    /// Case 3 (`0x11`-`0x1F`): sets the "slightly flatten this note"
+    /// flag. Documented as never actually triggered by real Contra data,
+    /// but valid grammar this decoder still recognizes.
+    FlattenNoteFlag,
+    /// Case 4 (anything else): a note. `cfg_low` is the volume/duty
+    /// nibble (merged with the running `SetLengthAndConfig`'s `cfg_high`
+    /// to form the real `$4000`/`$4004`/`$400C` config byte); `period` is
+    /// the 11-bit APU period value (`$4002`/`4003` or `$4006`/`4007`)
+    /// built from the note byte's low nibble (high 3 bits) and the
+    /// following byte (low 8 bits) - or, when the note byte is the
+    /// `0xF8` escape, from a dedicated following byte instead of the
+    /// note byte itself.
+    Note { cfg_low: u8, period: u16 },
+}
+
+/// Decodes one low-format command at `prg_rom[pos]`, returning it along
+/// with the bytes consumed (matching `walk_low`'s own length accounting
+/// for the same byte pattern - control commands `0xFD`-`0xFF` aren't
+/// decoded here since they're flow control, not sound production; see
+/// [`control_command_body`] for those).
+pub fn decode_low_command(prg_rom: &[u8], pos: usize) -> (LowCommand, usize) {
+    let b = prg_rom[pos];
+    debug_assert!(b < 0xfd, "decode_low_command doesn't handle control commands (0xFD-0xFF) - check the byte first");
+
+    if b >= 0x20 && b <= 0x2f {
+        if b == 0x2f {
+            let length_multiplier = prg_rom[pos + 1];
+            let cfg_high = prg_rom[pos + 2];
+            (LowCommand::SetLengthAndConfig { length_multiplier, cfg_high }, 3)
+        } else {
+            let length_multiplier = b & 0x0f;
+            let cfg_high = prg_rom[pos + 1];
+            (LowCommand::SetLengthAndConfig { length_multiplier, cfg_high }, 2)
+        }
+    } else if b == 0x10 {
+        (LowCommand::Sweep { value: prg_rom[pos + 1] }, 2)
+    } else if b >= 0x11 && b <= 0x1f {
+        (LowCommand::FlattenNoteFlag, 1)
+    } else if b == 0xf8 {
+        let note_byte = prg_rom[pos + 1];
+        let cfg_low = (note_byte & 0xf0) >> 4;
+        let period_high = (note_byte & 0x0f) as u16;
+        let period_low = prg_rom[pos + 2] as u16;
+        (LowCommand::Note { cfg_low, period: (period_high << 8) | period_low }, 3)
+    } else {
+        let cfg_low = (b & 0xf0) >> 4;
+        let period_high = (b & 0x0f) as u16;
+        let period_low = prg_rom[pos + 1] as u16;
+        (LowCommand::Note { cfg_low, period: (period_high << 8) | period_low }, 2)
+    }
 }
 
 /// Which of the 4 "music" channel slots a high/percussion-format
@@ -332,6 +402,185 @@ pub fn walk_high(prg_rom: &[u8], start_offset: usize, slot: Slot) -> SoundCodeEx
 
     SoundCodeExtent { length: pos - start_offset, child_prg_offsets: children }
 }
+
+/// One decoded high-format (music, slots #$00-#$02) or percussion (slot
+/// #$03) command - the same "first real step toward a playback engine"
+/// role [`LowCommand`]/[`decode_low_command`] play for low format, ported
+/// from `simple_sound_cmd`/`sound_cmd_routine_00`-`_02`/
+/// `calc_cmd_len_play_percussion`/`play_percussive_sound`
+/// (`src/bank1.asm`). `note_period_tbl`/`percussion_tbl`'s actual byte
+/// contents aren't transcribed yet, so this resolves commands down to
+/// their real *indices* into those tables, not final period/DMC values -
+/// same carve-out as `LowCommand::Note`'s still-unresolved envelope path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighCommand {
+    /// `simple_sound_cmd` (byte `< 0xC0`, non-percussion slots only): a
+    /// single note. `pitch_offset` indexes `note_period_tbl` (already
+    /// doubled, since each entry is 2 bytes); `length_low_nibble` feeds
+    /// `calc_cmd_len_play_percussion` as the `(+1)` multiplier applied to
+    /// the *current* `SOUND_LENGTH_MULTIPLIER` to get the real
+    /// `SOUND_CMD_LENGTH` - this module doesn't carry per-slot runtime
+    /// state, so the actual frame count isn't resolved here.
+    Note { pitch_offset: u8, length_low_nibble: u8 },
+    /// `sound_cmd_routine_00`: mutes the channel (bit 6 of `SOUND_FLAGS`).
+    Mute,
+    /// `sound_cmd_routine_01`: sets `SOUND_LENGTH_MULTIPLIER` and channel
+    /// config. Triangle only sets `SOUND_TRIANGLE_CFG` (`triangle_cfg`);
+    /// pulse/noise set the full config-low/config-high/volume-envelope
+    /// triple (`cfg_low` is the *raw* byte low nibble - `UNKNOWN_SOUND_01`
+    /// is real per-slot runtime state this module doesn't track, so the
+    /// real routine's data-independent-but-state-dependent early exit
+    /// isn't modeled here, matching this crate's established stance that
+    /// data *layout* is fixed regardless of which interpreter path runs).
+    ConfigChannel { length_multiplier: u8, triangle_cfg: Option<u8>, cfg_low: u8, cfg_high: u8, vol_env: u8, unknown_00: u8 },
+    /// `sound_cmd_routine_02`, low nibble `0x0`-`0x4`: sets
+    /// `SOUND_PERIOD_ROTATE` (documented as the number of times to shift
+    /// `note_period_tbl`'s high byte into the low byte).
+    PeriodRotate { amount: u8 },
+    /// `sound_cmd_routine_02`, low nibble `0x8`: flips (not sets) the
+    /// "slightly flatten this note" flag (`SOUND_FLAGS` bit 4).
+    FlipFlattenNote,
+    /// `sound_cmd_routine_02`, low nibble `0xb`: sets vibrato delay/
+    /// amount - documented elsewhere in this crate as never actually
+    /// exercised by real Contra data (the game disables vibrato via
+    /// `VIBRATO_CTRL = 0x80` at trigger time and this path is dead in
+    /// practice), kept for grammar completeness. `amount` is `None` when
+    /// `delay == 0xFF` (the real routine's own early-exit case).
+    SetVibrato { delay: u8, amount: Option<u8> },
+    /// `sound_cmd_routine_02`, low nibble `0xc`: adjusts pitch by setting
+    /// `SOUND_PITCH_ADJ` to `raw_value * 2` (already applied here, since
+    /// the real routine's `asl` is unconditional and not runtime-gated).
+    PitchAdjust { period_table_offset: u8 },
+    /// `sound_cmd_routine_02`, any other low nibble: real ROM data never
+    /// produces this (grammar completeness only, per the real routine's
+    /// own "ignore and continue" fallback).
+    Unknown,
+    /// Percussion only (slot #$03), byte high nibble `0xD`: sets
+    /// `SOUND_LENGTH_MULTIPLIER` from the low nibble, then loops back for
+    /// another percussion command - not a sound trigger by itself.
+    PercussionDelay { length_multiplier: u8 },
+    /// Percussion only (slot #$03), any other byte (high nibble not
+    /// `0xF`/`0xD`): triggers a DMC sample via `percussion_tbl[index]`
+    /// (`index = byte >> 4`, capped - real ROM data never uses `0xC`+,
+    /// which the routine treats as a no-op exit) and, per the real
+    /// routine's `>= 0x3` check, also plays `sound_02` alongside it
+    /// (except at index `0x5`, which is `sound_25` and is documented as
+    /// specifically excluded elsewhere in `load_sound_code_entry`).
+    /// `delay_low_nibble` feeds `calc_cmd_len_play_percussion` the same
+    /// way `Note::length_low_nibble` does.
+    PercussionTrigger { percussion_tbl_index: u8, delay_low_nibble: u8 },
+}
+
+/// Decodes one high-format/percussion command at `prg_rom[pos]`,
+/// returning it along with the bytes consumed (matching `walk_high`'s own
+/// length accounting for the same byte pattern - control commands
+/// `0xFD`-`0xFF` aren't decoded here, same as `decode_low_command`; see
+/// [`control_command_body`] for those).
+pub fn decode_high_command(prg_rom: &[u8], pos: usize, slot: Slot) -> (HighCommand, usize) {
+    let b = prg_rom[pos];
+    debug_assert!(b < 0xf0, "decode_high_command doesn't handle control commands (0xF0-0xFF) - check the byte first");
+
+    if slot == Slot::Noise {
+        return if b & 0xf0 == 0xd0 {
+            (HighCommand::PercussionDelay { length_multiplier: b & 0x0f }, 1)
+        } else {
+            (HighCommand::PercussionTrigger { percussion_tbl_index: b >> 4, delay_low_nibble: b & 0x0f }, 1)
+        };
+    }
+
+    if b < 0xc0 {
+        return (HighCommand::Note { pitch_offset: (b & 0xf0) >> 4, length_low_nibble: b & 0x0f }, 1);
+    }
+
+    match b & 0x30 {
+        0x00 => (HighCommand::Mute, 1),
+        0x10 => {
+            if slot == Slot::Triangle {
+                (HighCommand::ConfigChannel {
+                    length_multiplier: b & 0x0f,
+                    triangle_cfg: Some(prg_rom[pos + 1]),
+                    cfg_low: 0,
+                    cfg_high: 0,
+                    vol_env: 0,
+                    unknown_00: 0,
+                }, 2)
+            } else {
+                // pos+1 is read twice in the real routine: its low nibble
+                // (minus runtime UNKNOWN_SOUND_01, not modeled here - see
+                // this variant's doc comment) feeds SOUND_CFG_LOW, and its
+                // high nibble feeds SOUND_CFG_HIGH.
+                let cfg_byte = prg_rom[pos + 1];
+                let cfg_low = cfg_byte & 0x0f;
+                let cfg_high = cfg_byte & 0xf0;
+                let vol_env = prg_rom[pos + 2];
+                let unknown_00 = prg_rom[pos + 3] & 0x0f;
+                (HighCommand::ConfigChannel {
+                    length_multiplier: b & 0x0f,
+                    triangle_cfg: None,
+                    cfg_low,
+                    cfg_high,
+                    vol_env,
+                    unknown_00,
+                }, 4)
+            }
+        }
+        0x20 => {
+            let low_nibble = b & 0x0f;
+            match low_nibble {
+                0x0..=0x4 => (HighCommand::PeriodRotate { amount: low_nibble }, 1),
+                0x8 => (HighCommand::FlipFlattenNote, 1),
+                0xb => {
+                    let delay = prg_rom[pos + 1];
+                    if delay == 0xff {
+                        (HighCommand::SetVibrato { delay, amount: None }, 2)
+                    } else {
+                        (HighCommand::SetVibrato { delay, amount: Some(prg_rom[pos + 2]) }, 3)
+                    }
+                }
+                0xc => (HighCommand::PitchAdjust { period_table_offset: prg_rom[pos + 1].wrapping_mul(2) }, 2),
+                _ => (HighCommand::Unknown, 1),
+            }
+        }
+        _ => unreachable!("b < 0xf0 here, so b & 0x30 can only be 0x00, 0x10, or 0x20"),
+    }
+}
+
+/// `note_period_tbl` (`src/bank1.asm`, CPU address `$86D5`, verified
+/// byte-for-byte against the real ROM) - the 24 real APU pulse/triangle
+/// period values `simple_sound_cmd`'s notes index into
+/// (`HighCommand::Note::pitch_offset`, `0`-based, one entry per
+/// semitone starting at C2/"deep C"). Real Contra additionally applies
+/// `SOUND_PERIOD_ROTATE` (a right-shift of this value, `sound_cmd_
+/// routine_02` low nibble `0x0`-`0x4`) and `SOUND_PITCH_ADJ` (an extra
+/// *byte* offset added before this table is indexed, `sound_cmd_
+/// routine_02` low nibble `0xc` - already doubled by [`HighCommand::
+/// PitchAdjust`]) - neither is applied by [`note_period`] itself, since
+/// `MusicSlot` doesn't track that per-slot state yet.
+pub const NOTE_PERIOD_TBL: [u16; 24] = [
+    0x06ae, 0x064e, 0x05f4, 0x059e, 0x054e, 0x0501, 0x04b9, 0x0476, 0x0436, 0x03f9, 0x03c0, 0x038a,
+    0x0357, 0x0327, 0x02fa, 0x02cf, 0x02a7, 0x0281, 0x025d, 0x023b, 0x021b, 0x01fd, 0x01e0, 0x01c5,
+];
+
+/// Looks up a `simple_sound_cmd` note's real APU period from
+/// [`NOTE_PERIOD_TBL`] by its raw nibble offset (`0`-`15`, though real
+/// Contra data only uses `0`-`11` at the table's low end before
+/// `SOUND_PITCH_ADJ`/rotation shift it - see [`NOTE_PERIOD_TBL`]'s doc
+/// comment for what this doesn't apply).
+pub fn note_period(pitch_offset: u8) -> u16 {
+    NOTE_PERIOD_TBL[pitch_offset as usize]
+}
+
+/// `percussion_tbl` (`src/bank1.asm`, CPU address `$82CD`, verified
+/// byte-for-byte against the real ROM) - which real sound_code
+/// `play_percussive_sound` triggers for each `HighCommand::
+/// PercussionTrigger::percussion_tbl_index` (`0`-`7`): a DMC sample
+/// (`sound_5a`/`_5b`/`_5c`, see `contra_native::audio`) or `sound_25`
+/// (index `5`, the only entry that's itself a full sound_code, not a raw
+/// DPCM trigger). Real data never produces index `6`/`7` (`0x0c`+ high
+/// nibble is treated as a no-op exit by `play_percussive_sound` before
+/// this table would even be indexed) - `sound_5c`/`sound_5d` are kept
+/// here only because the real ROM data is present regardless.
+pub const PERCUSSION_TBL: [u8; 8] = [0x02, 0x5a, 0x5b, 0x5a, 0x5b, 0x25, 0x5c, 0x5d];
 
 /// Walks `walk_low` recursively through every child blob too, returning
 /// `(top_level_prg_offset, extent)` for the whole family - the top-level
@@ -505,6 +754,100 @@ mod tests {
     }
 
     #[test]
+    fn decode_high_command_matches_sound_26s_real_command_sequence() {
+        // Same real sound_26 bytes as the length test above, decoded
+        // command-by-command and hand-verified against
+        // sound_cmd_routine_00/01/02/simple_sound_cmd's real byte layout.
+        #[rustfmt::skip]
+        let data = [
+            0xe8, 0xd9, 0xf8, 0x87, 0x0a, 0xe3, 0x03, 0xd9, 0xf7, 0x84, 0x06, 0xe2,
+            0x93, 0x73, 0x23, 0xda, 0xf7, 0x84, 0x02, 0xe2, 0x4f, 0xff,
+        ];
+        let mut pos = 0;
+        let mut cmds = Vec::new();
+        loop {
+            let b = data[pos];
+            if b >= 0xf0 {
+                break; // 0xff terminator, not decoded by decode_high_command.
+            }
+            let (cmd, len) = decode_high_command(&data, pos, Slot::Pulse1);
+            cmds.push(cmd);
+            pos += len;
+        }
+        assert_eq!(pos, 21); // everything except the trailing 0xff.
+        assert_eq!(
+            cmds,
+            vec![
+                HighCommand::FlipFlattenNote,
+                HighCommand::ConfigChannel { length_multiplier: 9, triangle_cfg: None, cfg_low: 8, cfg_high: 0xf0, vol_env: 0x87, unknown_00: 0xa },
+                HighCommand::PeriodRotate { amount: 3 },
+                HighCommand::Note { pitch_offset: 0, length_low_nibble: 3 },
+                HighCommand::ConfigChannel { length_multiplier: 9, triangle_cfg: None, cfg_low: 7, cfg_high: 0xf0, vol_env: 0x84, unknown_00: 6 },
+                HighCommand::PeriodRotate { amount: 2 },
+                HighCommand::Note { pitch_offset: 9, length_low_nibble: 3 },
+                HighCommand::Note { pitch_offset: 7, length_low_nibble: 3 },
+                HighCommand::Note { pitch_offset: 2, length_low_nibble: 3 },
+                HighCommand::ConfigChannel { length_multiplier: 0xa, triangle_cfg: None, cfg_low: 7, cfg_high: 0xf0, vol_env: 0x84, unknown_00: 2 },
+                HighCommand::PeriodRotate { amount: 2 },
+                HighCommand::Note { pitch_offset: 4, length_low_nibble: 0xf },
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_high_command_matches_sound_29s_real_percussion_sequence() {
+        // sound_29 (TITLE percussion, slot #$03) - real bytes, hand-
+        // verified against parse_percussion_cmd's real dispatch (0xD0-
+        // 0xDF = delay, otherwise = trigger).
+        let data = [0xd9, 0x33, 0x03, 0x03, 0x33, 0xda, 0x55, 0x11, 0x17, 0xff];
+        let mut pos = 0;
+        let mut cmds = Vec::new();
+        loop {
+            let b = data[pos];
+            if b >= 0xf0 {
+                break;
+            }
+            let (cmd, len) = decode_high_command(&data, pos, Slot::Noise);
+            cmds.push(cmd);
+            pos += len;
+        }
+        assert_eq!(pos, 9);
+        assert_eq!(
+            cmds,
+            vec![
+                HighCommand::PercussionDelay { length_multiplier: 9 },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 3, delay_low_nibble: 3 },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 0, delay_low_nibble: 3 },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 0, delay_low_nibble: 3 },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 3, delay_low_nibble: 3 },
+                HighCommand::PercussionDelay { length_multiplier: 0xa },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 5, delay_low_nibble: 5 },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 1, delay_low_nibble: 1 },
+                HighCommand::PercussionTrigger { percussion_tbl_index: 1, delay_low_nibble: 7 },
+            ]
+        );
+    }
+
+    #[test]
+    fn note_period_tbl_matches_the_real_48_rom_bytes() {
+        #[rustfmt::skip]
+        let real_bytes: [u8; 48] = [
+            0xae, 0x06, 0x4e, 0x06, 0xf4, 0x05, 0x9e, 0x05, 0x4e, 0x05, 0x01, 0x05, 0xb9, 0x04,
+            0x76, 0x04, 0x36, 0x04, 0xf9, 0x03, 0xc0, 0x03, 0x8a, 0x03, 0x57, 0x03, 0x27, 0x03,
+            0xfa, 0x02, 0xcf, 0x02, 0xa7, 0x02, 0x81, 0x02, 0x5d, 0x02, 0x3b, 0x02, 0x1b, 0x02,
+            0xfd, 0x01, 0xe0, 0x01, 0xc5, 0x01,
+        ];
+        for (i, entry) in NOTE_PERIOD_TBL.iter().enumerate() {
+            let expected = u16::from_le_bytes([real_bytes[i * 2], real_bytes[i * 2 + 1]]);
+            assert_eq!(*entry, expected, "entry {i}");
+        }
+        // Lowest note (C2/"deep C") and highest ("middle C") from the
+        // disassembly's own worked frequency comments.
+        assert_eq!(note_period(0), 0x06ae);
+        assert_eq!(note_period(23), 0x01c5);
+    }
+
+    #[test]
     fn high_format_child_can_overlap_the_end_of_its_own_parent() {
         // Models sound_2a's real structure at a tiny scale: a repeat
         // command partway through jumps *backward* into the parent's own
@@ -537,5 +880,35 @@ mod tests {
         // parent's own total length exactly, the same self-consistency
         // check that validated the real sound_2a case.
         assert_eq!(child.length, 6);
+    }
+
+    #[test]
+    fn decode_low_command_matches_sound_03s_real_note_sequence() {
+        // sound_03's real bytes, hand-decoded: 2 config-setting commands
+        // and 4 notes (2 using the 0xF8 escape) - cross-checked so that
+        // summing every decoded command's own consumed-byte count lands
+        // exactly on the real 0xFF terminator, matching `walk_low`'s
+        // independently-computed 17-byte length for the same data.
+        let data = [0x21, 0x30, 0x40, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x21, 0xf0, 0xf8, 0x20, 0x0a, 0xf8, 0x10, 0x0b, 0xff];
+        let mut pos = 0;
+        let mut commands = Vec::new();
+        while data[pos] < 0xfd {
+            let (cmd, len) = decode_low_command(&data, pos);
+            commands.push(cmd);
+            pos += len;
+        }
+        assert_eq!(pos, 16); // everything up to (not including) the real 0xFF at index 16
+        assert_eq!(
+            commands,
+            vec![
+                LowCommand::SetLengthAndConfig { length_multiplier: 1, cfg_high: 0x30 },
+                LowCommand::Note { cfg_low: 4, period: 0xf0 },
+                LowCommand::Note { cfg_low: 0, period: 0x00 },
+                LowCommand::Note { cfg_low: 0, period: 0x00 },
+                LowCommand::SetLengthAndConfig { length_multiplier: 1, cfg_high: 0xf0 },
+                LowCommand::Note { cfg_low: 2, period: 0x0a },
+                LowCommand::Note { cfg_low: 1, period: 0x0b },
+            ]
+        );
     }
 }

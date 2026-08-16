@@ -530,16 +530,198 @@ replacement for its real 6502 code, cycle for cycle.
       to the phrase's own end), not a bug. `contra-extract
       --dump-sound-codes <dir>` now extracts all 94 sound codes across
       all three sub-formats - 232 distinct blobs total from the real US
-      ROM. **What's still genuinely missing, and always will need more
-      than extraction**: every one of these bytes is still just
-      *bytecode* - a program, not a sound. Making Contra's real music and
-      sound effects actually play requires porting the bytecode
-      *interpreter* itself (`handle_sound_code` and everything under it)
-      plus the 2A03 APU register semantics it drives, as real CPU logic
-      (the same category of work as `collision`/`player_physics`, not
-      extraction) - not started. "Nothing missing" now genuinely applies
-      to *what data exists in the ROM*; it doesn't yet apply to *what the
-      game can play*.
+      ROM.
+      **Playback engine: genuinely started, first slice landed, and now a
+      far better-informed scope estimate for the rest.** Every sound_code
+      byte extracted above is still just *bytecode* - a program, not a
+      sound. `sound_code::decode_low_command` is the first real step
+      toward making it playable: turns each low-format unit `walk_low`
+      already knew the byte-length of into its actual meaning
+      (`SetLengthAndConfig`/`Sweep`/`FlattenNoteFlag`/`Note{cfg_low,
+      period}` - the same `SOUND_LENGTH_MULTIPLIER`/`SOUND_CFG_HIGH`/APU
+      note-period values the real routine computes), verified against
+      `sound_03`'s full real command sequence by hand. **What that still
+      isn't**: a playback engine, and reading deep enough into
+      `handle_sound_code`/`lvl_config_pulse`/`ldx_pulse_triangle_reg` to
+      write this decoder revealed the *real* remaining scope more clearly
+      than before - it's substantially larger than "interpret one
+      command":
+        - **Per-frame real-time state**, not a one-shot decode:
+          `SOUND_CMD_LENGTH` counts down every video frame, and a new
+          command is only read once it hits zero - so a correct engine
+          has to be steppable frame-by-frame, not just "decode the whole
+          sound_code up front".
+        - **Decrescendo/volume-envelope logic** (`@check_pulse_volume`/
+          `lvl_config_pulse`/`lower_pulse_volume`/`resume_decrescendo`)
+          runs *every frame regardless of format*, reading a per-level,
+          per-segment volume envelope table (`pulse_volume_ptr_tbl`, 1
+          per level, not yet ported) that low-format sound effects and
+          high-format music both interact with.
+        - **Channel-priority arbitration across all 6 sound slots**
+          (`ldx_pulse_triangle_reg`): two slots can compete for the same
+          physical APU channel, and the real routine's slot-priority
+          order decides which one's register writes actually reach
+          hardware each frame - this can't be modeled one slot at a time
+          in isolation.
+        - **DMC/percussion sample triggering** ties back into
+          `contra-native::audio`'s DPCM decode, itself still unverified
+          against live playback since `contra-nes`'s APU doesn't emulate
+          the DMC channel (see `audio`'s own status above).
+      Porting all of that, correctly, is realistically comparable in
+      scope to the CPU-logic-porting workstream's *entire* remaining
+      backlog (see "Everything else, logic side" below) - not a small
+      remaining piece. Not started beyond the single-command decoder
+      above.
+      **Follow-up session: committed to the full engine, built real
+      verification infrastructure, and found the scope is even deeper
+      than the estimate above - concretely, not just in the abstract.**
+      Given the choice between stopping at low-format-only, attempting
+      the full engine anyway, or pivoting to gameplay logic, this
+      project's owner explicitly chose "all of it, accepting the real
+      risk of not finishing." Two pieces of real, reusable infrastructure
+      came out of pursuing that: `Apu::last_write` (`crates/contra-nes/
+      src/apu.rs`) - the raw byte last written to each `$4000`-`$401F`
+      register, added since the decoded internal `Pulse`/`Noise` state
+      wasn't enough to compare against a native engine's own raw
+      computed bytes - and `trace_sound.rs` (`crates/contra-nes/
+      examples/`), which snapshots all 6 sound slots' RAM state around
+      every real frame during actual gameplay and logs every change,
+      turning "read assembly and hope the derivation is right" into "diff
+      against captured ground truth" the same way `VERIFY_BG_COLLISION`
+      did originally. A captured trace immediately, concretely confirmed
+      `decode_low_command`'s hand-derived `sound_03` sequence byte-for-
+      byte against real frame-by-frame play (command addresses and
+      decoded values matching exactly) - real validation, not just
+      internal consistency.
+      It also surfaced a genuinely new, deeper problem: `SOUND_VOL_ENV`'s
+      per-slot array (`$11E` + slot, 6 slots) overlaps `INIT_SOUND_CODE`
+      (`$122`) at slot 4's specific offset - meaning slot 4 (one of the
+      two sound-*effect*-only slots) doesn't have a real, independent
+      `SOUND_VOL_ENV` byte at all; the decrescendo-check code that runs
+      unconditionally for every active slot every frame reads whatever
+      `INIT_SOUND_CODE` (an unrelated trigger-time scratch variable) last
+      held there instead. Whether that's inert for low-format sounds in
+      practice or a genuine, subtle interaction with the per-level
+      `pulse_volume_ptr_tbl` machinery isn't yet known - it would need
+      dedicated investigation, the same rigor every other finding in this
+      document got, not a guess. This is exactly the kind of undocumented,
+      hardware-level detail that only shows up from tracing real execution,
+      not from reading the disassembly's own comments, and it's a concrete
+      illustration of why the scope estimate above undersells the real
+      difficulty: correctness here isn't blocked on writing more Rust, it's
+      blocked on *discovering* rules like this one that nothing has written
+      down anywhere. Given the depth still being uncovered even in the
+      simplest (low-format) case, a full, bit-perfect, all-formats engine
+      was not reached this session. What's real and lands cleanly: the
+      command decoder (verified against real playback, not just hand
+      tracing) and the trace-capture/APU-instrumentation infrastructure,
+      both immediately reusable for whoever continues this.
+      **Second follow-up session: `sound_engine::SoundSlot` (`crates/
+      contra-native/src/sound_engine.rs`) is a real, steppable, frame-by-
+      frame engine for low-format slots #$04/#$05** - trigger
+      initialization, `decode_low_command`'s note-reading loop, and now
+      full `0xFD`/`0xFE`/`0xFF` control-flow (child-jump/repeat/end-or-
+      return-to-parent, `sound_cmd_routine_03`, single-level nesting only
+      - matching the real ROM's own one-bit "in a child" flag). A new
+      mechanical verification tool, `examples/verify_sound_engine.rs`
+      (`contra-nes`), runs real gameplay, spins up a matching engine
+      instance on every real trigger, and compares its computed
+      `cfg_low`/`cfg_high`/`cmd_length` against real RAM every frame - not
+      hand-picked examples, an exhaustive per-frame diff. This caught and
+      fixed a real bug on the first run: the tool (not the engine) was
+      seeding a sound's start address from live `SOUND_CMD_LOW/HIGH_ADDR`
+      RAM sampled *after* the trigger frame's own immediate first-command
+      read had already advanced it - fixed by resolving the true start
+      address directly from `sound_table_00`, the same way `load_sound_
+      code_entry` does. That fix alone took slot 4 from 4/10 to 8/10
+      matched frames and slot 5 from 8/199 to 21/199; adding control-flow
+      handling took slot 5 to 28/199.
+      The remaining gap was chased all the way to its real root cause
+      rather than left as "some mismatches remain": it isn't a
+      `sound_code` bug at all. Real Contra's entire game loop runs inside
+      the NMI handler (`nmi_start`, `src/bank7.asm`), and `NMI_CHECK`
+      (`$001B`) tracks whether a *previous* NMI's handler is still
+      running when the next vblank's NMI fires. Traced directly: during
+      this test's ordinary movement/combat gameplay, `NMI_CHECK` sits at
+      `0x01` continuously - `contra-nes` is cycle-accurate (`Nes::
+      run_frame`'s scanline-paced CPU budget), so this is real,
+      hardware-accurate slowdown being faithfully reproduced, not an
+      emulator bug. Real 6502 NMI is edge-triggered and non-maskable, so
+      it reenters `nmi_start` regardless; `nmi_start` detects this and
+      takes an alternate path that skips `exe_game_routine` (no new
+      player-driven triggers) but *still* calls `handle_sound_slots`
+      (`src/bank7.asm:355-369`) - meaning `handle_sound_code` can run
+      more than once per visual frame during any lag-heavy stretch.
+      `verify_sound_engine.rs` steps the native engine exactly once per
+      `run_frame()`, so it necessarily drifts from the cycle-accurate
+      reference during lag - a verification-methodology gap, not a
+      correctness bug in the engine itself, and irrelevant to the
+      eventual native PC port (no 6502 cycle budget to blow, so nothing
+      to replicate there). A fully accurate version of this tool would
+      step once per actual `handle_sound_slots` invocation (hookable via
+      `Nes::run_frame_with_hook`) instead of once per visual frame - not
+      yet built.
+      **Same session, continued: a real, verified engine now exists for
+      high-format (music, slots #$00-#$02) and percussion (slot #$03)
+      too** - `sound_code::decode_high_command`/`HighCommand` (the
+      semantic decoder, mirroring `decode_low_command`) and `sound_
+      engine::MusicSlot`/`step_high` (the frame-by-frame state machine,
+      mirroring `SoundSlot`), covering `simple_sound_cmd`'s notes,
+      `sound_cmd_routine_00`-`_02`'s mute/config/period-rotate/vibrato/
+      pitch-adjust commands, percussion's delay/trigger commands, the
+      same `0xFD`/`0xFE`/`0xFF` control-flow as low format (confirmed
+      shared - both formats dispatch into the identical `sound_cmd_
+      routine_03`), and `calc_cmd_delay`'s real `SOUND_CMD_LENGTH =
+      length_multiplier * (low_nibble + 1)` formula. `decode_high_command`
+      was hand-verified against two real sounds byte-for-byte before any
+      mechanical testing - `sound_26` (TITLE, pulse 1, all of `simple_
+      sound_cmd`/`ConfigChannel`/`PeriodRotate`/control-flow) and
+      `sound_29` (TITLE percussion) - both matched on the first attempt.
+      A new tool, `examples/verify_music_engine.rs` (`contra-nes`), then
+      ran the exhaustive per-frame comparison across all 4 music slots
+      during real gameplay, and immediately caught a second real
+      trigger-address bug distinct from the one `verify_sound_engine.rs`
+      found: a multi-slot sound (e.g. `sound_26`'s TITLE theme, which
+      spans slots #$00-#$03 via 4 consecutive `sound_table_00` entries
+      `0x26`-`0x29`) sets `SOUND_CODE,x = INIT_SOUND_CODE` - the
+      *original* triggering code - for *every* slot it touches, not that
+      slot's own table entry index (`load_sound_code_entry`, `src/
+      bank1.asm:1655-1656`). So peeking `SOUND_CODE` for slot 1 during
+      TITLE reads back `0x26`, not `0x27`, even though slot 1 is actually
+      running `sound_27`'s data - the verification tool was looking up the
+      wrong table entry for 3 of the 4 slots. Fixed by walking consecutive
+      `sound_table_00` entries starting at the observed code and picking
+      the one whose own embedded slot number matches, the same way
+      `play_sound`'s own `$eb`/`$ea` loop does. That fix alone took slot 1
+      from 0/552 to 454/552 matched frames, slot 2 from 148/552 to
+      522/552, and slot 3 from 0/552 to 498/552; slot 0 (already correct)
+      stayed at 466/552, and its 23/23 matched new-note commands is the
+      clearest single piece of evidence that the command-decoding and
+      `SOUND_CMD_LENGTH` timing logic itself is right - the remaining
+      mismatches cluster around the same two already-understood,
+      already-documented causes (trigger-frame observation timing, and
+      NMI-reentrancy/lag), not new bugs in the engine. Full workspace
+      build + test sweep green throughout.
+      **Same session: two of the three still-missing data tables are now
+      ported too**, both verified byte-for-byte against the real ROM
+      before being trusted: `sound_code::NOTE_PERIOD_TBL` (24 real APU
+      period values, `note_period_tbl` at CPU `$86D5`) resolves
+      `HighNoteSource::Note`'s `pitch_offset` to an actual pitch, and
+      `sound_code::PERCUSSION_TBL` (8 sound codes, `percussion_tbl` at
+      CPU `$82CD`) resolves `HighNoteSource::Percussion`'s
+      `percussion_tbl_index` to which DMC sample or sound_code
+      `play_percussive_sound` actually triggers. `pulse_volume_ptr_tbl`
+      (the volume-envelope table, referenced since the very first pass at
+      this workstream) turned out to be a substantially bigger table than
+      either - a per-level array of pointers to *many* separate envelope
+      byte streams (`lvl_1_pulse_volume_00`-`_07`, `lvl_2_...`, etc., one
+      set per level) - genuinely comparable in scope to the enemy-spawn or
+      level-data extraction workstreams (its own dedicated walk/verify
+      pass, not a quick add), so it's deliberately left for a follow-up
+      rather than rushed here. Full workspace build + test sweep green (47
+      `contra-native` tests, 32 `contra-nes` tests). Still not started:
+      `pulse_volume_ptr_tbl`'s real envelope data, and cross-slot
+      channel-priority arbitration.
 - [x] **Enemy placement - hard-coded spawns for outdoor levels.**
       `contra-native::enemy_spawn` ports the fixed, same-every-playthrough
       enemy placements each level defines per screen (`docs/Enemy
