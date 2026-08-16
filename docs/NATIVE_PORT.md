@@ -355,17 +355,26 @@ replacement for its real 6502 code, cycle for cycle.
       decoded attribute table (56 bytes) came back byte-for-byte
       identical** to live PPU state
       (`cargo run -p contra-nes --release --example extract_level`).
-      **Known open gap, not yet resolved:** rendering the assembled screen
-      to a colored PNG using the already-extracted CHR data shows ~36%
-      (32/89) of the distinct tiles used don't match live CHR-RAM's
-      content at those same tile indices at the sampled frame - most
-      likely because level 1's actual tile set draws from more than its
-      own `level_1_graphic_data` list (confirmed complete and correctly
-      read: `03,13,19,1a,14,16,05,ff`) plus the HUD's `graphic_data_01`
-      (both tried), so some other, not-yet-identified graphics source
-      feeds those specific tile indices. This is a CHR-*sourcing*
-      question, not a decompression-correctness one - the nametable and
-      attribute table proofs above are unaffected and don't depend on it.
+      **The colored-render gap from earlier this session is now closed,
+      and fully explained rather than worked around.** Rendering the
+      assembled screen initially showed ~36% (32/89) of used tiles wrong;
+      root cause was self-inflicted, not a decoder bug: a speculative
+      extra blob (`graphic_data_01`, HUD letters/numbers) had been added
+      to the CHR set to *guess* at fixing an earlier, different visual
+      oddity, and its PPU write range ($0ce0-$1f80) overlaps
+      `graphic_data_1a`'s (up to tile `0xdb`) - applied after it, so it
+      silently overwrote correct level tiles with HUD glyph data. Removing
+      that guess and going back to `level_1_graphic_data`'s own literal,
+      ROM-confirmed 7-blob list (`03,13,19,1a,14,16,05,ff` - the same list
+      already proven byte-for-byte complete against a full 8KB live
+      CHR-RAM dump, see `graphics`'s status above) fixed it outright:
+      **CHR content, nametable, and attribute table now all read 0
+      mismatches simultaneously** - three independent live-PPU comparisons,
+      one PRG-ROM-only decode, zero emulation, zero divergence. The
+      rendered `level1_screen0.png` this produces is therefore proven
+      pixel-exact, not just plausible-looking (the blocky
+      grass/foliage-and-vine tile art in it reads as text-like at a glance
+      - that's genuine Contra level 1 art, not a bug).
 
 ## Where to look
 

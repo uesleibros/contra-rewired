@@ -18,11 +18,16 @@ use std::io::BufWriter;
 use contra_nes::controller::*;
 use contra_nes::{Mirroring, Nes};
 
-// Level 1's own `level_1_graphic_data` list (7 blobs), plus
-// `graphic_data_01` (letters/numbers/logo - used for the HUD score/lives
-// display, loaded once at a different point in the boot sequence rather
-// than being part of any single level's own graphic-data list).
-const LEVEL_1_GRAPHIC_DATA_PRG_OFFSETS: [usize; 8] = [0x10001, 0x107a1, 0x1631b, 0x16500, 0x16814, 0x1b15c, 0x14001, 0x12a2d];
+// `level_1_graphic_data`'s own literal list, confirmed byte-for-byte from
+// the real ROM (bank 7, $c8fd): `03,13,19,1a,14,16,05,ff`. Do NOT add
+// `graphic_data_01` (HUD letters/numbers) here - its PPU range
+// ($0ce0-$1f80) overlaps this list's own tile range (e.g. graphic_data_1a
+// covers up to tile 0xdb), and applying it after these 7 overwrites
+// correct level tiles with HUD glyph data. This exact 7-blob list is what
+// `extract_graphics.rs` already proved byte-for-byte identical to live
+// CHR-RAM across the full 8KB - adding an 8th blob on top of that broke
+// it, which is exactly what led to finding this.
+const LEVEL_1_GRAPHIC_DATA_PRG_OFFSETS: [usize; 7] = [0x10001, 0x107a1, 0x1631b, 0x16500, 0x16814, 0x1b15c, 0x14001];
 
 /// Bank 3, CPU `$8001` -> `3*0x4000 + (0x8001-0x8000)`.
 const LEVEL_1_SUPERTILE_DATA_PRG_OFFSET: usize = 0xC001;
@@ -95,13 +100,6 @@ fn main() {
         for tx in 0..TILES_W {
             let tile = tile_grid[ty * TILES_W + tx] as usize;
             let palette = bg_palettes[palette_grid[ty * TILES_W + tx] as usize];
-            // NOTE: empirically this (no offset) mismatches live CHR-RAM
-            // less than a $1000 ("right pattern table") offset does, but
-            // neither is a full match - see this file's final printed
-            // "CHR check" line and NATIVE_PORT.md's status entry for the
-            // open question this leaves (most likely alternate-graphics
-            // loading timing, not a decompression bug - the nametable and
-            // attribute table are separately proven byte-perfect above).
             let base = tile * 16;
             let plane0 = &chr[base..base + 8];
             let plane1 = &chr[base + 8..base + 16];
@@ -154,12 +152,14 @@ fn main() {
         let base = tile as usize * 16;
         if chr[base..base + 16] != live_chr[base..base + 16] {
             chr_tile_diffs += 1;
-            if chr_tile_diffs <= 8 {
-                println!("  CHR tile {tile:#04x} used by this screen doesn't match live CHR-RAM");
-            }
+            println!("  CHR tile {tile:#04x} used by this screen doesn't match live CHR-RAM");
         }
     }
-    println!("CHR check: {chr_tile_diffs}/{} distinct tiles used by this screen differ from live CHR-RAM.", used_tiles.len());
+    if chr_tile_diffs == 0 {
+        println!("MATCH: every tile used by this screen has CHR content identical to live CHR-RAM ({} distinct tiles checked).", used_tiles.len());
+    } else {
+        println!("MISMATCH: {chr_tile_diffs}/{} distinct tiles used by this screen differ from live CHR-RAM.", used_tiles.len());
+    }
 
     let mut nametable_diffs = 0usize;
     for ty in 0..TILES_H {

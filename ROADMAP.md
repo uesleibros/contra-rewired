@@ -99,13 +99,16 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       attribute table (56 bytes) from PRG-ROM alone and both matched live
       PPU state exactly (`extract_level` example; also added `Ppu::peek`/
       `Nes::peek_ppu` as the read counterpart to the existing poke methods,
-      to make that comparison possible). Open gap: rendering that layout
-      with the already-extracted CHR data leaves ~36% of used tiles
-      visually wrong - some of level 1's actual tile source still isn't
-      identified (not a decompression bug; the nametable/attribute proofs
-      don't depend on it). Audio and spawn/enemy-data extraction haven't
-      been started - see docs/NATIVE_PORT.md's "Current status"
-      for the full breakdown. Equally necessary as the logic-porting work
+      to make that comparison possible). The colored-render gap this left
+      is now closed: root cause was a speculative extra CHR blob added to
+      chase a different, earlier visual oddity, whose write range silently
+      overwrote correct level tiles - removing it and going back to
+      `level_1_graphic_data`'s own literal 7-blob list gets **CHR content,
+      nametable, and attribute table all to 0 mismatches simultaneously**
+      against live PPU state, so the rendered screen is now proven
+      pixel-exact, not just plausible. See docs/NATIVE_PORT.md's "Current
+      status" for the full account. Audio and spawn/enemy-data extraction
+      haven't been started. Equally necessary as the logic-porting work
       above, not a detail of it
 
 ## Phase 1 - Fidelity, controls, and the two platforms
