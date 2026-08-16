@@ -144,14 +144,78 @@ redirect execution: when the game would normally run the original
 routine, run the native Rust version instead and skip the 6502 code
 entirely, while everything else keeps running through the emulator as
 before. This is the actual "hybrid native/emulated" execution model real
-decomp-based ports use during their transition period, and it isn't built
-yet - `run_frame_with_hook` can *observe* a routine, not yet *replace* one.
-Building that (likely: a hook that, when it fires, computes the routine's
-effect directly via the native port, writes the resulting state back to
-RAM/registers, and forces the CPU's `pc` to the routine's return address
-instead of executing its body) is the next real milestone once a few more
-routines are ported, not before - no point building the swap mechanism
-before there's more than one verified routine to swap in.
+decomp-based ports use during their transition period.
+
+**Built, and functionally proven - with one real, open precision problem.**
+[`HookAction::ReturnNow(cycles)`](`crate::HookAction`) (`crates/contra-nes/
+src/nes.rs`) is the mechanism: a hook can now compute a routine's effect
+via its native port, write the result into the exact registers/RAM the
+real routine's contract promises, then return this to make
+[`Cpu::force_return`] simulate an `RTS` - the routine's body never executes
+at all. `dump_frames.rs`'s `INTEGRATE_BG_COLLISION=1` does exactly this for
+`collision::bg_collision`, and it works: the game runs, renders correctly
+(checked visually, including water collision - the exact thing this
+routine computes), and hits no illegal opcodes with the real routine
+substituted out entirely, for a real multi-thousand-frame session.
+
+**Now fully solved: bit-perfect parity, proven, not assumed.** Getting
+there took three real bugs, found and fixed in order - the honest account
+is worth keeping, the same way the stage-select saga is:
+
+1. **Cycle cost: guessed, then measured wrong, then measured exhaustively
+   and exactly.** A flat 6-cycle guess (a bare `RTS`'s own cost) was the
+   first attempt - wrong, since it ignores the entire skipped body. A
+   "measured" 151/154-cycle two-case model came next, but the probe that
+   produced it declared its histogram *inside* the per-frame loop, so it
+   silently reset every frame and only ever saw whichever 1-2 costs
+   recurred early each frame - the real range turned out to be **nine**
+   distinct values once the histogram was moved outside the loop
+   (`MEASURE_BG_COLLISION_CYCLES=1`). Even a call-count-weighted average
+   over those nine wasn't exact enough - real divergence remained.
+   **Fixed for real** by not sampling gameplay at all:
+   `EXHAUSTIVE_BG_COLLISION_CYCLES=1` drives the real ROM's code directly
+   through `contra-nes`'s cycle-accurate CPU (a synthetic `jsr`/`rts`
+   harness - poke the routine's documented inputs, fake a call, single-step
+   until it returns, sum the real cost), tested against every real branch
+   combination this routine has. The costs combine *perfectly additively*
+   (a row-guard/column-dependent base, `+1` for a vertical-scroll `cmp`
+   adjustment, `-2` for a vertical-scroll byte overflow, `+1` for a
+   horizontal-scroll overflow, no interaction terms) - `collision::
+   bg_collision_cycles` implements that exact formula, and a test encodes
+   all 30 measured cases as a regression check so it can't silently drift
+   from what real hardware does.
+2. **Zero-page scratch state was never written back.** `ReturnNow`
+   originally only set the routine's *documented* output (`a`, carry) -
+   but the real routine also leaves five zero-page addresses (`$10`-`$13`,
+   `$15`) in specific states, and zero page in this game is shared,
+   tightly reused scratch space across many unrelated routines - some
+   *other* routine reading one of those addresses expecting its own last
+   write, not whatever `get_bg_collision` left stale from a previous
+   unrelated call, is a real desync source that no amount of cycle-cost
+   precision fixes. `collision::bg_collision_scratch` computes all five;
+   the integration hook writes them back exactly like the real routine's
+   own `sta`s would.
+3. **N/Z flags were never set.** The real routine's *last* instruction
+   before its `rts` is `lda $14` (reloading the collision code) - an
+   ordinary `LDA` that sets `N` to the loaded byte's bit 7 and `Z` to
+   whether it's zero, same as any load. `ReturnNow` skips that instruction
+   along with the rest of the body, so without setting `N`/`Z` explicitly,
+   they were left however some *earlier* instruction happened to leave
+   them - and at least one real caller (`bank7.asm`: `jsr get_bg_collision;
+   bpl @apply_gravity`) branches on `N` immediately after the call. This
+   was silently changing real control flow, not just leaving a flag
+   unread - the most consequential of the three bugs, and the one that
+   finally explained the stubborn residual divergence the first two fixes
+   didn't close.
+
+**Proof, not assertion**: an A/B `RAM_DUMP_FRAME` diff with all three
+fixes in place - full 2048-byte RAM *and* every CPU register/flag/cycle
+count - came back **byte-for-byte, bit-for-bit identical** to a
+fully-emulated baseline, across two separate sessions (3000 frames plain;
+8000 frames including a stage jump, which exercises heavy RAM churn via
+the graphics-buffer flush). Not "close enough" - identical. This is the
+first routine in the project verified end-to-end as a true drop-in
+replacement for its real 6502 code, cycle for cycle.
 
 ## Current status
 
@@ -160,6 +224,16 @@ before there's more than one verified routine to swap in.
       real ROM). Verified against real gameplay (`VERIFY_BG_COLLISION=1`,
       multiple thousand-frame sessions including a stage jump for varied
       terrain) - zero mismatches across every real call observed so far.
+      **Fully integrated, not just verified** - `INTEGRATE_BG_COLLISION=1`
+      substitutes this port for the real routine live via `HookAction::
+      ReturnNow` (exact per-branch cycle cost via `bg_collision_cycles`,
+      full zero-page scratch state via `bg_collision_scratch`, correct N/Z/
+      carry flags), and an A/B `RAM_DUMP_FRAME` diff against a
+      fully-emulated baseline came back byte-for-byte, bit-for-bit
+      identical across a 3000-frame and an 8000-frame (with a stage jump)
+      session. First routine in the project proven as a true, cycle-exact
+      drop-in replacement - see the "Integration strategy" section above
+      for the three real bugs closing that gap actually took.
 - [x] **`player_physics::apply_gravity` / `integrate_y_position`**
       (`crates/contra-native/src/player_physics.rs`) - ported from
       `apply_gravity` (`$d9ec`-`$d9f9`) and `player_jumping_set_y_pos`

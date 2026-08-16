@@ -29,5 +29,5 @@ pub mod nes;
 pub mod ppu;
 mod serde_arrays;
 
-pub use nes::{Nes, NesSnapshot};
+pub use nes::{HookAction, Nes, NesSnapshot};
 pub use ppu::{Mirroring, EXTENDED_WIDTH, MAX_WIDE_WIDTH, SCREEN_H, SCREEN_W};

@@ -14,6 +14,40 @@ const CPU_DOTS_PER_CYCLE: f64 = 3.0;
 const SCANLINES_AFTER_VBLANK_START: u32 = 20; // 262 total = 1 pre-render + 240 visible + 1 post-render + 1 vblank-start + 19 more
 const DEFAULT_AUDIO_SAMPLE_RATE: f64 = 44_100.0;
 
+/// What [`Nes::run_frame_with_hook`] does after calling a hook - see that
+/// method's doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookAction {
+    /// Execute the instruction at `cpu.pc` normally, same as if there were
+    /// no hook at all.
+    Continue,
+    /// Skip the instruction at `cpu.pc` entirely and simulate an `RTS`
+    /// instead (see [`Cpu::force_return`]) - only meaningful when `cpu.pc`
+    /// is genuinely a routine's entry point reached via `jsr` (so the
+    /// stack's top two bytes really are that call's return address). This
+    /// is how a verified `contra-native` port actually replaces the real
+    /// 6502 code it was ported from during play: the hook computes the
+    /// port's effect, writes the result to RAM/registers itself (this
+    /// variant doesn't do that automatically - it only skips the body),
+    /// then returns this to send the CPU straight back to the caller
+    /// without ever executing the original routine.
+    ///
+    /// The `u64` is the *entire skipped routine's* real hardware cycle
+    /// cost (entry to its own `rts`, inclusive), charged in place of
+    /// actually running it - **not** just an `RTS`'s own 6 cycles. Getting
+    /// this wrong doesn't affect correctness of any single call, but it
+    /// does desync frame-budget-based timing (`Nes::run_frame`'s scanline
+    /// pacing is driven by `cpu.cycles` against a dot-clock budget) over
+    /// many calls - measure the real routine's cost with a
+    /// `VERIFY_*`-style hook (compare `cpu.cycles` at entry and exit)
+    /// before picking this number, the same way `contra-native`'s own
+    /// behavior gets verified before being trusted. A branchy routine may
+    /// cost different amounts on different real calls - charge whichever
+    /// case the native port's own logic determined was taken, not a single
+    /// average, if the difference is more than a cycle or two.
+    ReturnNow(u64),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Nes {
     pub cpu: Cpu,
@@ -151,24 +185,37 @@ impl Nes {
     }
 
     fn advance_cpu(&mut self, budget: &mut f64) {
-        self.advance_cpu_inner(budget, &mut |_, _| {});
+        self.advance_cpu_inner(budget, &mut |_, _| HookAction::Continue);
     }
 
-    fn advance_cpu_inner(&mut self, budget: &mut f64, hook: &mut dyn FnMut(&mut Cpu, &mut NesBus)) {
+    fn advance_cpu_inner(&mut self, budget: &mut f64, hook: &mut dyn FnMut(&mut Cpu, &mut NesBus) -> HookAction) {
         *budget += DOTS_PER_SCANLINE / CPU_DOTS_PER_CYCLE;
         while (self.cpu.cycles as f64) < *budget {
-            hook(&mut self.cpu, &mut self.bus);
-            let cycles = self.cpu.step(&mut self.bus);
-            for _ in 0..cycles {
-                self.bus.apu.step();
-            }
-            if self.bus.dma_stall > 0 {
-                // OAM DMA halts the CPU but not the APU on real hardware.
-                for _ in 0..self.bus.dma_stall {
-                    self.bus.apu.step();
+            match hook(&mut self.cpu, &mut self.bus) {
+                HookAction::Continue => {
+                    let cycles = self.cpu.step(&mut self.bus);
+                    for _ in 0..cycles {
+                        self.bus.apu.step();
+                    }
+                    if self.bus.dma_stall > 0 {
+                        // OAM DMA halts the CPU but not the APU on real hardware.
+                        for _ in 0..self.bus.dma_stall {
+                            self.bus.apu.step();
+                        }
+                        self.cpu.cycles += self.bus.dma_stall as u64;
+                        self.bus.dma_stall = 0;
+                    }
                 }
-                self.cpu.cycles += self.bus.dma_stall as u64;
-                self.bus.dma_stall = 0;
+                HookAction::ReturnNow(cycles) => {
+                    // The routine's body never runs at all - see
+                    // `HookAction::ReturnNow`'s doc comment. Charging the
+                    // caller-supplied cost (the *real* routine's measured
+                    // cycle count, not a flat guess) keeps the frame's
+                    // timing budget honest even though a native port stood
+                    // in for the 6502 code.
+                    self.cpu.force_return(&mut self.bus);
+                    self.cpu.cycles += cycles;
+                }
             }
         }
     }
@@ -177,23 +224,23 @@ impl Nes {
     /// the CPU and bus right before every single instruction executes this
     /// frame - the "bank-and-PC-scoped instruction hook" tracked in
     /// ROADMAP.md as a prerequisite for real widescreen-aware enemy
-    /// behavior and a precise `enemy_spawn` mod event. A hook is just a
-    /// closure; scoping it to a specific piece of code is the caller's job
-    /// (check `cpu.pc` - and `bus.mapper.effective_bank(cpu.pc)` if that
-    /// address is bank-switched at all - before doing anything), not
-    /// something this method tracks a registry of. That keeps this the
-    /// same shape as [`Self::run_frame_with_pc_trace`] below (which is now
-    /// just this with a hook that only looks at `pc`) rather than adding
-    /// hook-management state to `Nes` itself - `contra-pc`'s Lua bridge (or
-    /// any other caller) owns *which* addresses matter and what to do when
-    /// they're hit, this only guarantees they'll be asked, once per
-    /// instruction, with real read/write access to make something happen.
-    /// Because the hook can mutate `bus` (RAM, PPU, mapper - anything)
-    /// *before* the instruction reads it, this can do more than observe:
-    /// a hook that pokes a RAM value the about-to-execute instruction is
-    /// about to load genuinely changes what the game does next, not just
-    /// what a mod finds out about afterward.
-    pub fn run_frame_with_hook(&mut self, hook: &mut dyn FnMut(&mut Cpu, &mut NesBus)) {
+    /// behavior, a precise `enemy_spawn` mod event, and (via
+    /// [`HookAction::ReturnNow`]) actually swapping a verified
+    /// `contra-native` port in for the real 6502 routine it was ported
+    /// from - see docs/NATIVE_PORT.md. A hook is just a closure; scoping it
+    /// to a specific piece of code is the caller's job (check `cpu.pc` -
+    /// and `bus.mapper.effective_bank(cpu.pc)` if that address is
+    /// bank-switched at all - before doing anything), not something this
+    /// method tracks a registry of. That keeps this the same shape as
+    /// [`Self::run_frame_with_pc_trace`] below (which is now just this with
+    /// a hook that only looks at `pc` and always returns
+    /// [`HookAction::Continue`]) rather than adding hook-management state
+    /// to `Nes` itself - `contra-pc`'s Lua bridge (or any other caller)
+    /// owns *which* addresses matter and what to do when they're hit, this
+    /// only guarantees they'll be asked, once per instruction, with real
+    /// read/write access and (via the returned [`HookAction`]) the ability
+    /// to redirect execution entirely, not just observe it.
+    pub fn run_frame_with_hook(&mut self, hook: &mut dyn FnMut(&mut Cpu, &mut NesBus) -> HookAction) {
         let mut budget = self.cpu.cycles as f64;
 
         self.bus.ppu.start_prerender();
@@ -229,7 +276,10 @@ impl Nes {
     /// throwaway diagnostic script, the same spirit as `dump_frames.rs`'s
     /// various `DEBUG_*` env vars.
     pub fn run_frame_with_pc_trace(&mut self, on_pc: &mut dyn FnMut(u16)) {
-        self.run_frame_with_hook(&mut |cpu, _bus| on_pc(cpu.pc));
+        self.run_frame_with_hook(&mut |cpu, _bus| {
+            on_pc(cpu.pc);
+            HookAction::Continue
+        });
     }
 
     /// Captures everything that changes at runtime - CPU, RAM, PPU/APU

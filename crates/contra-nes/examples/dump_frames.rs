@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::io::BufWriter;
 
 use contra_nes::controller::*;
-use contra_nes::{Mirroring, Nes};
+use contra_nes::{HookAction, Mirroring, Nes};
 
 /// Draws a 1px red rectangle outline directly into a copy of the
 /// framebuffer - used by `HITBOXES=1` to visually verify the same OAM
@@ -59,6 +59,49 @@ fn save_png(path: &std::path::Path, fb: &[u32], w: usize, h: usize) {
     writer.write_image_data(&data).unwrap();
 }
 
+/// Measures `get_bg_collision`'s exact real cycle cost (entry `$e0bb` to
+/// its own `rts`, inclusive) for one specific input, by directly driving
+/// `contra-nes`'s cycle-accurate CPU through the real routine in isolation
+/// - no gameplay needed, no sampling: pokes the routine's documented
+/// inputs into RAM/registers, fakes a `jsr` (pushes a synthetic return
+/// address), sets `pc` to the routine's entry, then single-steps
+/// (`Cpu::step`) until `pc` reaches that synthetic address, summing every
+/// instruction's real cost along the way. This is what
+/// `EXHAUSTIVE_BG_COLLISION_CYCLES=1` uses to build a complete, exact
+/// per-branch cost table - see that flag's own comment for why this
+/// replaces the two earlier (both flawed) attempts at the same number.
+fn measure_bg_collision_cycles(nes: &mut Nes, x: u8, y: u8, vertical_scroll: u8, horizontal_scroll: u8, ppuctrl_settings: u8) -> u64 {
+    nes.poke_ram(0xFC, vertical_scroll);
+    nes.poke_ram(0xFD, horizontal_scroll);
+    nes.poke_ram(0xFF, ppuctrl_settings);
+    for i in 0..0x80u16 {
+        nes.poke_ram(0x0680 + i, 0); // BG_COLLISION_DATA - content doesn't affect cost, only the branches do
+    }
+
+    const FAKE_RETURN: u16 = 0x0002; // arbitrary unused RAM address, never actually executed
+    let push_addr = FAKE_RETURN.wrapping_sub(1); // JSR convention: push (return_addr - 1)
+    let mut sp = nes.cpu.sp;
+    nes.poke_ram(0x0100 + sp as u16, (push_addr >> 8) as u8);
+    sp = sp.wrapping_sub(1);
+    nes.poke_ram(0x0100 + sp as u16, (push_addr & 0xFF) as u8);
+    sp = sp.wrapping_sub(1);
+    nes.cpu.sp = sp;
+    nes.cpu.a = x;
+    nes.cpu.y = y;
+    nes.cpu.pc = 0xE0BB;
+
+    let start = nes.cpu.cycles;
+    for _ in 0..500 {
+        // 500 is a generous cap - the real routine is a few dozen
+        // instructions with no loops, so this can't legitimately run long.
+        nes.cpu.step(&mut nes.bus);
+        if nes.cpu.pc == FAKE_RETURN {
+            return nes.cpu.cycles - start;
+        }
+    }
+    panic!("get_bg_collision never returned within 500 instructions for x={x} y={y} vs={vertical_scroll} hs={horizontal_scroll} ppuctrl={ppuctrl_settings:02X} - real routine or harness is broken");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -74,6 +117,54 @@ fn main() {
     eprintln!("mapper={} prg_kib={} md5={}", rom.mapper, rom.prg_rom.len() / 1024, rom.md5_hex);
     let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
     let mut nes = Nes::new(rom.prg_rom, mirroring);
+
+    // EXHAUSTIVE_BG_COLLISION_CYCLES=1: replaces both earlier cycle-cost
+    // measurement attempts (a flat guess, then a real-gameplay histogram
+    // that only ever sampled whatever branch combinations the scripted
+    // playthrough happened to hit) with a complete, exact table - see
+    // `measure_bg_collision_cycles`'s doc comment for the harness. No
+    // gameplay runs at all; this exits immediately after printing.
+    if std::env::var("EXHAUSTIVE_BG_COLLISION_CYCLES").is_ok() {
+        // vy (vertical) cases, chosen so each is reachable with row-guard
+        // either on or off by pairing with the right `y`:
+        //   "none"     - raw = y+vs stays < 0xf0, no overflow, no +0x10 adjust
+        //   "cmp"      - no overflow, but raw >= 0xf0 (the `adc #$0f` is
+        //                reached by falling through the `cmp`/`bcc` pair)
+        //   "overflow" - y+vs genuinely overflows a byte (`bcs` taken directly)
+        let vy_cases: [(&str, u8, u8); 3] = [("none", 0x10, 0x00), ("cmp", 0x10, 0xE0), ("overflow", 0x10, 0xF5)];
+        let vy_cases_guard_on: [(&str, u8, u8); 3] = [("none", 0xE0, 0x00), ("cmp", 0xE0, 0x10), ("overflow", 0xE0, 0x20)];
+        // (label, hs, [x for col0, col1, col2, col3]) - "overflow" needs a
+        // *different* x per column (x+hs must overflow a byte AND still
+        // land on that specific column afterward) instead of reusing the
+        // no-overflow case's x list, which the first version of this
+        // harness got wrong (an unused `_x_base` binding silently meant
+        // the "overflow" row never actually overflowed anything, and both
+        // rows came out identical - a symptom that should have been the
+        // tell, not something to explain away).
+        let hx_cases: [(&str, u8, [u8; 4]); 2] =
+            [("no-overflow", 0x00, [0x00, 0x10, 0x20, 0x30]), ("overflow", 0xF0, [0x10, 0x20, 0x30, 0x40])];
+        let col_labels = ["col0", "col1", "col2", "col3"];
+
+        eprintln!("row guard OFF (y < 0xe0), by (vy case, hx case, column):");
+        for (vy_label, y, vs) in vy_cases {
+            for (hx_label, hs, xs) in hx_cases {
+                for (col_label, x) in col_labels.iter().zip(xs) {
+                    let cycles = measure_bg_collision_cycles(&mut nes, x, y, vs, hs, 0x00);
+                    eprintln!("  vy={vy_label:9} hx={hx_label:11} {col_label}: x={x:#04x} y={y:#04x} vs={vs:#04x} hs={hs:#04x} -> {cycles} cycles");
+                }
+            }
+        }
+        eprintln!("row guard ON (y >= 0xe0), by (vy case, hx case) - column doesn't matter, that path is skipped:");
+        for (vy_label, y, vs) in vy_cases_guard_on {
+            for (hx_label, hs, xs) in hx_cases {
+                let x = xs[0];
+                let cycles = measure_bg_collision_cycles(&mut nes, x, y, vs, hs, 0x00);
+                eprintln!("  vy={vy_label:9} hx={hx_label:11}: x={x:#04x} y={y:#04x} vs={vs:#04x} hs={hs:#04x} -> {cycles} cycles");
+            }
+        }
+        return;
+    }
+
     if let Ok(px) = std::env::var("WIDE_PX") {
         nes.set_wide_width(px.parse().unwrap());
     } else if std::env::var("WIDE").is_ok() {
@@ -85,6 +176,17 @@ fn main() {
 
     let mut illegal_seen: HashMap<u8, u32> = HashMap::new();
     let mut saved = 0;
+
+    // MEASURE_BG_COLLISION_CYCLES=1: a real, whole-run histogram of
+    // `get_bg_collision`'s actual entry-to-`$e12a` cycle cost, replacing an
+    // earlier attempt that declared its `HashSet` *inside* the frame loop -
+    // silently resetting every frame, so it only ever showed whichever
+    // costs happened to recur early in each frame rather than every
+    // distinct cost the whole session produced. Declared here, outside the
+    // loop, on purpose.
+    let measure_bg_cycles = std::env::var("MEASURE_BG_COLLISION_CYCLES").is_ok();
+    let mut bg_cycle_pending: Option<(u8, u8, u64)> = None;
+    let mut bg_cycle_histogram: HashMap<u64, (u64, u8, u8)> = HashMap::new(); // cost -> (count, sample x, sample y)
 
     for frame in 0..frame_count {
         // Real Contra's title screen needs Start pressed twice: once to
@@ -170,6 +272,100 @@ fn main() {
             for (pc, count) in counts.iter().take(15) {
                 eprintln!("  ${pc:04X}: {count} instructions");
             }
+        } else if measure_bg_cycles {
+            nes.run_frame_with_hook(&mut |cpu, _bus| {
+                if cpu.pc == 0xE0BB {
+                    bg_cycle_pending = Some((cpu.a, cpu.y, cpu.cycles));
+                } else if cpu.pc == 0xE12A {
+                    if let Some((x, y, entry_cycles)) = bg_cycle_pending.take() {
+                        let delta = cpu.cycles - entry_cycles;
+                        let entry = bg_cycle_histogram.entry(delta).or_insert((0, x, y));
+                        entry.0 += 1;
+                    }
+                }
+                HookAction::Continue
+            });
+        } else if std::env::var("INTEGRATE_BG_COLLISION").is_ok() {
+            // INTEGRATE_BG_COLLISION=1: the actual integration proof, not
+            // just verification - see docs/NATIVE_PORT.md's "Integration
+            // strategy". `get_bg_collision`'s entry (`$e0bb`) is hooked
+            // with `HookAction::ReturnNow`: the real 6502 routine's body
+            // *never executes at all* this run - `contra_native::collision
+            // ::bg_collision` computes the answer instead, and the hook
+            // writes it into the exact registers/flags the real routine's
+            // documented contract promises (`a` = collision code, carry
+            // set only for `Floor`) before simulating the `rts`. Compare a
+            // `RAM_DUMP_FRAME` snapshot from a run with this flag set
+            // against the same snapshot from a plain run (no flags) of the
+            // same ROM/input script/frame count - identical bytes is the
+            // actual proof this is safe to ship as a real replacement, not
+            // just that the two implementations agree on inputs they were
+            // both given (which `VERIFY_BG_COLLISION` already covers).
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                if cpu.pc == 0xE0BB {
+                    let (x, y) = (cpu.a, cpu.y);
+                    let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
+                    for (i, b) in data.iter_mut().enumerate() {
+                        *b = bus.ram[0x0680 + i];
+                    }
+                    let code = contra_native::collision::bg_collision(x, y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF], &data);
+                    let raw = code.to_raw_byte();
+                    cpu.a = raw;
+                    // Carry: set only for Floor (the real routine's own
+                    // `lsr` on the collision code - bit 0 of `$01`/`$02`/
+                    // `$80` is 1 only for Floor's `$01`).
+                    if code == contra_native::collision::CollisionCode::Floor {
+                        cpu.status |= contra_nes::cpu::FLAG_C;
+                    } else {
+                        cpu.status &= !contra_nes::cpu::FLAG_C;
+                    }
+                    // N/Z: the real routine's *last* instruction before its
+                    // `rts` is `lda $14` (reloading the same collision code
+                    // this hook is skipping) - a plain `LDA` always sets N
+                    // to the loaded byte's bit 7 and Z to whether it's
+                    // zero, same as any other load. Missing this was a
+                    // real bug: at least one real caller (`get_bg_collision`
+                    // return sites in `bank7.asm`, e.g. `jsr get_bg_collision;
+                    // bpl @apply_gravity`) branches on N/Z immediately after
+                    // the call, so leaving them stale from whatever
+                    // instruction last touched them changed real control
+                    // flow, not just an unread flag.
+                    if raw & 0x80 != 0 {
+                        cpu.status |= contra_nes::cpu::FLAG_N;
+                    } else {
+                        cpu.status &= !contra_nes::cpu::FLAG_N;
+                    }
+                    if raw == 0 {
+                        cpu.status |= contra_nes::cpu::FLAG_Z;
+                    } else {
+                        cpu.status &= !contra_nes::cpu::FLAG_Z;
+                    }
+                    // Write back the real routine's zero-page scratch
+                    // state too, not just its documented `a`/carry output -
+                    // see `ScratchState`'s doc comment for why leaving
+                    // these stale (shared, reused zero-page addresses some
+                    // *other* routine may read expecting a fresh write) is
+                    // a real, separate source of drift from cycle timing.
+                    let scratch = contra_native::collision::bg_collision_scratch(x, y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF]);
+                    bus.ram[0x10] = scratch.s10;
+                    bus.ram[0x11] = scratch.s11;
+                    bus.ram[0x12] = scratch.s12;
+                    bus.ram[0x13] = scratch.s13;
+                    bus.ram[0x14] = raw;
+                    bus.ram[0x15] = scratch.s15;
+                    // Exact, not averaged: `bg_collision_cycles` is derived
+                    // from an exhaustive real-hardware measurement of every
+                    // branch combination (`EXHAUSTIVE_BG_COLLISION_CYCLES=1`),
+                    // not a sample of whatever a scripted playthrough
+                    // happened to hit - see that function's doc comment and
+                    // docs/NATIVE_PORT.md for the two earlier (both
+                    // measurably wrong) attempts this replaced.
+                    let real_cycles = contra_native::collision::bg_collision_cycles(x, y, bus.ram[0xFC], bus.ram[0xFD]);
+                    HookAction::ReturnNow(real_cycles)
+                } else {
+                    HookAction::Continue
+                }
+            });
         } else if verify_bg_collision {
             // VERIFY_BG_COLLISION=1: the actual verification pass for
             // `contra_native::collision::bg_collision` (see that crate's
@@ -204,6 +400,7 @@ fn main() {
                         }
                     }
                 }
+                HookAction::Continue
             });
             if frame % 200 == 0 && checked > 0 {
                 eprintln!("frame={frame}: {checked} bg_collision calls verified this frame, no mismatches unless printed above");
@@ -214,6 +411,7 @@ fn main() {
                 if cpu.pc == 0xEE47 {
                     spawned_slots.push(cpu.x);
                 }
+                HookAction::Continue
             });
             for slot in spawned_slots {
                 let o = slot as u16;
@@ -288,6 +486,7 @@ fn main() {
                     }
                     _ => {}
                 }
+                HookAction::Continue
             });
             if frame % 200 == 0 && checked > 0 {
                 eprintln!("frame={frame}: {checked} player-gravity calls verified this frame, no mismatches unless printed above");
@@ -358,6 +557,14 @@ fn main() {
         }
     }
 
+    if measure_bg_cycles {
+        let mut costs: Vec<(u64, (u64, u8, u8))> = bg_cycle_histogram.into_iter().collect();
+        costs.sort_by_key(|(cost, _)| *cost);
+        eprintln!("bg_collision cycle-cost histogram (whole run, entry $e0bb to $e12a):");
+        for (cost, (count, sample_x, sample_y)) in costs {
+            eprintln!("  {cost} cycles: {count} calls (e.g. x={sample_x} y={sample_y})");
+        }
+    }
     eprintln!("saved {saved} frames to {out_dir}");
     if !illegal_seen.is_empty() {
         eprintln!("illegal opcodes hit: {illegal_seen:?}");

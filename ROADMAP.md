@@ -44,11 +44,31 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
 - [ ] **Everything else** - realistically hundreds more routines. No
       specific next-routine commitment or timeline; docs/NATIVE_PORT.md is
       the place this gets updated as real ports land
-- [ ] **Integration**: a verified port doesn't run in place of the emulated
-      routine yet - that needs a hook that redirects execution (compute the
-      native version's effect, write it back, skip past the 6502 code) and
-      hasn't been built. Worth starting now that there's more than one
-      routine to switch in - tracked in docs/NATIVE_PORT.md
+- [x] **Integration mechanism built and proven bit-perfect** -
+      `HookAction::ReturnNow(cycles)` (`contra-nes`) lets a hook compute a
+      routine's effect via its native port, write the result back, and
+      simulate an early `RTS` (`Cpu::force_return`) - the real 6502 body
+      never executes. `INTEGRATE_BG_COLLISION=1` in `dump_frames.rs`
+      substitutes `collision::bg_collision` for the real `get_bg_collision`
+      live, and an A/B `RAM_DUMP_FRAME` diff against a fully-emulated
+      baseline of the same ROM/input came back **byte-for-byte, bit-for-bit
+      identical** (full RAM and every CPU register/flag/cycle count) across
+      a 3000-frame and an 8000-frame-with-a-stage-jump session. Getting
+      there took finding and fixing three real bugs in order: (1) the
+      routine's cycle cost - guessed flat, then measured wrong (a histogram
+      that silently reset every frame), then finally measured exhaustively
+      and exactly by driving the real ROM through a synthetic `jsr`/`rts`
+      harness for every branch combination (`EXHAUSTIVE_BG_COLLISION_
+      CYCLES=1`) - the costs turned out to combine perfectly additively,
+      giving an exact formula, not an average; (2) five zero-page scratch
+      addresses the real routine writes but `ReturnNow` wasn't replicating,
+      a real desync risk since zero page is shared scratch space across
+      unrelated routines in this game; (3) the `N`/`Z` flags from the real
+      routine's final `lda` before its `rts`, silently unset - the one that
+      turned out to actually be changing control flow, since a real caller
+      branches on `N` right after the call. See docs/NATIVE_PORT.md for the
+      full account - a useful example of how "the output matches" and "this
+      is a true drop-in replacement" are different bars to clear.
 - [ ] **The actual payoff features this unlocks** - widescreen-aware enemy
       spawning being the clearest one (see docs/FIDELITY.md's "Enemies/
       bullets/collision" entry for exactly why the emulator-only approach

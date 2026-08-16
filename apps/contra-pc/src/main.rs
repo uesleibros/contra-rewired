@@ -184,6 +184,7 @@ impl Session {
                     if cpu.pc == INITIALIZE_ENEMY_PC {
                         spawned_enemy_slots.push(cpu.x);
                     }
+                    contra_nes::HookAction::Continue
                 });
                 *frame_count += 1;
                 if rewind_enabled {

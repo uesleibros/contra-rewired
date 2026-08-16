@@ -154,6 +154,24 @@ impl Cpu {
         lo | (hi << 8)
     }
 
+    /// Simulates an `RTS` (`$60`) without executing one: pulls the return
+    /// address off the stack and sets `pc` to it + 1, exactly matching real
+    /// `RTS` (see the `0x60` case in [`Self::step`]). For
+    /// [`crate::nes::Nes::run_frame_with_hook`]'s integration use case
+    /// (`contra-native` - see docs/NATIVE_PORT.md): a hook that's about to
+    /// stand in a verified native port for a routine's real 6502 body needs
+    /// a way to skip that body entirely and return to the caller, as if the
+    /// routine had run and hit its own `rts` - this is that. Only correct
+    /// to call when `pc` is at a routine's real entry point (so the stack's
+    /// top two bytes are genuinely that routine's return address, pushed by
+    /// the `jsr` that called it) - calling it anywhere else pulls whatever
+    /// happens to be on the stack and treats it as an address, same as a
+    /// stray real `RTS` would.
+    pub fn force_return(&mut self, bus: &mut impl Bus) {
+        let ret = self.pull_u16(bus);
+        self.pc = ret.wrapping_add(1);
+    }
+
     fn fetch(&mut self, bus: &mut impl Bus) -> u8 {
         let v = bus.read(self.pc);
         self.pc = self.pc.wrapping_add(1);

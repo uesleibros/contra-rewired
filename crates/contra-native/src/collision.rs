@@ -147,6 +147,108 @@ pub fn bg_collision(
     CollisionCode::from_raw((byte >> shift) & 0x03)
 }
 
+/// The real routine's zero-page scratch addresses, exactly as
+/// `get_bg_collision` leaves them when it returns - `$10`/`$11`/`$12`/
+/// `$13`/`$15` in `ram.asm` (`$14`, the collision code byte, isn't here -
+/// it's already available as `bg_collision(...).to_raw_byte()`, so a
+/// caller needing both just calls both). `bg_collision` above only
+/// returns the *documented* output (the collision code, in `a`/carry);
+/// this is for [`contra_nes::HookAction::ReturnNow`] integration, where
+/// skipping the real routine's body means these never get written unless
+/// something writes them back explicitly - and since zero page is shared,
+/// tightly reused scratch space across many unrelated routines in this
+/// game (not exclusive to this one), *some* other routine reading one of
+/// these addresses expecting *its own* last write, not whatever this
+/// routine left stale from a previous unrelated call, is a real,
+/// plausible source of drift a cycle-accurate charge alone can't fix. All
+/// five addresses are computed identically regardless of whether the row
+/// guard (`y >= 0xe0`) short-circuits `bg_collision`'s buffer read - that
+/// branch is only reached in `read_bg_collision_byte`, after every one of
+/// these is already set - so this needs no separate row-guard case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScratchState {
+    /// `$10` - always `0` through this entry point (`get_bg_collision`,
+    /// as opposed to the hangar-mine-cart-only `get_cart_bg_collision`
+    /// entry this crate doesn't port).
+    pub s10: u8,
+    /// `$11` - final value is `(vy >> 2) & 0x3c`, *not* the adjusted `vy`
+    /// itself (that's an intermediate value at a different point in the
+    /// routine, overwritten before return).
+    pub s11: u8,
+    /// `$12` - final value is the column (`(hx >> 4) & 0x03`).
+    pub s12: u8,
+    /// `$13` - final value is `bg_collision_offset` (the index into
+    /// `BG_COLLISION_DATA` the routine read from).
+    pub s13: u8,
+    /// `$15` - the original, unadjusted `y` input.
+    pub s15: u8,
+}
+
+/// Computes [`ScratchState`] for the same inputs [`bg_collision`] would
+/// take - see that struct's doc comment for why a `ReturnNow` integration
+/// needs this in addition to the collision code itself.
+pub fn bg_collision_scratch(x: u8, y: u8, vertical_scroll: u8, horizontal_scroll: u8, ppuctrl_settings: u8) -> ScratchState {
+    let (raw_vy, overflowed) = y.overflowing_add(vertical_scroll);
+    let vy = if overflowed || raw_vy >= 0xF0 { raw_vy.wrapping_add(0x10) } else { raw_vy };
+    let (hx, hx_overflowed) = x.overflowing_add(horizontal_scroll);
+    let base_nametable_bit = ppuctrl_settings & 0x01;
+    let nametable_number = if hx_overflowed { base_nametable_bit ^ 0x01 } else { base_nametable_bit };
+    let vy_bits = (vy >> 2) & 0x3C;
+    let hx_high_bits = hx >> 6;
+    let nametable_offset_tbl = [0x00u8, 0x40u8];
+    let bg_collision_offset = hx_high_bits | vy_bits | nametable_offset_tbl[nametable_number as usize];
+    let column = (hx >> 4) & 0x03;
+
+    ScratchState { s10: 0, s11: vy_bits, s12: column, s13: bg_collision_offset, s15: y }
+}
+
+/// The *exact* real-hardware cycle cost of a [`bg_collision`] call with
+/// these same inputs (entry `$e0bb` to the routine's own `rts`,
+/// inclusive) - for [`contra_nes::HookAction::ReturnNow`] integration
+/// (see docs/NATIVE_PORT.md), which needs to charge `cpu.cycles` honestly
+/// when this port stands in for the real routine instead of letting it
+/// execute.
+///
+/// Derived from an exhaustive measurement, not estimated: every
+/// combination of this routine's five real branches (the row guard, the
+/// vertical-scroll add's three outcomes - no adjustment / `cmp`-triggered
+/// adjustment / genuine byte overflow - the horizontal-scroll add's
+/// overflow, and (when the row guard doesn't short-circuit) the column's
+/// shift count) was driven directly through the real ROM's code via
+/// `contra-nes`'s cycle-accurate CPU (`dump_frames.rs`'s
+/// `EXHAUSTIVE_BG_COLLISION_CYCLES=1` - a synthetic `jsr`/`rts` harness,
+/// not sampled gameplay) and found to combine *perfectly additively*: a
+/// column-and-row-guard-dependent base, plus a flat `+1` if the horizontal
+/// add overflowed, plus `+1`/`-2`/`0` for the vertical add's
+/// `cmp`/`overflow`/`none` outcome respectively - no interaction terms,
+/// confirmed against all 30 combinations tested. This replaced two earlier,
+/// both-wrong attempts (a single flat guess, then a real-gameplay-sampled
+/// two-value split that turned out to hide 9 real distinct values because
+/// of an unrelated measurement bug) - see docs/NATIVE_PORT.md's full
+/// account of both.
+pub fn bg_collision_cycles(x: u8, y: u8, vertical_scroll: u8, horizontal_scroll: u8) -> u64 {
+    let (raw_vy, vy_overflowed) = y.overflowing_add(vertical_scroll);
+    let vy_delta: i64 = if vy_overflowed {
+        -2
+    } else if raw_vy >= 0xF0 {
+        1
+    } else {
+        0
+    };
+    let (hx, hx_overflowed) = x.overflowing_add(horizontal_scroll);
+    let hx_delta: i64 = if hx_overflowed { 1 } else { 0 };
+
+    let base: i64 = if y >= 0xE0 {
+        129
+    } else {
+        match (hx >> 4) & 0x03 {
+            0 | 1 | 2 => 158,
+            _ => 156,
+        }
+    };
+    (base + vy_delta + hx_delta) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +305,56 @@ mod tests {
         assert_eq!(CollisionCode::Floor.to_raw_byte(), 0x01);
         assert_eq!(CollisionCode::Water.to_raw_byte(), 0x02);
         assert_eq!(CollisionCode::Solid.to_raw_byte(), 0x80);
+    }
+
+    /// Every one of the 30 (x, y, vertical_scroll, horizontal_scroll) ->
+    /// cycles pairs from `EXHAUSTIVE_BG_COLLISION_CYCLES=1`'s real,
+    /// synthetic-`jsr` measurement against the actual ROM (see
+    /// `bg_collision_cycles`'s doc comment) - this is the ground truth the
+    /// formula was derived *from*, encoded as a regression test so it can't
+    /// silently drift from what real hardware actually does.
+    #[test]
+    fn bg_collision_cycles_matches_the_exhaustive_real_hardware_measurement() {
+        let cases: &[(u8, u8, u8, u8, u64)] = &[
+            // row guard OFF (y=0x10 < 0xe0)
+            (0x00, 0x10, 0x00, 0x00, 158), // vy=none hx=no-of col0
+            (0x10, 0x10, 0x00, 0x00, 158), // col1
+            (0x20, 0x10, 0x00, 0x00, 158), // col2
+            (0x30, 0x10, 0x00, 0x00, 156), // col3
+            (0x10, 0x10, 0x00, 0xF0, 159), // vy=none hx=overflow col0
+            (0x20, 0x10, 0x00, 0xF0, 159),
+            (0x30, 0x10, 0x00, 0xF0, 159),
+            (0x40, 0x10, 0x00, 0xF0, 157),
+            (0x00, 0x10, 0xE0, 0x00, 159), // vy=cmp hx=no-of
+            (0x10, 0x10, 0xE0, 0x00, 159),
+            (0x20, 0x10, 0xE0, 0x00, 159),
+            (0x30, 0x10, 0xE0, 0x00, 157),
+            (0x10, 0x10, 0xE0, 0xF0, 160), // vy=cmp hx=overflow
+            (0x20, 0x10, 0xE0, 0xF0, 160),
+            (0x30, 0x10, 0xE0, 0xF0, 160),
+            (0x40, 0x10, 0xE0, 0xF0, 158),
+            (0x00, 0x10, 0xF5, 0x00, 156), // vy=overflow hx=no-of
+            (0x10, 0x10, 0xF5, 0x00, 156),
+            (0x20, 0x10, 0xF5, 0x00, 156),
+            (0x30, 0x10, 0xF5, 0x00, 154),
+            (0x10, 0x10, 0xF5, 0xF0, 157), // vy=overflow hx=overflow
+            (0x20, 0x10, 0xF5, 0xF0, 157),
+            (0x30, 0x10, 0xF5, 0xF0, 157),
+            (0x40, 0x10, 0xF5, 0xF0, 155),
+            // row guard ON (y=0xe0 >= 0xe0) - column irrelevant
+            (0x00, 0xE0, 0x00, 0x00, 129), // vy=none hx=no-of
+            (0x10, 0xE0, 0x00, 0xF0, 130), // vy=none hx=overflow
+            (0x00, 0xE0, 0x10, 0x00, 130), // vy=cmp hx=no-of
+            (0x10, 0xE0, 0x10, 0xF0, 131), // vy=cmp hx=overflow
+            (0x00, 0xE0, 0x20, 0x00, 127), // vy=overflow hx=no-of
+            (0x10, 0xE0, 0x20, 0xF0, 128), // vy=overflow hx=overflow
+        ];
+        for &(x, y, vs, hs, expected) in cases {
+            assert_eq!(
+                bg_collision_cycles(x, y, vs, hs),
+                expected,
+                "x={x:#04x} y={y:#04x} vs={vs:#04x} hs={hs:#04x}"
+            );
+        }
     }
 }
