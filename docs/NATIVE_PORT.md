@@ -700,7 +700,28 @@ replacement for its real 6502 code, cycle for cycle.
       bullet_enemy_collision`) - the other 2 weren't reached this
       session, noted honestly - zero mismatches. Not yet integrated
       live, same status as every routine above.
-- [ ] Everything else, logic side. Seventeen routines out of what's
+- [x] **`enemy_position_utils`** (`crates/contra-native/src/
+      enemy_position_utils.rs`) - ported 5 tiny, widely-reused mutators:
+      `add_a_to_enemy_y_pos`/`add_a_to_enemy_x_pos` (`$eb1f`-`$eb2e`, 17
+      real call sites combined), `add_10_to_enemy_y_fract_vel`/`add_a_to_
+      enemy_y_fract_vel` (`$eb40`-`$eb51`, 10 real call sites combined,
+      the first a real ASM fallthrough into the second with `a` preset to
+      `$10`), and `reverse_enemy_x_direction` (`$e91e`-`$e92f`, 8 real
+      call sites, the same 16-bit two's-complement negation
+      `bullet_physics::negate16` already implements - made `pub(crate)`
+      and reused rather than duplicated). Unit-tested (wraparound on both
+      position adders, carry-into-fast on the velocity adder, the
+      $10-preset relationship, and a double-reversal round-trip). Live-
+      verified (`VERIFY_ENEMY_POSITION_UTILS=1`, hooking all 5 real
+      entries and each one's own real exit): 385 real calls across a
+      9000-frame session - `add_a_to_enemy_y_pos` (8 calls) and `add_a_to_
+      enemy_y_fract_vel` (377 calls, the large sample also covering every
+      real `add_10_to_enemy_y_fract_vel` call, since that entry point
+      falls straight through into the same code) - zero mismatches.
+      `add_a_to_enemy_x_pos` and `reverse_enemy_x_direction` weren't
+      reached this session, noted honestly. Not yet integrated live, same
+      status as every routine above.
+- [ ] Everything else, logic side. Eighteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

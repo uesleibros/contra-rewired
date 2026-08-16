@@ -1495,6 +1495,85 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} indoor-enemy-spawn calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ENEMY_POSITION_UTILS").is_ok() {
+            // VERIFY_ENEMY_POSITION_UTILS=1: verification pass for
+            // `contra_native::enemy_position_utils`'s 5 real entry
+            // points, each with its own real exit (no shared tail here,
+            // unlike most of this file's other verify blocks).
+            use contra_native::enemy_position_utils::{
+                add_10_to_enemy_y_fract_vel, add_a_to_enemy_x_pos, add_a_to_enemy_y_fract_vel, add_a_to_enemy_y_pos,
+                reverse_enemy_x_direction,
+            };
+            #[derive(Clone, Copy, Debug)]
+            enum Op {
+                AddYPos(u8, u8),                // (a, enemy_y_pos)
+                AddXPos(u8, u8),                // (a, enemy_x_pos)
+                Add10YFractVel(u8, u8),         // (y_vel_fract, y_vel_fast)
+                AddAYFractVel(u8, u8, u8),       // (a, y_vel_fract, y_vel_fast)
+                ReverseXDir(u8, u8),             // (x_vel_fract, x_vel_fast)
+            }
+            let mut pending: Option<Op> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xEB1F => pending = Some(Op::AddYPos(cpu.a, bus.ram[0x324 + x])),
+                    0xEB27 => pending = Some(Op::AddXPos(cpu.a, bus.ram[0x33E + x])),
+                    0xEB40 => pending = Some(Op::Add10YFractVel(bus.ram[0x4F8 + x], bus.ram[0x4E8 + x])),
+                    0xEB42 => pending = Some(Op::AddAYFractVel(cpu.a, bus.ram[0x4F8 + x], bus.ram[0x4E8 + x])),
+                    0xE91E => pending = Some(Op::ReverseXDir(bus.ram[0x518 + x], bus.ram[0x508 + x])),
+                    0xEB26 | 0xEB2E | 0xEB51 | 0xE92F => {
+                        if let Some(op) = pending.take() {
+                            checked += 1;
+                            match (cpu.pc, op) {
+                                (0xEB26, Op::AddYPos(a, before)) => {
+                                    let expected = add_a_to_enemy_y_pos(a, before);
+                                    let real = bus.ram[0x324 + x];
+                                    if expected != real {
+                                        eprintln!("MISMATCH(enemy_position_utils AddYPos) frame={frame} a={a:02X} before={before:02X}: expected {expected:02X}, got {real:02X}");
+                                    }
+                                }
+                                (0xEB2E, Op::AddXPos(a, before)) => {
+                                    let expected = add_a_to_enemy_x_pos(a, before);
+                                    let real = bus.ram[0x33E + x];
+                                    if expected != real {
+                                        eprintln!("MISMATCH(enemy_position_utils AddXPos) frame={frame} a={a:02X} before={before:02X}: expected {expected:02X}, got {real:02X}");
+                                    }
+                                }
+                                (0xEB51, Op::Add10YFractVel(fract, fast)) => {
+                                    let expected = add_10_to_enemy_y_fract_vel(fract, fast);
+                                    let real = (bus.ram[0x4F8 + x], bus.ram[0x4E8 + x]);
+                                    if expected != real {
+                                        eprintln!("MISMATCH(enemy_position_utils Add10YFractVel) frame={frame} before=({fract:02X},{fast:02X}): expected {expected:?}, got {real:?}");
+                                    }
+                                }
+                                (0xEB51, Op::AddAYFractVel(a, fract, fast)) => {
+                                    let expected = add_a_to_enemy_y_fract_vel(a, fract, fast);
+                                    let real = (bus.ram[0x4F8 + x], bus.ram[0x4E8 + x]);
+                                    if expected != real {
+                                        eprintln!("MISMATCH(enemy_position_utils AddAYFractVel) frame={frame} a={a:02X} before=({fract:02X},{fast:02X}): expected {expected:?}, got {real:?}");
+                                    }
+                                }
+                                (0xE92F, Op::ReverseXDir(fract, fast)) => {
+                                    let expected = reverse_enemy_x_direction(fract, fast);
+                                    let real = (bus.ram[0x518 + x], bus.ram[0x508 + x]);
+                                    if expected != real {
+                                        eprintln!("MISMATCH(enemy_position_utils ReverseXDir) frame={frame} before=({fract:02X},{fast:02X}): expected {expected:?}, got {real:?}");
+                                    }
+                                }
+                                _ => {
+                                    checked -= 1; // wrong exit for the pending op - not a real match, don't count it
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-position-utils calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
