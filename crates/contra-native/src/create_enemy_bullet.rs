@@ -1,5 +1,5 @@
 //! Native port of Contra's enemy-bullet creation chain, `src/bank7.asm`,
-//! CPU `$f2bf`-`$f333`: [`create_enemy_bullet`] (`@create_enemy_bullet`/
+//! CPU `$f29e`-`$f333`: [`create_enemy_bullet`] (`@create_enemy_bullet`/
 //! `set_bullet_velocities`/`bullet_gen_exit`) is the real "spawn an enemy
 //! bullet object" routine, composing three already-ported building
 //! blocks exactly the way the real ASM does:
@@ -9,12 +9,38 @@
 //! (compute and write its velocity) - the first port in this crate
 //! that's *purely* composition of prior, independently live-verified
 //! routines, with no new 6502 control flow of its own beyond a couple of
-//! small caller-side transforms (see below). [`create_enemy_bullet_angle_a`]
-//! (`create_enemy_bullet_angle_a`/`create_enemy_bullet_if_attack_enabled`)
-//! is its real caller one level up: computes the aim quadrant from a raw
-//! angle byte ([`quadrant_from_angle`]), gates on `ENEMY_ATTACK_FLAG`
-//! (except for one bullet type that always fires), then delegates to
-//! [`create_enemy_bullet`].
+//! small caller-side transforms (see below). [`create_enemy_bullet_if_attack_enabled`]
+//! gates on `ENEMY_ATTACK_FLAG` (except one always-fires bullet type)
+//! before delegating to [`create_enemy_bullet`] - shared by two real
+//! callers: [`create_enemy_bullet_angle_a`] (computes the aim quadrant
+//! from a raw angle byte via [`quadrant_from_angle`]) and
+//! [`aim_and_create_enemy_bullet`] (resolves aim by targeting a player,
+//! via [`crate::quadrant_aim_dir`], instead of using a fixed angle).
+//!
+//! ## `aim_and_create_enemy_bullet`'s live-verification gap, and an
+//! apparently-unreachable branch inside it
+//!
+//! Unlike every other routine in this crate, `aim_and_create_enemy_
+//! bullet` has exactly **one** real caller in the whole ROM:
+//! `dragon_arm_orb_fire_projectile` (`bank0.asm`), the level 3 dragon
+//! boss's arm-orb attack. That's not reachable by this project's current
+//! scripted playthrough (a basic level-1 walk-and-shoot), so this
+//! routine's own live-verification hook (`VERIFY_AIM_AND_CREATE_ENEMY_
+//! BULLET=1`) has 0 real hits so far - confidence instead rests on this
+//! module's own unit tests cross-checking its composition against
+//! `get_quadrant_aim_dir`/`get_quadrant_aim_dir_for_player`'s own
+//! (already independently live-verified) outputs, plus every building
+//! block it calls already being separately live-verified in its own
+//! right. Additionally: that one real caller always sets `$0a` (this
+//! port's `aim_target`) via `sty $0a` from `player_enemy_x_dist`'s own
+//! output, documented as "#$00 or #$01" - i.e. always bit-7-clear -
+//! meaning `aim_and_create_enemy_bullet`'s "direct target" branch (bit 7
+//! set, aim at an already-known fixed position) appears to be
+//! **unreachable by any real code in the ROM**, the same category as
+//! `adjust_bullet_velocity`'s speed code 8 or the dead-code top-level
+//! `clear_enemy` label - ported faithfully regardless (it's still real,
+//! valid 6502 control flow, just apparently never exercised), not
+//! removed or "corrected".
 //!
 //! ## Two caller-side transforms, not delegated to the routines below
 //!
@@ -48,6 +74,7 @@ use crate::bullet_physics::calc_bullet_velocities;
 use crate::enemy_clear::EnemyClearFields;
 use crate::enemy_slots::{find_next_enemy_slot, ENEMY_SLOT_COUNT};
 use crate::initialize_enemy::initialize_enemy;
+use crate::quadrant_aim_dir::{get_quadrant_aim_dir, get_quadrant_aim_dir_for_player, QUADRANT_AIM_DIR_01};
 
 /// `ENEMY_TYPE` value real bullets are created with (`bank7.asm`'s own
 /// `lda #$01 ; sta ENEMY_TYPE,x`).
@@ -117,12 +144,36 @@ pub fn quadrant_from_angle(bullet_type_and_angle: u8) -> u8 {
     y
 }
 
-/// Native port of `create_enemy_bullet_angle_a` through
-/// `create_enemy_bullet_if_attack_enabled` into [`create_enemy_bullet`]
-/// itself (`bank7.asm`, `$f2bf`-`$f333`) - computes the quadrant from the
-/// angle via [`quadrant_from_angle`], then only actually spawns the
-/// bullet if `enemy_attack_flag` is nonzero *or* the bullet's type is the
-/// one that always fires regardless (see [`ALWAYS_FIRE_TYPE_BITS`]).
+/// Native port of `create_enemy_bullet_if_attack_enabled` (`bank7.asm`,
+/// `$f2d8`-`$f2e3`) - the shared gate both real upstream callers
+/// ([`create_enemy_bullet_angle_a`] and [`aim_and_create_enemy_bullet`])
+/// jump into: only actually spawns the bullet if `enemy_attack_flag` is
+/// nonzero, *or* the bullet's type is the one that always fires
+/// regardless (see [`ALWAYS_FIRE_TYPE_BITS`] - the level 1 boss's large
+/// cannonball).
+#[allow(clippy::too_many_arguments)]
+pub fn create_enemy_bullet_if_attack_enabled(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_attack_flag: u8,
+    bullet_type_and_angle: u8,
+    speed_code: u8,
+    quadrant: u8,
+    y_pos: u8,
+    x_pos: u8,
+) -> Option<CreatedBullet> {
+    let always_fires = bullet_type_and_angle & 0xe0 == ALWAYS_FIRE_TYPE_BITS;
+    if !always_fires && enemy_attack_flag == 0 {
+        return None;
+    }
+    create_enemy_bullet(prg_rom, enemy_routine, current_level, bullet_type_and_angle, speed_code, quadrant, y_pos, x_pos)
+}
+
+/// Native port of `create_enemy_bullet_angle_a` (`bank7.asm`,
+/// `$f2bf`-`$f2d7`) - computes the quadrant from the angle via
+/// [`quadrant_from_angle`], then delegates to
+/// [`create_enemy_bullet_if_attack_enabled`].
 #[allow(clippy::too_many_arguments)]
 pub fn create_enemy_bullet_angle_a(
     prg_rom: &[u8],
@@ -135,11 +186,82 @@ pub fn create_enemy_bullet_angle_a(
     x_pos: u8,
 ) -> Option<CreatedBullet> {
     let quadrant = quadrant_from_angle(bullet_type_and_angle);
-    let always_fires = bullet_type_and_angle & 0xe0 == ALWAYS_FIRE_TYPE_BITS;
-    if !always_fires && enemy_attack_flag == 0 {
-        return None;
-    }
-    create_enemy_bullet(prg_rom, enemy_routine, current_level, bullet_type_and_angle, speed_code, quadrant, y_pos, x_pos)
+    create_enemy_bullet_if_attack_enabled(
+        prg_rom,
+        enemy_routine,
+        current_level,
+        enemy_attack_flag,
+        bullet_type_and_angle,
+        speed_code,
+        quadrant,
+        y_pos,
+        x_pos,
+    )
+}
+
+/// Native port of `aim_and_create_enemy_bullet` (`bank7.asm`,
+/// `$f29e`-`$f2b3`) - the real top-level "figure out where to aim and
+/// spawn the bullet" entry point enemy AI calls. Always aims using
+/// `quadrant_aim_dir_01` (the real routine hardcodes the table selector
+/// to `1` before either aiming call below - a genuine, deliberate
+/// restriction of this specific caller, not a limitation of the aiming
+/// routines themselves).
+///
+/// `aim_target` packs a dual-purpose real 6502 value, exactly matching
+/// the real ASM's own reuse of `$0a` for two different things depending
+/// on a sign check: bit 7 **clear** means "resolve via player state" -
+/// `aim_target & 1` is the player index, handed straight to
+/// [`crate::quadrant_aim_dir::get_quadrant_aim_dir_for_player`]; bit 7
+/// **set** means "aim at an already-known fixed target position"
+/// instead, bypassing player-state resolution entirely and using
+/// `direct_target_y`/`direct_target_x` (the real ASM's own `$0c`/`$0b`)
+/// with [`crate::quadrant_aim_dir::get_quadrant_aim_dir`] directly - the
+/// path the level 3 dragon boss's arm-orb projectiles take.
+#[allow(clippy::too_many_arguments)]
+pub fn aim_and_create_enemy_bullet(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_attack_flag: u8,
+    bullet_type: u8,
+    speed_code: u8,
+    source_y: u8,
+    source_x: u8,
+    aim_target: u8,
+    direct_target_x: u8,
+    direct_target_y: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+) -> Option<CreatedBullet> {
+    let aimed = if aim_target & 0x80 != 0 {
+        get_quadrant_aim_dir(source_y, source_x, direct_target_y, direct_target_x, &QUADRANT_AIM_DIR_01)
+    } else {
+        get_quadrant_aim_dir_for_player(
+            source_y,
+            source_x,
+            aim_target,
+            player_state,
+            sprite_y_pos,
+            sprite_x_pos,
+            level_location_type,
+            &QUADRANT_AIM_DIR_01,
+        )
+    };
+
+    let bullet_type_and_angle = bullet_type | aimed.aim_dir;
+    create_enemy_bullet_if_attack_enabled(
+        prg_rom,
+        enemy_routine,
+        current_level,
+        enemy_attack_flag,
+        bullet_type_and_angle,
+        speed_code,
+        aimed.quadrant,
+        source_y,
+        source_x,
+    )
 }
 
 #[cfg(test)]
@@ -256,5 +378,75 @@ mod tests {
         // type bits = 0x20 (level 1 boss large cannonball), attack flag clear
         let result = create_enemy_bullet_angle_a(&rom, &routine, 0, 0, 0x20, 3, 10, 20);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn aim_and_create_direct_target_branch_matches_get_quadrant_aim_dir_directly() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        // aim_target bit7 set -> direct-target branch, ignores player_state.
+        let created = aim_and_create_enemy_bullet(
+            &rom,
+            &routine,
+            0,
+            1, // attack flag on
+            0x00,
+            3,
+            0x50, // source_y
+            0x50, // source_x
+            0x80, // aim_target: bit7 set -> direct target sentinel
+            0x90, // direct_target_x
+            0x30, // direct_target_y
+            [0, 0],
+            [0, 0],
+            [0, 0],
+            0,
+        )
+        .unwrap();
+        let direct = get_quadrant_aim_dir(0x50, 0x50, 0x30, 0x90, &QUADRANT_AIM_DIR_01);
+        assert_eq!(created.fields.var_1, 0); // bullet_type=0 >> 5 (angle merged separately below)
+        // the merged bullet_type_and_angle's low nibble must equal the aim dir
+        // (recoverable since type bits/aim bits don't overlap): re-derive via
+        // a fresh angle_a call using the same aim dir and confirm identical
+        // velocity output as an indirect cross-check.
+        let via_angle_a = create_enemy_bullet_angle_a(&rom, &routine, 0, 1, direct.aim_dir, 3, 0x50, 0x50).unwrap();
+        assert_eq!(created.fields.x_velocity_fract, via_angle_a.fields.x_velocity_fract);
+    }
+
+    #[test]
+    fn aim_and_create_player_index_branch_uses_get_quadrant_aim_dir_for_player() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let created = aim_and_create_enemy_bullet(
+            &rom,
+            &routine,
+            0,
+            1,
+            0x00,
+            3,
+            0x50,
+            0x50,
+            0x00, // aim_target: bit7 clear -> player index 0
+            0x00,
+            0x00,
+            [1, 0],       // player 1 normal
+            [0x30, 0x00], // player 1 Y
+            [0x90, 0x00], // player 1 X
+            0,
+        )
+        .unwrap();
+        let via_for_player =
+            get_quadrant_aim_dir_for_player(0x50, 0x50, 0x00, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, &QUADRANT_AIM_DIR_01);
+        let via_angle_a = create_enemy_bullet_angle_a(&rom, &routine, 0, 1, via_for_player.aim_dir, 3, 0x50, 0x50).unwrap();
+        assert_eq!(created.fields.x_velocity_fract, via_angle_a.fields.x_velocity_fract);
+    }
+
+    #[test]
+    fn aim_and_create_respects_the_attack_flag_gate() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let result =
+            aim_and_create_enemy_bullet(&rom, &routine, 0, 0, 0x00, 3, 0x50, 0x50, 0x00, 0, 0, [0, 0], [0, 0], [0, 0], 0);
+        assert_eq!(result, None);
     }
 }

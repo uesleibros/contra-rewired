@@ -536,7 +536,37 @@ replacement for its real 6502 code, cycle for cycle.
       an active, normal player 2 while player 1 isn't - not reachable in
       a single-player run) - noted honestly, unit-tested only so far.
       Not yet integrated live, same status as every routine above.
-- [ ] Everything else, logic side. Ten routines out of what's
+- [x] **`create_enemy_bullet_if_attack_enabled` / `aim_and_create_enemy_bullet`**
+      (`crates/contra-native/src/create_enemy_bullet.rs`, extends the
+      module above) - `create_enemy_bullet_if_attack_enabled` (`bank7.
+      asm`, `$f2d8`-`$f2e3`) is a small refactor pulling the attack-flag
+      gate that used to be inlined in `create_enemy_bullet_angle_a` out
+      into its own function (matching the real ASM, where it always was
+      a real, separately-named, shared routine both real callers jump
+      into) - no behavior change, `create_enemy_bullet_angle_a`'s own
+      tests still pass unmodified. `aim_and_create_enemy_bullet` (`$f29e`-
+      `$f2b3`) is the real top-level "aim at a target and spawn a bullet"
+      entry point: resolves aim via `quadrant_aim_dir::get_quadrant_aim_
+      dir`/`get_quadrant_aim_dir_for_player` (always through table 1),
+      merges the result with a pre-shifted bullet type, then delegates to
+      `create_enemy_bullet_if_attack_enabled`. Unit-tested (both real aim
+      paths cross-checked against calling `get_quadrant_aim_dir`/`_for_
+      player` directly, and the attack-flag gate). **Live verification
+      gap, documented honestly in this module's own doc comment**: this
+      routine has exactly one real caller in the whole ROM
+      (`dragon_arm_orb_fire_projectile`, the level 3 dragon boss's arm-orb
+      attack) - not reachable by this project's current scripted
+      playthrough, so `VERIFY_AIM_AND_CREATE_ENEMY_BULLET=1` had 0 real
+      hits this session. Confidence rests on unit tests plus every
+      building block already being independently live-verified. A
+      genuinely interesting side-finding from tracing that one real
+      caller: it always passes an aim-target value with bit 7 clear, so
+      this routine's own "aim at an already-known fixed position" branch
+      (bit 7 set) appears **unreachable by any real code in the ROM** -
+      ported faithfully anyway, flagged rather than removed, the same
+      treatment this crate already gives `adjust_bullet_velocity`'s speed
+      code 8 and the dead-code `clear_enemy` top label.
+- [ ] Everything else, logic side. Eleven routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

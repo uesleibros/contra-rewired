@@ -1009,6 +1009,126 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} quadrant-aim-dir-for-player calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_AIM_AND_CREATE_ENEMY_BULLET").is_ok() {
+            // VERIFY_AIM_AND_CREATE_ENEMY_BULLET=1: verification pass for
+            // `contra_native::create_enemy_bullet::aim_and_create_enemy_
+            // bullet`. Entry ($f29e) takes bullet_type/speed_code in a/y;
+            // real exits are the same two `create_enemy_bullet` itself
+            // uses ($f32e success, $f333 failure), since this routine's
+            // own control flow funnels into that same shared tail.
+            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+            #[allow(clippy::type_complexity)]
+            let mut pending: Option<(
+                [u8; ENEMY_SLOT_COUNT],
+                u8, // current_level
+                u8, // enemy_attack_flag
+                u8, // bullet_type
+                u8, // speed_code
+                u8, // source_y
+                u8, // source_x
+                u8, // aim_target
+                u8, // direct_target_x
+                u8, // direct_target_y
+                [u8; 2], // player_state
+                [u8; 2], // sprite_y_pos
+                [u8; 2], // sprite_x_pos
+                u8,      // level_location_type
+            )> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF29E => {
+                        let mut snapshot = [0u8; ENEMY_SLOT_COUNT];
+                        snapshot.copy_from_slice(&bus.ram[0x04B8..0x04B8 + ENEMY_SLOT_COUNT]);
+                        pending = Some((
+                            snapshot,
+                            bus.ram[0x30],
+                            bus.ram[0x8E],
+                            cpu.a,
+                            cpu.y,
+                            bus.ram[0x08],
+                            bus.ram[0x09],
+                            bus.ram[0x0a],
+                            bus.ram[0x0b],
+                            bus.ram[0x0c],
+                            [bus.ram[0x90], bus.ram[0x91]],
+                            [bus.ram[0x31A], bus.ram[0x31B]],
+                            [bus.ram[0x334], bus.ram[0x335]],
+                            bus.ram[0x40],
+                        ));
+                    }
+                    0xF32E | 0xF333 => {
+                        if let Some((
+                            snapshot,
+                            current_level,
+                            attack_flag,
+                            bullet_type,
+                            speed_code,
+                            source_y,
+                            source_x,
+                            aim_target,
+                            direct_target_x,
+                            direct_target_y,
+                            player_state,
+                            sprite_y,
+                            sprite_x,
+                            level_loc,
+                        )) = pending.take()
+                        {
+                            let expected = contra_native::create_enemy_bullet::aim_and_create_enemy_bullet(
+                                &prg_rom_copy,
+                                &snapshot,
+                                current_level,
+                                attack_flag,
+                                bullet_type,
+                                speed_code,
+                                source_y,
+                                source_x,
+                                aim_target,
+                                direct_target_x,
+                                direct_target_y,
+                                player_state,
+                                sprite_y,
+                                sprite_x,
+                                level_loc,
+                            );
+                            let succeeded = cpu.pc == 0xF32E;
+                            checked += 1;
+                            match (expected, succeeded) {
+                                (None, false) => {
+                                    if cpu.a != 1 {
+                                        eprintln!(
+                                            "MISMATCH(aim_and_create_enemy_bullet) frame={frame}: expected failure a=1, got a={:02X}",
+                                            cpu.a
+                                        );
+                                    }
+                                }
+                                (Some(b), true) => {
+                                    let real_type = bus.ram[0x528 + b.slot as usize];
+                                    let real_hp = bus.ram[0x578 + b.slot as usize];
+                                    let real_fields = read_enemy_clear_fields(bus, b.slot as usize);
+                                    if cpu.a != 0 || real_type != b.enemy_type || real_hp != b.hp || real_fields != b.fields {
+                                        eprintln!(
+                                            "MISMATCH(aim_and_create_enemy_bullet) frame={frame} slot={}: expected {b:?}, got type={real_type:02X} hp={real_hp:02X} fields={real_fields:?} a={:02X}",
+                                            b.slot, cpu.a
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    eprintln!(
+                                        "MISMATCH(aim_and_create_enemy_bullet) frame={frame}: pure fn disagreed with which real exit fired (expected={expected:?}, real_exit_succeeded={succeeded})"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} aim-and-create-enemy-bullet calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
