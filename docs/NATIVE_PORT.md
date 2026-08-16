@@ -663,7 +663,25 @@ replacement for its real 6502 code, cycle for cycle.
       pos`): 3732 real calls across a 9000-frame session - the second-
       largest live sample in this crate - zero mismatches. Not yet
       integrated live, same status as every routine above.
-- [ ] Everything else, logic side. Fifteen routines out of what's
+- [x] **`add_with_enemy_pos::add_with_enemy_pos` / `set_08_09_to_enemy_pos`**
+      (`crates/contra-native/src/add_with_enemy_pos.rs`) - ported from
+      `add_with_enemy_pos`/`set_08_09_to_enemy_pos` (`bank7.asm`,
+      `$eb2f`-`$eb3f`): adds an offset to an enemy's position without
+      modifying the enemy itself, writing the result to the `$08`/`$09`
+      scratch pair most of this crate's other aiming/bullet-creation
+      ports already take as plain `source_y`/`source_x` parameters
+      (`create_enemy_bullet`, `quadrant_aim_dir`). `set_08_09_to_enemy_
+      pos` is the zero-offset special case (real ASM literally sets
+      `a=0`/`y=0` before falling into `add_with_enemy_pos`) - together,
+      **29 real call sites** (21 for the zero-offset form alone), among
+      the most-reused small utilities found so far. Unit-tested (offset
+      addition, 6502 wraparound, the zero-offset case matching `add_
+      with_enemy_pos(0, 0, ..)` exactly). Live-verified (`VERIFY_ADD_
+      WITH_ENEMY_POS=1`, hooking both real entries and their one shared
+      exit `$eb3f`): 40 real calls across a 9000-frame session, zero
+      mismatches. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Sixteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

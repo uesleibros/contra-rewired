@@ -1312,6 +1312,48 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} update-enemy-pos calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ADD_WITH_ENEMY_POS").is_ok() {
+            // VERIFY_ADD_WITH_ENEMY_POS=1: verification pass for
+            // `contra_native::add_with_enemy_pos`. Two real entries
+            // share one exit: `set_08_09_to_enemy_pos` ($eb2f, always
+            // offset 0/0) and `add_with_enemy_pos` ($eb32, offsets in
+            // a/y) both funnel into the same rts ($eb3f).
+            use contra_native::add_with_enemy_pos::{add_with_enemy_pos, set_08_09_to_enemy_pos};
+            let mut pending: Option<(usize, u8, u8)> = None; // (x, x_offset, y_offset)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xEB2F => {
+                        pending = Some((cpu.x as usize, 0, 0));
+                    }
+                    0xEB32 => {
+                        pending = Some((cpu.x as usize, cpu.a, cpu.y));
+                    }
+                    0xEB3F => {
+                        if let Some((x, x_offset, y_offset)) = pending.take() {
+                            let enemy_x = bus.ram[0x33E + x];
+                            let enemy_y = bus.ram[0x324 + x];
+                            let expected = if x_offset == 0 && y_offset == 0 {
+                                set_08_09_to_enemy_pos(enemy_x, enemy_y)
+                            } else {
+                                add_with_enemy_pos(x_offset, y_offset, enemy_x, enemy_y)
+                            };
+                            let real = (bus.ram[0x09], bus.ram[0x08]);
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(add_with_enemy_pos) frame={frame} x={x} offsets=({x_offset:02X},{y_offset:02X}) enemy_pos=({enemy_x:02X},{enemy_y:02X}): expected {expected:?}, got {real:?}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} add-with-enemy-pos calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
