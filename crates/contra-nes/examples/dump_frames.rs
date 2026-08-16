@@ -908,6 +908,45 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} create-enemy-bullet-angle-a calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_QUADRANT_AIM_DIR").is_ok() {
+            // VERIFY_QUADRANT_AIM_DIR=1: verification pass for
+            // `contra_native::quadrant_aim_dir::get_quadrant_aim_dir`.
+            // Normal jsr/rts, single real exit (the `and #$0f; rts` at
+            // the very end, `$f5ab`, right before the `quadrant_aim_dir_
+            // lookup_ptr_tbl` label).
+            use contra_native::quadrant_aim_dir::{get_quadrant_aim_dir, QUADRANT_AIM_DIR_00, QUADRANT_AIM_DIR_01, QUADRANT_AIM_DIR_02};
+            let mut pending: Option<(u8, u8, u8, u8, u8)> = None; // (source_y, source_x, target_y, target_x, table_index)
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF55E => {
+                        pending = Some((bus.ram[0x08], bus.ram[0x09], bus.ram[0x0a], bus.ram[0x0b], bus.ram[0x0f]));
+                    }
+                    0xF5AB => {
+                        if let Some((source_y, source_x, target_y, target_x, table_index)) = pending.take() {
+                            let table = match table_index {
+                                0 => &QUADRANT_AIM_DIR_00,
+                                1 => &QUADRANT_AIM_DIR_01,
+                                _ => &QUADRANT_AIM_DIR_02,
+                            };
+                            let expected = get_quadrant_aim_dir(source_y, source_x, target_y, target_x, table);
+                            let real_aim_dir = cpu.a;
+                            let real_quadrant = bus.ram[0x07];
+                            checked += 1;
+                            if expected.aim_dir != real_aim_dir || expected.quadrant != real_quadrant {
+                                eprintln!(
+                                    "MISMATCH(quadrant_aim_dir) frame={frame} src=({source_x:02X},{source_y:02X}) tgt=({target_x:02X},{target_y:02X}) tbl={table_index}: expected {expected:?}, got aim_dir={real_aim_dir:02X} quadrant={real_quadrant:02X}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} quadrant-aim-dir calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

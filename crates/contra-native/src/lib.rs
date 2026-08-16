@@ -75,6 +75,7 @@ pub mod initialize_enemy;
 pub mod level;
 pub mod palette;
 pub mod player_physics;
+pub mod quadrant_aim_dir;
 pub mod sound_code;
 pub mod sound_engine;
 pub mod supertile;

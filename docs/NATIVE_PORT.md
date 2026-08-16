@@ -489,7 +489,35 @@ replacement for its real 6502 code, cycle for cycle.
       rejections (`ENEMY_ATTACK_FLAG=0`, correctly producing no bullet) -
       zero mismatches on either path. Not yet integrated live, same
       status as every routine above.
-- [ ] Everything else, logic side. Nine routines out of what's
+- [x] **`quadrant_aim_dir::get_quadrant_aim_dir`**
+      (`crates/contra-native/src/quadrant_aim_dir.rs`) - ported from
+      `get_quadrant_aim_dir` (`bank7.asm`, `$f55e`-`$f5ab`): the core
+      "which way should this enemy aim at its target" routine - computes
+      the absolute Y/X distance to a target (a real `sec`/`sbc`/`bcs`
+      idiom for unsigned-subtract-with-sign-tracking, ported as
+      `abs_diff_with_borrow_flag`), buckets each into a coarse row/column,
+      and extracts a nibble-packed angle from one of 3 real 32-byte
+      tables (`quadrant_aim_dir_00`/`_01`/`_02`, `$f5b2`-`$f611`, hand-
+      transcribed as plain `[u8; 32]` consts - unlike `initialize_enemy`'s
+      property table, these have an unambiguous, fully-documented row/
+      col/nibble layout with no contradictory comments, so transcription
+      was safe here). Its real caller one level up,
+      `get_quadrant_aim_dir_for_player` (resolves *which* player position
+      to target, including a fallback to a fixed off-screen position when
+      neither player is in a normal state), is **not ported yet** - noted
+      in this module's own doc comment. Unit-tested (same-position edge
+      case, both quadrant bits independently, a hand-traced row/column
+      bucketing example, and the bit-5-of-distance nibble-selection
+      switch). Live-verified (`VERIFY_QUADRANT_AIM_DIR=1`, hooking the
+      real entry `$f55e` and the routine's single real exit `$f5ab`,
+      right before the `quadrant_aim_dir_lookup_ptr_tbl` label): 16 real
+      calls across a 9000-frame session, with real, observed variety -
+      tables 0 *and* 1 (table 2, the level 3 dragon boss's seeking arm,
+      wasn't reached this session - noted honestly), aim directions
+      `1`/`2`/`5`/`6`, and **all 4 real quadrant values** - zero
+      mismatches. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Ten routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
