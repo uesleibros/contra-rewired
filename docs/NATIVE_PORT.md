@@ -891,6 +891,24 @@ crashing" - it's correctly executing enough of Contra's real boot
 sequence (CHR-RAM population, nametable/attribute writes, palette setup)
 to produce the exact real title screen a player would see.
 
+**Next concrete blocker found, not guessed: simulated Start presses don't
+advance past the title screen.** Used the runner's scripted-input system
+(`--script`, plain-text `HOLD`/`WAIT`/`RELEASE`/`ASSERT_RAM8` commands) to
+hold `START` for 10 and separately 60 frames, at two different points -
+still the exact same title screen hundreds of frames later. Checked
+whether this is a "controller code wasn't discovered" repeat of the
+CHR-RAM false lead first: `load_controller_state`/`read_controller_state`
+(`$C35B`/`$C397`, confirmed via `docs/rom-symbols.txt`) **are** both
+discovered and called from a real site (`$C09A`) - not the same failure
+mode as before. Went one level deeper with `ASSERT_RAM8`, checking `$00`
+(where `load_controller_state` stores player 1's raw input byte) while
+`START` (`0x10`) was held: **got `0x33`, not `0x10`** - the controller-
+reading code path runs, but whatever ends up in `$00` doesn't match a
+clean "only Start is held" read. Not root-caused yet (would need
+tracing `read_controller_state`'s own internals - the actual `$4016`
+shift-register protocol - for where `$00`'s value actually comes from),
+but a real, tested lead for whoever picks this up next, not a guess.
+
 Whether to keep pushing this track, treat it as a complement to
 hand-porting, or set it aside remains an open call.
 
