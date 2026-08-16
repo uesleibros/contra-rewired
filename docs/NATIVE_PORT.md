@@ -335,6 +335,37 @@ replacement for its real 6502 code, cycle for cycle.
       real per-tile assignment; and only level 1's indexes have been
       exercised so far (the other 7 levels' headers use the same decode
       path but haven't been individually verified).
+- [x] **Super-tiles: nametable + attribute-table layout, both proven
+      byte-perfect.** `supertile::decompress_screen` ports
+      `read_supertiles_screen_ptr_table`/`load_supertile_indexes_starting_
+      at_y` (bank 7, `$e16b`) - a *different* RLE scheme than `graphics`'s,
+      discovered by reading the real routine rather than assumed: literal
+      bytes, `0x80-0xEF` repeat-runs, and (new, not present in the
+      graphic-data format) `0xF0-0xFF` row back-references that replay an
+      earlier row of the *same screen* verbatim. Combined with
+      `supertile::supertile_tiles`/`supertile_attribute_byte` (plain,
+      uncompressed per-super-tile data - a super-tile is exactly one NES
+      attribute-table byte's worth of area, 4x4 tiles) and `palette`, this
+      assembles a full level-1-screen-0 nametable (which tile) and
+      attribute table (which of the level's 4 palettes) straight from
+      PRG-ROM. Verified against `contra-nes`'s live PPU state after
+      actually playing into the level (`Ppu::peek`/`Nes::peek_ppu`, added
+      this session as the read counterpart to the existing `poke`/
+      `poke_ppu`): **both the decoded nametable (896 tiles) and the
+      decoded attribute table (56 bytes) came back byte-for-byte
+      identical** to live PPU state
+      (`cargo run -p contra-nes --release --example extract_level`).
+      **Known open gap, not yet resolved:** rendering the assembled screen
+      to a colored PNG using the already-extracted CHR data shows ~36%
+      (32/89) of the distinct tiles used don't match live CHR-RAM's
+      content at those same tile indices at the sampled frame - most
+      likely because level 1's actual tile set draws from more than its
+      own `level_1_graphic_data` list (confirmed complete and correctly
+      read: `03,13,19,1a,14,16,05,ff`) plus the HUD's `graphic_data_01`
+      (both tried), so some other, not-yet-identified graphics source
+      feeds those specific tile indices. This is a CHR-*sourcing*
+      question, not a decompression-correctness one - the nametable and
+      attribute table proofs above are unaffected and don't depend on it.
 
 ## Where to look
 

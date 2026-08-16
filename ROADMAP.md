@@ -90,9 +90,21 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       palette 0 byte-identical to live PPU palette RAM the same way, and
       wired it into `contra-extract --dump-palettes <dir>` - combining
       both now produces a properly-colored, real in-game-accurate level 1
-      tile sheet from PRG-ROM bytes alone, no emulation. Per-tile palette
-      assignment (attribute tables) and audio/level-data extraction
-      haven't been started - see docs/NATIVE_PORT.md's "Current status"
+      tile sheet from PRG-ROM bytes alone, no emulation. **Nametable +
+      attribute-table layout too, also proven byte-perfect**: ported the
+      (different) RLE scheme Contra uses to compress a screen's super-tile
+      layout, including a row-back-reference command not present in the
+      graphics format, plus the plain per-super-tile tile/attribute data -
+      assembled level 1 screen 0's full nametable (896 tiles) and
+      attribute table (56 bytes) from PRG-ROM alone and both matched live
+      PPU state exactly (`extract_level` example; also added `Ppu::peek`/
+      `Nes::peek_ppu` as the read counterpart to the existing poke methods,
+      to make that comparison possible). Open gap: rendering that layout
+      with the already-extracted CHR data leaves ~36% of used tiles
+      visually wrong - some of level 1's actual tile source still isn't
+      identified (not a decompression bug; the nametable/attribute proofs
+      don't depend on it). Audio and spawn/enemy-data extraction haven't
+      been started - see docs/NATIVE_PORT.md's "Current status"
       for the full breakdown. Equally necessary as the logic-porting work
       above, not a detail of it
 

@@ -131,6 +131,12 @@ impl Nes {
         self.bus.ppu.poke(addr, value);
     }
 
+    /// Direct external read of PPU address space - see
+    /// [`crate::ppu::Ppu::peek`]. The read counterpart to [`Self::poke_ppu`].
+    pub fn peek_ppu(&self, addr: u16) -> u8 {
+        self.bus.ppu.peek(addr)
+    }
+
     /// The 2KB CPU-visible work RAM (`$0000-$07FF`), unmirrored. This is
     /// exactly what a real "Game Genie"-style trainer or a debug menu
     /// pokes: player lives, weapon ID, continues, and every other piece of

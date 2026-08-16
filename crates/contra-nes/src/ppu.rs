@@ -305,6 +305,19 @@ impl Ppu {
         self.write_vram(addr, value);
     }
 
+    /// Direct external read of PPU address space (`$0000-$3FFF`), the read
+    /// counterpart to [`Self::poke`] - for tooling (debug UIs, the asset
+    /// extraction verification examples) that wants to inspect live
+    /// nametable/attribute/palette state without going through the
+    /// `$2006`/`$2007` register sequence real game code uses.
+    pub fn peek(&self, addr: u16) -> u8 {
+        let masked = addr & 0x3FFF;
+        match masked {
+            0x3F00..=0x3FFF => self.read_palette(masked),
+            _ => self.read_vram(masked),
+        }
+    }
+
     fn write_vram(&mut self, addr: u16, value: u8) {
         let addr = addr & 0x3FFF;
         match addr {
