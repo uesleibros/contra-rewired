@@ -681,7 +681,26 @@ replacement for its real 6502 code, cycle for cycle.
       exit `$eb3f`): 40 real calls across a 9000-frame session, zero
       mismatches. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Sixteen routines out of what's
+- [x] **`enemy_collision_flags`** (`crates/contra-native/src/
+      enemy_collision_flags.rs`) - ported from `disable_bullet_enemy_
+      collision`/`disable_enemy_collision`/`enable_enemy_player_
+      collision_check`/`enable_bullet_enemy_collision`/`enable_enemy_
+      collision` (`bank7.asm`, `$eb03`-`$eb1e`): 5 tiny real routines
+      toggling two bits of `ENEMY_STATE_WIDTH` (bit 0: player-enemy
+      collision checked/skipped; bit 7: bullets pass through or collide)
+      - **31 real call sites** combined, reused by nearly every enemy
+      type's spawn/death/invulnerability handling. Unit-tested (each
+      toggle in isolation confirming it touches *only* its own bit(s),
+      plus a disable-then-enable round trip proving non-flag bits
+      survive untouched). Live-verified (`VERIFY_ENEMY_COLLISION_
+      FLAGS=1`, hooking all 5 real entries and their one shared exit,
+      `set_enemy_state_width_to_a`'s own rts at `$eb1e`): 55 real calls
+      across a 9000-frame session, with 3 of the 5 real toggles observed
+      (`disable_enemy_collision`, `enable_enemy_collision`, `enable_
+      bullet_enemy_collision`) - the other 2 weren't reached this
+      session, noted honestly - zero mismatches. Not yet integrated
+      live, same status as every routine above.
+- [ ] Everything else, logic side. Seventeen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

@@ -1354,6 +1354,58 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} add-with-enemy-pos calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ENEMY_COLLISION_FLAGS").is_ok() {
+            // VERIFY_ENEMY_COLLISION_FLAGS=1: verification pass for
+            // `contra_native::enemy_collision_flags`'s 5 real entry
+            // points, all funneling into one shared exit
+            // (`set_enemy_state_width_to_a`'s own rts, $eb1e).
+            use contra_native::enemy_collision_flags::{
+                disable_bullet_enemy_collision, disable_enemy_collision, enable_bullet_enemy_collision,
+                enable_enemy_collision, enable_enemy_player_collision_check,
+            };
+            #[derive(Clone, Copy, Debug)]
+            enum Toggle {
+                DisableBullet,
+                DisableAll,
+                EnablePlayerCheck,
+                EnableBullet,
+                EnableAll,
+            }
+            let mut pending: Option<(usize, u8, Toggle)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xEB03 => pending = Some((x, bus.ram[0x598 + x], Toggle::DisableBullet)),
+                    0xEB07 => pending = Some((x, bus.ram[0x598 + x], Toggle::DisableAll)),
+                    0xEB0E => pending = Some((x, bus.ram[0x598 + x], Toggle::EnablePlayerCheck)),
+                    0xEB12 => pending = Some((x, bus.ram[0x598 + x], Toggle::EnableBullet)),
+                    0xEB16 => pending = Some((x, bus.ram[0x598 + x], Toggle::EnableAll)),
+                    0xEB1E => {
+                        if let Some((x, before, toggle)) = pending.take() {
+                            let expected = match toggle {
+                                Toggle::DisableBullet => disable_bullet_enemy_collision(before),
+                                Toggle::DisableAll => disable_enemy_collision(before),
+                                Toggle::EnablePlayerCheck => enable_enemy_player_collision_check(before),
+                                Toggle::EnableBullet => enable_bullet_enemy_collision(before),
+                                Toggle::EnableAll => enable_enemy_collision(before),
+                            };
+                            let real = bus.ram[0x598 + x];
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(enemy_collision_flags) frame={frame} x={x} toggle={toggle:?} before={before:02X}: expected {expected:02X}, got {real:02X}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-collision-flags calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
