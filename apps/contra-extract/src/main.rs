@@ -12,12 +12,18 @@
 //! `crates/contra-native/src/graphics.rs`, ported from the real
 //! `write_graphic_data_to_ppu` routine and proven byte-for-byte identical
 //! to live CHR-RAM - see `crates/contra-nes/examples/extract_graphics.rs`)
-//! straight out of PRG-ROM into pattern-table tile-sheet PNGs; and with
+//! straight out of PRG-ROM into pattern-table tile-sheet PNGs; with
 //! `--dump-palettes <dir>`, render every `game_palettes` group (see
-//! `crates/contra-native/src/palette.rs`) as a color swatch. No emulation
-//! involved in either.
+//! `crates/contra-native/src/palette.rs`) as a color swatch; and with
+//! `--dump-levels <dir>`, render each of the 8 levels' full nametable
+//! (every screen) to one colored PNG apiece (see
+//! `crates/contra-native/src/{level,supertile}.rs`, proven byte-perfect
+//! for level 1 against live PPU state - see
+//! `crates/contra-nes/examples/extract_level.rs`). No emulation involved
+//! in any of the three.
 
 mod graphics;
+mod level;
 mod palette;
 
 use clap::Parser;
@@ -41,6 +47,13 @@ struct Args {
     /// directory.
     #[arg(long, value_name = "DIR")]
     dump_palettes: Option<PathBuf>,
+
+    /// Render each of the 8 levels' full nametable (every screen, side by
+    /// side, fully colored) to `level{1..8}_full.png` in this directory.
+    /// No emulation involved - straight from PRG-ROM via the ROM's own
+    /// level/graphic-data tables.
+    #[arg(long, value_name = "DIR")]
+    dump_levels: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -95,6 +108,11 @@ fn main() -> anyhow::Result<()> {
     if let Some(out_dir) = &args.dump_palettes {
         let count = palette::dump_all(&rom.prg_rom, out_dir)?;
         println!("\nWrote {count} palette swatches to {}/game_palettes.png.", out_dir.display());
+    }
+
+    if let Some(out_dir) = &args.dump_levels {
+        let count = level::dump_all(&rom.prg_rom, out_dir)?;
+        println!("\nWrote {count} level PNG(s) to {}.", out_dir.display());
     }
 
     Ok(())

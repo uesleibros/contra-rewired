@@ -12,61 +12,68 @@
 //! cross-check that proved this decoder byte-for-byte identical to real
 //! CHR-RAM after actually playing into level 1.
 
-/// `(name, PRG-ROM byte offset, one-line description)` for every
-/// `graphic_data_XX` blob, taken directly from
-/// `docs/Graphics Documentation.md`'s "Graphics Data Locations" table in
-/// `vermiceli/nes-contra-us` (its "PRG ROM Address" column - already a
-/// plain offset into PRG-ROM, no iNES header to add since
-/// `contra_assets::NesRom` strips it before we ever see the bytes).
+/// One-line descriptions for every `graphic_data_XX` index (0x00-0x1a),
+/// taken from `docs/Graphics Documentation.md`'s "Graphics Data Locations"
+/// table in `vermiceli/nes-contra-us` - documentation only. Offsets and
+/// the horizontal-flip flag are *not* hardcoded here; both are resolved
+/// from `graphic_data_ptr_tbl` at runtime by `contra_native::graphics`,
+/// the same table the real game itself reads (see that module's doc
+/// comment - an earlier version of this hardcoded offsets by hand from
+/// the same doc table, which silently got `graphic_data_10`'s flip bit
+/// wrong, decoding it unflipped).
 /// `graphic_data_00`, `_02`, and `_18` write nametable/attribute data
 /// (PPU `$2000+`), not pattern-table tiles, so they're included here for
 /// completeness but produce no CHR tiles to dump.
-pub const GRAPHIC_DATA_BLOBS: [(&str, usize, &str); 27] = [
-    ("graphic_data_00", 0x1cb36, "blanks both nametables + attribute tables"),
-    ("graphic_data_01", 0x12a2d, "intro/title/game-over: logo, Bill & Lance, letters, numbers, falcon"),
-    ("graphic_data_02", 0x09097, "intro screen nametable + attribute layout"),
-    ("graphic_data_03", 0x10001, "every level: Bill/Lance outdoor sprites, lives medals, power-ups, explosions"),
-    ("graphic_data_04", 0x105ae, "indoor/base levels: player sprite tiles"),
-    ("graphic_data_05", 0x14001, "level 1: bridge/mountain/trees/water, player prone, flying capsule"),
-    ("graphic_data_06", 0x119fc, "indoor/base: indoor player sprites, grenades, background"),
-    ("graphic_data_07", 0x14a61, "level 3: background + sprite tiles, player prone, flying capsule"),
-    ("graphic_data_08", 0x1086c, "indoor/base boss screen background + sprites"),
-    ("graphic_data_09", 0x119cd, "level 4 boss screen sprites (3 tiles)"),
-    ("graphic_data_0a", 0x12005, "indoor/base tiles (same as _10, flipped)"),
-    ("graphic_data_0b", 0x153e0, "level 5 pattern table tiles"),
-    ("graphic_data_0c", 0x18001, "level 6 pattern table tiles"),
-    ("graphic_data_0d", 0x18cdc, "level 7 pattern table tiles"),
-    ("graphic_data_0e", 0x19bd6, "level 8 pattern table tiles"),
-    ("graphic_data_0f", 0x12346, "indoor/base tiles (14 background tiles)"),
-    ("graphic_data_10", 0x12003, "indoor/base tiles (same as _0a, flipped)"),
-    ("graphic_data_11", 0x123e7, "indoor/base background tiles"),
-    ("graphic_data_12", 0x12940, "level 4 background tiles"),
-    ("graphic_data_13", 0x107a1, "player aiming up/straight, laser bullets"),
-    ("graphic_data_14", 0x16814, "rotating gun + red turret tiles"),
-    ("graphic_data_15", 0x1b07a, "levels 5/6/7: turret man (basquez) sprites"),
-    ("graphic_data_16", 0x1b15c, "weapon box tiles"),
-    ("graphic_data_17", 0x16ddf, "ending scene: helicopter + island tiles"),
-    ("graphic_data_18", 0x1730d, "ending scene nametable + attribute data"),
-    ("graphic_data_19", 0x1631b, "player killed: recoil + lying on ground"),
-    ("graphic_data_1a", 0x16500, "enemy soldier sprite tiles"),
+pub const GRAPHIC_DATA_DESCRIPTIONS: [(u8, &str); 27] = [
+    (0x00, "blanks both nametables + attribute tables"),
+    (0x01, "intro/title/game-over: logo, Bill & Lance, letters, numbers, falcon"),
+    (0x02, "intro screen nametable + attribute layout"),
+    (0x03, "every level: Bill/Lance outdoor sprites, lives medals, power-ups, explosions"),
+    (0x04, "indoor/base levels: player sprite tiles"),
+    (0x05, "level 1: bridge/mountain/trees/water, player prone, flying capsule"),
+    (0x06, "indoor/base: indoor player sprites, grenades, background"),
+    (0x07, "level 3: background + sprite tiles, player prone, flying capsule"),
+    (0x08, "indoor/base boss screen background + sprites"),
+    (0x09, "level 4 boss screen sprites (3 tiles)"),
+    (0x0a, "indoor/base tiles (same art as _10, unflipped)"),
+    (0x0b, "level 5 pattern table tiles"),
+    (0x0c, "level 6 pattern table tiles"),
+    (0x0d, "level 7 pattern table tiles"),
+    (0x0e, "level 8 pattern table tiles"),
+    (0x0f, "indoor/base tiles (14 background tiles)"),
+    (0x10, "indoor/base tiles (reuses _0a's art, horizontally flipped)"),
+    (0x11, "indoor/base background tiles"),
+    (0x12, "level 4 background tiles"),
+    (0x13, "player aiming up/straight, laser bullets"),
+    (0x14, "rotating gun + red turret tiles"),
+    (0x15, "levels 5/6/7: turret man (basquez) sprites"),
+    (0x16, "weapon box tiles"),
+    (0x17, "ending scene: helicopter + island tiles"),
+    (0x18, "ending scene nametable + attribute data"),
+    (0x19, "player killed: recoil + lying on ground"),
+    (0x1a, "enemy soldier sprite tiles"),
 ];
 
-/// Decodes every blob in [`GRAPHIC_DATA_BLOBS`] and writes one PNG per
-/// CHR-bound (pattern-table) write segment into `out_dir`. Returns how
-/// many PNGs were written and how many segments were skipped because they
-/// targeted nametable/attribute memory instead (not CHR data, so there's
-/// no tile sheet to render for them here).
+/// Decodes every `graphic_data_XX` blob (via `graphic_data_ptr_tbl`, so
+/// offsets and the horizontal-flip flag come from the ROM itself, not a
+/// hardcoded table) and writes one PNG per CHR-bound (pattern-table)
+/// write segment into `out_dir`. Returns how many PNGs were written and
+/// how many segments were skipped because they targeted nametable/
+/// attribute memory instead (not CHR data, so there's no tile sheet to
+/// render for them here).
 pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<(usize, usize)> {
     std::fs::create_dir_all(out_dir)?;
     let mut written = 0usize;
     let mut skipped_non_chr = 0usize;
 
-    for (name, offset, description) in GRAPHIC_DATA_BLOBS {
-        let blob = prg_rom.get(offset..).ok_or_else(|| {
-            anyhow::anyhow!("{name}: PRG offset {offset:#06x} is past the end of this ROM's PRG-ROM ({} bytes)", prg_rom.len())
+    for (index, description) in GRAPHIC_DATA_DESCRIPTIONS {
+        let name = format!("graphic_data_{index:02x}");
+        let entry = contra_native::graphics::graphic_data_prg_offset(prg_rom, index);
+        let blob = prg_rom.get(entry.prg_offset..).ok_or_else(|| {
+            anyhow::anyhow!("{name}: PRG offset {:#06x} is past the end of this ROM's PRG-ROM ({} bytes)", entry.prg_offset, prg_rom.len())
         })?;
-        let segments = contra_native::graphics::decompress(blob);
-        log::info!("{name} ({description}): {} segment(s)", segments.len());
+        let segments = contra_native::graphics::decompress(blob, entry.flip);
+        log::info!("{name} ({description}): {} segment(s){}", segments.len(), if entry.flip { ", flipped" } else { "" });
 
         for (i, segment) in segments.iter().enumerate() {
             if segment.ppu_addr as usize >= 0x2000 || segment.bytes.len() % 16 != 0 {

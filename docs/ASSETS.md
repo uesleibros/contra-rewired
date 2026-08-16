@@ -46,10 +46,28 @@ combining it with the graphics decoder produces a real, correctly-colored
 level 1 tile sheet straight from PRG-ROM bytes - no emulation anywhere in
 that pipeline.
 
-Not done yet: per-tile palette assignment (attribute tables/super-tiles),
-audio (DPCM samples, music sequences), and level/enemy data (spawn
-tables) haven't been started. See docs/NATIVE_PORT.md's "Current status"
-for the up-to-date breakdown.
+**Full levels landed too, generalized to all 8.** Contra's super-tile
+system (a level's nametable + attribute table, decoded from a *second*
+RLE scheme different from the graphics one, plus plain per-super-tile
+tile/palette data) is ported to `contra-native::{level,supertile}`, and
+proven the same rigorous way: level 1's CHR content, nametable, and
+attribute table all independently matched live PPU state after actually
+playing into it. Getting this to all 8 levels (not just level 1) meant
+reading the ROM's own `level_graphic_data_tbl`/`graphic_data_ptr_tbl`
+lookup tables instead of hardcoding per-level data - which caught a real
+bug along the way: one byte in that table packs *both* a bank number and
+a horizontal-flip flag, and a first attempt misread the flag as part of
+the bank number and crashed on level 2. Fixed properly (real bit-reversal
+on flipped tile data, not just a crash fix) - which also fixed a **silent
+mirrored-wrong tile sheet** `--dump-graphics` had already been shipping
+for `graphic_data_10`. All 8 levels now render correctly, verified
+visually (level 2's indoor corridors and doors, level 3's waterfalls, the
+`graphic_data_0a`/`_10` pair rendering as genuine mirror images of each
+other).
+
+Not done yet: audio (DPCM samples, music sequences) and enemy/spawn data
+haven't been started. See docs/NATIVE_PORT.md's "Current status" for the
+up-to-date breakdown.
 
 ## What `contra-extract` does today
 
@@ -78,6 +96,14 @@ color swatches into `<dir>/game_palettes.png`, also straight from PRG-ROM:
 
 ```
 cargo run -p contra-extract -- path\to\your\baserom.nes --dump-palettes .\assets\palettes
+```
+
+With `--dump-levels <dir>`, it renders each of the 8 levels' full
+nametable (every screen, side by side, fully colored) to
+`level{1..8}_full.png`, straight from PRG-ROM:
+
+```
+cargo run -p contra-extract -- path\to\your\baserom.nes --dump-levels .\assets\levels
 ```
 
 `contra-pc` doesn't consume these PNGs yet - today it still plays the ROM

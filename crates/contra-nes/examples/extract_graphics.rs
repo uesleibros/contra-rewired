@@ -116,7 +116,7 @@ fn main() {
     let mut decoded_chr = [0u8; 0x2000];
     for (name, offset) in LEVEL_1_GRAPHIC_DATA_PRG_OFFSETS {
         let blob = &rom.prg_rom[offset..];
-        contra_native::graphics::apply_chr_writes(blob, &mut decoded_chr);
+        contra_native::graphics::apply_chr_writes(blob, &mut decoded_chr, false);
         eprintln!("decoded {name} @ prg[{offset:#06x}]");
     }
     save_chr_sheet(&std::path::Path::new(out_dir).join("decoded_chr.png"), &decoded_chr);

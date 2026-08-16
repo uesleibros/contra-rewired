@@ -65,6 +65,7 @@
 
 pub mod collision;
 pub mod graphics;
+pub mod level;
 pub mod palette;
 pub mod player_physics;
 pub mod supertile;

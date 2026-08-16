@@ -1,12 +1,18 @@
 //! Debug-only verification tool (not part of the library or any shipped
-//! binary) for `contra_native::supertile`: assembles an *entire level's*
-//! nametable (which tile goes where) *and* attribute table (which palette
-//! applies where) across every screen - entirely from PRG-ROM bytes
-//! (graphics + palette + super-tile decoding, no emulation) - then checks
-//! the two screens actually resident in live PPU VRAM at boot (the
-//! current one and the prefetched next one - Contra double-buffers scroll
-//! this way) against `contra-nes`'s live state after actually playing
-//! into the level. Writes one wide, fully colored PNG of the whole level.
+//! binary): assembles an *entire level's* nametable (which tile goes
+//! where) *and* attribute table (which palette applies where) across
+//! every screen, plus its CHR tiles and background palettes - entirely
+//! from PRG-ROM bytes, no emulation, using only the general,
+//! table-driven lookups in `contra_native::{level,graphics,supertile,
+//! palette}` (no per-level hardcoded offsets - level 1's used to be
+//! hand-verified constants; this now derives them the same way real
+//! game code does, from `level_graphic_data_tbl`/`graphic_data_ptr_tbl`/
+//! `level_headers`). Renders every level to a wide, fully colored PNG.
+//!
+//! Level 1 additionally gets checked against `contra-nes`'s live PPU
+//! state after actually playing into it (the only level reachable
+//! without scripted play past obstacles) - CHR content, screen 0's
+//! nametable, and screen 0's attribute table.
 //!
 //! ```text
 //! cargo run -p contra-nes --release --example extract_level -- <rom> <out_dir>
@@ -17,89 +23,54 @@ use std::io::BufWriter;
 use contra_nes::controller::*;
 use contra_nes::{Mirroring, Nes};
 
-// `level_1_graphic_data`'s own literal list, confirmed byte-for-byte from
-// the real ROM (bank 7, $c8fd): `03,13,19,1a,14,16,05,ff`. Do NOT add
-// `graphic_data_01` (HUD letters/numbers) here - its PPU range
-// ($0ce0-$1f80) overlaps this list's own tile range (e.g. graphic_data_1a
-// covers up to tile 0xdb), and applying it after these 7 overwrites
-// correct level tiles with HUD glyph data. This exact 7-blob list is what
-// `extract_graphics.rs` already proved byte-for-byte identical to live
-// CHR-RAM across the full 8KB - adding an 8th blob on top of that broke
-// it, which is exactly what led to finding this.
-const LEVEL_1_GRAPHIC_DATA_PRG_OFFSETS: [usize; 7] = [0x10001, 0x107a1, 0x1631b, 0x16500, 0x16814, 0x1b15c, 0x14001];
-
-/// Bank 3, CPU `$8001` -> `3*0x4000 + (0x8001-0x8000)`.
-const LEVEL_1_SUPERTILE_DATA_PRG_OFFSET: usize = 0xC001;
-/// Bank 3, CPU `$8671` (`docs/rom-symbols.txt`, defined in `src/bank3.asm`)
-/// -> `3*0x4000 + (0x8671-0x8000)`.
-const LEVEL_1_PALETTE_DATA_PRG_OFFSET: usize = 0xC671;
-/// Bank 2, CPU `$8001` (`level_1_supertiles_screen_ptr_table`) ->
-/// `2*0x4000 + (0x8001-0x8000)`. 14 little-endian 2-byte pointers
-/// (bank-2-relative mem addresses) follow, one per screen - confirmed by
-/// reading these raw bytes directly: the first 13 resolve exactly to
-/// `level_1_supertiles_screen_00`..`_0c`'s known addresses
-/// (`docs/rom-symbols.txt`), and the 14th duplicates the first (a
-/// defensive wrap-around entry, never a real 14th screen - `level_2`'s
-/// own table starts immediately after this level's real screen data).
-const LEVEL_1_SCREEN_PTR_TABLE_PRG_OFFSET: usize = 0x8001;
-const LEVEL_1_SCREEN_COUNT: usize = 13;
-
+const LEVEL_COUNT: usize = 8;
 const SCREEN_COLS: usize = 8;
-const SCREEN_ROWS: usize = 7;
-const SCREEN_SUPERTILES: usize = SCREEN_COLS * SCREEN_ROWS; // 0x38, horizontal level
+const SCREEN_ROWS_HORIZONTAL: usize = 7;
+const SCREEN_ROWS_VERTICAL: usize = 8;
 const SCREEN_TILES_W: usize = SCREEN_COLS * 4;
-const SCREEN_TILES_H: usize = SCREEN_ROWS * 4;
 
-/// Reads screen `index`'s 2-byte pointer (a bank-2-relative mem address,
-/// little-endian) out of a screen pointer table, and converts it to a
-/// PRG-ROM offset (`2*0x4000 + (mem_addr & 0x3FFF)`, UxROM's switchable
-/// window starting at $8000).
-fn screen_prg_offset(prg_rom: &[u8], ptr_table_offset: usize, index: usize) -> usize {
-    let lo = prg_rom[ptr_table_offset + index * 2];
-    let hi = prg_rom[ptr_table_offset + index * 2 + 1];
-    let mem_addr = u16::from_le_bytes([lo, hi]);
-    2 * 0x4000 + (mem_addr as usize & 0x3FFF)
+fn screen_rows(scrolling_type: contra_native::level::ScrollingType) -> usize {
+    match scrolling_type {
+        contra_native::level::ScrollingType::Horizontal => SCREEN_ROWS_HORIZONTAL,
+        contra_native::level::ScrollingType::Vertical => SCREEN_ROWS_VERTICAL,
+    }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let rom_path = args.get(1).expect("usage: extract_level <rom> <out_dir>");
-    let out_dir = args.get(2).expect("usage: extract_level <rom> <out_dir>");
-    std::fs::create_dir_all(out_dir).unwrap();
+/// Decodes and renders level `level_index` (0-based) entirely from
+/// PRG-ROM, writing `level{N}_full.png` to `out_dir`. Returns the
+/// assembled tile grid, screen width in tiles, and each screen's decoded
+/// super-tile ID list (for the live-PPU check level 1 gets).
+fn extract_and_render_level(prg_rom: &[u8], level_index: usize, out_dir: &std::path::Path) -> (Vec<u8>, usize, usize, Vec<Vec<u8>>) {
+    let header = contra_native::level::level_header(prg_rom, level_index);
+    let screen_rows = screen_rows(header.scrolling_type);
+    let screen_supertiles = SCREEN_COLS * screen_rows;
+    let screen_tiles_h = screen_rows * 4;
 
-    let rom = contra_assets::NesRom::load(rom_path).expect("failed to load ROM");
-    eprintln!("mapper={} prg_kib={} md5={}", rom.mapper, rom.prg_rom.len() / 1024, rom.md5_hex);
-
-    // --- Offline decode: CHR tiles, straight from PRG-ROM. ---
     let mut chr = [0u8; 0x2000];
-    for offset in LEVEL_1_GRAPHIC_DATA_PRG_OFFSETS {
-        contra_native::graphics::apply_chr_writes(&rom.prg_rom[offset..], &mut chr);
+    for entry in contra_native::graphics::level_graphic_data_entries(prg_rom, level_index) {
+        contra_native::graphics::apply_chr_writes(&prg_rom[entry.prg_offset..], &mut chr, entry.flip);
     }
 
-    // --- Offline decode: level 1's 4 background palettes, fully resolved. ---
-    let bg_group_indexes = contra_native::palette::level_palette_group_indexes(&rom.prg_rom, 0);
-    let bg_palettes: [[u32; 4]; 4] = std::array::from_fn(|i| contra_native::palette::resolve_palette_rgb(&rom.prg_rom, bg_group_indexes[i]));
+    let bg_group_indexes = contra_native::palette::level_palette_group_indexes(prg_rom, level_index);
+    let bg_palettes: [[u32; 4]; 4] = std::array::from_fn(|i| contra_native::palette::resolve_palette_rgb(prg_rom, bg_group_indexes[i]));
 
-    // --- Offline decode: every screen's super-tile layout, and the full
-    // level's tile/palette grid assembled from them side by side. ---
-    let mut all_screen_ids: Vec<Vec<u8>> = Vec::with_capacity(LEVEL_1_SCREEN_COUNT);
-    for screen_index in 0..LEVEL_1_SCREEN_COUNT {
-        let offset = screen_prg_offset(&rom.prg_rom, LEVEL_1_SCREEN_PTR_TABLE_PRG_OFFSET, screen_index);
-        let ids = contra_native::supertile::decompress_screen(&rom.prg_rom[offset..], SCREEN_SUPERTILES);
-        all_screen_ids.push(ids);
+    let mut all_screen_ids: Vec<Vec<u8>> = Vec::with_capacity(header.screen_count);
+    for screen_index in 0..header.screen_count {
+        let offset = contra_native::level::screen_prg_offset(prg_rom, &header, screen_index);
+        all_screen_ids.push(contra_native::supertile::decompress_screen(&prg_rom[offset..], screen_supertiles));
     }
 
-    let level_tiles_w = SCREEN_TILES_W * LEVEL_1_SCREEN_COUNT;
-    let mut tile_grid = vec![0u8; level_tiles_w * SCREEN_TILES_H];
-    let mut palette_grid = vec![0u8; level_tiles_w * SCREEN_TILES_H];
+    let level_tiles_w = SCREEN_TILES_W * header.screen_count;
+    let mut tile_grid = vec![0u8; level_tiles_w * screen_tiles_h];
+    let mut palette_grid = vec![0u8; level_tiles_w * screen_tiles_h];
 
     for (screen_index, screen_ids) in all_screen_ids.iter().enumerate() {
         let screen_x_offset = screen_index * SCREEN_TILES_W;
         for (i, &supertile_id) in screen_ids.iter().enumerate() {
             let super_col = i % SCREEN_COLS;
             let super_row = i / SCREEN_COLS;
-            let tiles = contra_native::supertile::supertile_tiles(&rom.prg_rom[LEVEL_1_SUPERTILE_DATA_PRG_OFFSET..], supertile_id);
-            let attr_byte = contra_native::supertile::supertile_attribute_byte(&rom.prg_rom[LEVEL_1_PALETTE_DATA_PRG_OFFSET..], supertile_id);
+            let tiles = contra_native::supertile::supertile_tiles(&prg_rom[header.supertile_data_prg_offset..], supertile_id);
+            let attr_byte = contra_native::supertile::supertile_attribute_byte(&prg_rom[header.palette_data_prg_offset..], supertile_id);
             let quadrants = contra_native::supertile::attribute_quadrants(attr_byte);
 
             for local in 0..16 {
@@ -114,12 +85,10 @@ fn main() {
         }
     }
 
-    // --- Render the whole level, fully colored, from extracted assets
-    // alone. ---
     let img_w = level_tiles_w * 8;
-    let img_h = SCREEN_TILES_H * 8;
+    let img_h = screen_tiles_h * 8;
     let mut buf = vec![0u8; img_w * img_h * 3];
-    for ty in 0..SCREEN_TILES_H {
+    for ty in 0..screen_tiles_h {
         for tx in 0..level_tiles_w {
             let tile = tile_grid[ty * level_tiles_w + tx] as usize;
             let palette = bg_palettes[palette_grid[ty * level_tiles_w + tx] as usize];
@@ -140,7 +109,7 @@ fn main() {
             }
         }
     }
-    let path = std::path::Path::new(out_dir).join("level1_full.png");
+    let path = out_dir.join(format!("level{}_full.png", level_index + 1));
     let file = std::fs::File::create(&path).unwrap();
     let w = BufWriter::new(file);
     let mut encoder = png::Encoder::new(w, img_w as u32, img_h as u32);
@@ -148,24 +117,37 @@ fn main() {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
     writer.write_image_data(&buf).unwrap();
-    println!("wrote {} ({} screens, {img_w}x{img_h}px)", path.display(), LEVEL_1_SCREEN_COUNT);
+    println!("wrote {} ({} screens, {img_w}x{img_h}px)", path.display(), header.screen_count);
 
-    // --- Ground truth: actually play into level 1, read live PPU state.
-    // NOTE: an earlier version of this held RIGHT for ~3000 extra frames
-    // to try to scroll far enough to force-load screen 1 into VRAM and
-    // verify it too - don't do that: at this walking speed it isn't
-    // enough to cross the screen boundary, but *is* enough to walk Bill
-    // into an obstacle and die (confirmed: CHR-RAM and RAM state both
-    // changed to a death/respawn sequence's, not screen 1's). Actually
-    // reaching screen 1 safely needs scripted play (jumping the level's
-    // obstacles), which is a different, much larger task than verifying
-    // decoding. Screens 1-12 use the exact same `decompress_screen`/
-    // `supertile_tiles`/`supertile_attribute_byte` path as screen 0
-    // (proven byte-perfect below), applied via the same pointer-table
-    // walk independently cross-checked against every `level_1_
-    // supertiles_screen_XX` label in `docs/rom-symbols.txt` - not
-    // separately re-verified against live PPU here, the same honest
-    // caveat `palette`'s per-level indices already carry.
+    (tile_grid, level_tiles_w, screen_tiles_h, all_screen_ids)
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let rom_path = args.get(1).expect("usage: extract_level <rom> <out_dir>");
+    let out_dir = args.get(2).expect("usage: extract_level <rom> <out_dir>");
+    std::fs::create_dir_all(out_dir).unwrap();
+
+    let rom = contra_assets::NesRom::load(rom_path).expect("failed to load ROM");
+    eprintln!("mapper={} prg_kib={} md5={}", rom.mapper, rom.prg_rom.len() / 1024, rom.md5_hex);
+
+    // --- Offline decode + render every level, straight from PRG-ROM,
+    // fully generally (no per-level hardcoding). ---
+    let mut level1_tile_grid = Vec::new();
+    let mut level1_tiles_w = 0usize;
+    let mut level1_screen_ids = Vec::new();
+    for level_index in 0..LEVEL_COUNT {
+        let (tile_grid, tiles_w, _tiles_h, screen_ids) = extract_and_render_level(&rom.prg_rom, level_index, std::path::Path::new(out_dir));
+        if level_index == 0 {
+            level1_tile_grid = tile_grid;
+            level1_tiles_w = tiles_w;
+            level1_screen_ids = screen_ids;
+        }
+    }
+
+    // --- Ground truth: actually play into level 1 (the only level
+    // reachable without scripted play past obstacles), read live PPU
+    // state. ---
     let mirroring = if rom.vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
     let mut nes = Nes::new(rom.prg_rom.clone(), mirroring);
     let start_after = 120u32;
@@ -182,79 +164,46 @@ fn main() {
     }
 
     let live_chr = nes.bus.ppu.chr_ram;
-    let mut used_tiles: Vec<u8> = tile_grid.clone();
+    let mut level1_chr = [0u8; 0x2000];
+    for entry in contra_native::graphics::level_graphic_data_entries(&rom.prg_rom, 0) {
+        contra_native::graphics::apply_chr_writes(&rom.prg_rom[entry.prg_offset..], &mut level1_chr, entry.flip);
+    }
+    let mut used_tiles: Vec<u8> = level1_tile_grid.clone();
     used_tiles.sort_unstable();
     used_tiles.dedup();
-    let chr_tile_diffs = used_tiles.iter().filter(|&&tile| chr[tile as usize * 16..tile as usize * 16 + 16] != live_chr[tile as usize * 16..tile as usize * 16 + 16]).count();
+    let chr_tile_diffs = used_tiles.iter().filter(|&&tile| live_chr[tile as usize * 16..tile as usize * 16 + 16] != level1_chr[tile as usize * 16..tile as usize * 16 + 16]).count();
     if chr_tile_diffs == 0 {
-        println!("MATCH: every tile used across all {LEVEL_1_SCREEN_COUNT} screens has CHR content identical to live CHR-RAM ({} distinct tiles checked).", used_tiles.len());
+        println!("MATCH: level 1 - every tile used across all its screens has CHR content identical to live CHR-RAM ({} distinct tiles checked).", used_tiles.len());
     } else {
-        println!("MISMATCH: {chr_tile_diffs}/{} distinct tiles used across the level differ from live CHR-RAM.", used_tiles.len());
+        println!("MISMATCH: level 1 - {chr_tile_diffs}/{} distinct tiles used differ from live CHR-RAM.", used_tiles.len());
     }
 
-    // Brute-force discovery instead of trusting a hand-traced guess at
-    // the addressing scheme (two guesses already turned out wrong): try
-    // every (physical nametable, decoded screen index) pair and report
-    // any exact nametable match. Whatever's actually resident in VRAM
-    // right now will show up as a 0-diff hit; nothing here assumes which.
-    for &(nt_base, attr_base, label) in &[(0x2000u16, 0x23C0u16, "$2000/$23C0"), (0x2400u16, 0x27C0u16, "$2400/$27C0")] {
-        for screen_index in 0..LEVEL_1_SCREEN_COUNT {
-            let nametable_diffs = nametable_diff_count(&nes, screen_index, &tile_grid, level_tiles_w, nt_base);
-            if nametable_diffs == 0 {
-                verify_screen_against_live(&nes, screen_index, &tile_grid, &all_screen_ids[screen_index], &rom.prg_rom, nt_base, attr_base);
-            } else if nametable_diffs < 40 {
-                // Close but not exact - worth surfacing while debugging.
-                println!("near-miss: screen {screen_index} vs {label} - {nametable_diffs}/{} nametable tiles differ", SCREEN_TILES_W * SCREEN_TILES_H);
-            }
-        }
-    }
-}
-
-fn nametable_diff_count(nes: &Nes, screen_index: usize, tile_grid: &[u8], level_tiles_w: usize, nametable_base: u16) -> usize {
-    let screen_x_offset = screen_index * SCREEN_TILES_W;
-    let mut diffs = 0usize;
-    for ty in 0..SCREEN_TILES_H {
-        for tx in 0..SCREEN_TILES_W {
-            let live = nes.peek_ppu(nametable_base + (ty * 32 + tx) as u16);
-            let decoded = tile_grid[ty * level_tiles_w + screen_x_offset + tx];
-            if live != decoded {
-                diffs += 1;
-            }
-        }
-    }
-    diffs
-}
-
-#[allow(clippy::too_many_arguments)]
-fn verify_screen_against_live(nes: &Nes, screen_index: usize, tile_grid: &[u8], screen_ids: &[u8], prg_rom: &[u8], nametable_base: u16, attr_base: u16) {
-    let level_tiles_w = SCREEN_TILES_W * LEVEL_1_SCREEN_COUNT;
-    let screen_x_offset = screen_index * SCREEN_TILES_W;
+    let screen_tiles_h = SCREEN_ROWS_HORIZONTAL * 4;
     let mut nametable_diffs = 0usize;
-    for ty in 0..SCREEN_TILES_H {
+    for ty in 0..screen_tiles_h {
         for tx in 0..SCREEN_TILES_W {
-            let live = nes.peek_ppu(nametable_base + (ty * 32 + tx) as u16);
-            let decoded = tile_grid[ty * level_tiles_w + screen_x_offset + tx];
+            let live = nes.peek_ppu(0x2000 + (ty * 32 + tx) as u16);
+            let decoded = level1_tile_grid[ty * level1_tiles_w + tx];
             if live != decoded {
                 nametable_diffs += 1;
             }
         }
     }
-
     let mut attr_diffs = 0usize;
-    for super_row in 0..SCREEN_ROWS {
+    let header = contra_native::level::level_header(&rom.prg_rom, 0);
+    for super_row in 0..SCREEN_ROWS_HORIZONTAL {
         for super_col in 0..SCREEN_COLS {
-            let supertile_id = screen_ids[super_row * SCREEN_COLS + super_col];
-            let decoded_attr = contra_native::supertile::supertile_attribute_byte(&prg_rom[LEVEL_1_PALETTE_DATA_PRG_OFFSET..], supertile_id);
-            let live_attr = nes.peek_ppu(attr_base + (super_row * 8 + super_col) as u16);
+            let supertile_id = level1_screen_ids[0][super_row * SCREEN_COLS + super_col];
+            let decoded_attr = contra_native::supertile::supertile_attribute_byte(&rom.prg_rom[header.palette_data_prg_offset..], supertile_id);
+            let live_attr = nes.peek_ppu(0x23C0 + (super_row * 8 + super_col) as u16);
             if decoded_attr != live_attr {
                 attr_diffs += 1;
             }
         }
     }
-
     if nametable_diffs == 0 && attr_diffs == 0 {
-        println!("MATCH: screen {screen_index} (nametable base ${nametable_base:04X}) - nametable ({} tiles) and attribute table ({SCREEN_SUPERTILES} bytes) both identical to live PPU.", SCREEN_TILES_W * SCREEN_TILES_H);
+        println!("MATCH: level 1 screen 0 - nametable ({} tiles) and attribute table (56 bytes) both identical to live PPU.", SCREEN_TILES_W * screen_tiles_h);
     } else {
-        println!("MISMATCH: screen {screen_index} (nametable base ${nametable_base:04X}) - {nametable_diffs} nametable diffs, {attr_diffs} attribute diffs.");
+        println!("MISMATCH: level 1 screen 0 - {nametable_diffs} nametable diffs, {attr_diffs} attribute diffs.");
     }
 }

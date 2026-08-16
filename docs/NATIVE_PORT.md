@@ -400,6 +400,43 @@ replacement for its real 6502 code, cycle for cycle.
       a materially different, larger task than verifying decoding, noted
       here rather than either skipped silently or forced through with a
       fragile hack.
+      **Generalized further: all 8 levels, via the ROM's own lookup
+      tables, no hardcoded per-level data anywhere.** Ported
+      `level_graphic_data_tbl`/`graphic_data_ptr_tbl` (bank 7, `$c8e3`/
+      `$c950`) so a level's graphic-data blob list, and each blob's exact
+      PRG offset, come from the same two table lookups
+      `load_level_graphic_data` performs at real load time - not a
+      hand-transcribed list. Doing this **found and fixed a real,
+      previously-shipped bug**: `graphic_data_ptr_tbl`'s third byte packs
+      *both* a bank number (bits 0-2) *and* a horizontal-flip flag (bit
+      7) - confirmed directly against the real consuming code
+      (`write_graphic_data_to_ppu`'s `and #$07` / `and #$80`, and its
+      `horizontal_flip_graphic_byte` bit-reversal routine, bank 7 area
+      `$c9a1`). A first attempt at the general lookup used the byte's low
+      7 bits as "the bank" and panicked instantly on level 2 (bank 132,
+      wildly out of range) - the fix reads bits 0-2 for the bank and bit 7
+      as `flip`, and `graphics::decompress`/`apply_chr_writes` now
+      properly bit-reverse every data byte and skip the reused blob's own
+      (now-irrelevant) embedded PPU-address header when `flip` is set,
+      exactly matching the real routine. This also means
+      `apps/contra-extract`'s already-shipped `--dump-graphics` had been
+      silently emitting a **mirrored-wrong** tile sheet for
+      `graphic_data_10` (Base indoor/base tiles) - fixed now that it uses
+      this same general, flip-aware lookup instead of its own hardcoded
+      offset table. Verified visually: `graphic_data_0a` and
+      `graphic_data_10`'s tile sheets are now genuine horizontal mirrors
+      of each other, not one correct and one corrupted. All 8 levels now
+      decode and render (`extract_level` example, and
+      `contra-extract --dump-levels <dir>`) without hardcoding anything
+      level-specific - horizontal levels (7 screen-rows) and the one
+      vertical level (level 3, "Waterfall," 8 screen-rows) both handled
+      correctly by the same code path, and all 8 renders look like real,
+      coherent Contra levels on inspection (level 2's indoor corridors and
+      red doors; level 3's waterfalls and rock ledges). Level 1's
+      byte-perfect live-PPU proof (CHR, nametable, attribute table) still
+      holds unchanged; levels 2-8 use the identical proven pipeline but
+      aren't individually live-verified (same reachability caveat as
+      screens 1-12 above).
 
 ## Where to look
 

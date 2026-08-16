@@ -117,8 +117,21 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       needs scripted play past the level's obstacles - a naive "hold
       right" attempt got Bill killed before reaching screen 1, a
       materially larger task than decoding, so it's left open rather than
-      hacked around). See docs/NATIVE_PORT.md's "Current status" for the
-      full account. Audio and spawn/enemy-data extraction haven't been
+      hacked around). **Generalized to all 8 levels**, using the ROM's own
+      `level_graphic_data_tbl`/`graphic_data_ptr_tbl` lookups instead of
+      hardcoded per-level tables - which found and fixed a real bug in the
+      process: the ptr table's "bank" byte packs a horizontal-flip flag in
+      bit 7, which a first pass misread as part of the bank number,
+      panicking on level 2. Fixed (bank = low 3 bits, flip = bit 7 with
+      real bit-reversal applied), which also fixed a **silent
+      mirrored-wrong tile sheet** `contra-extract --dump-graphics` had
+      already been shipping for `graphic_data_10`. All 8 levels (both
+      horizontal and the one vertical level) now decode and render
+      correctly via `contra-extract --dump-levels <dir>` - verified
+      visually (level 2's corridors/doors, level 3's waterfalls) and via
+      the `graphic_data_0a`/`_10` mirror-pair rendering as genuine mirror
+      images of each other. See docs/NATIVE_PORT.md's "Current status" for
+      the full account. Audio and spawn/enemy-data extraction haven't been
       started. Equally necessary as the logic-porting work above, not a
       detail of it
 
