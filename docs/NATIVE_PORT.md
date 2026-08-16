@@ -721,7 +721,32 @@ replacement for its real 6502 code, cycle for cycle.
       `add_a_to_enemy_x_pos` and `reverse_enemy_x_direction` weren't
       reached this session, noted honestly. Not yet integrated live, same
       status as every routine above.
-- [ ] Everything else, logic side. Eighteen routines out of what's
+- [x] **`enemy_routine_transition`** (`crates/contra-native/src/
+      enemy_routine_transition.rs`) - ported Contra's enemy state-machine
+      transition primitives, **the most-reused routines found in this
+      codebase**: `advance_enemy_routine` (`$e78e`-`$e796`, 75 real call
+      sites alone), `set_enemy_routine_to_a` (`$e81a`-`$e822`, 29 real
+      call sites), and `set_enemy_delay_adv_routine` (`$e78b`-`$e78d`, a
+      real fallthrough into `advance_enemy_routine`, 29 more). All three
+      share one real guard: an enemy slot whose `ENEMY_ROUTINE` is
+      already `0` never gets a new value (only `ENEMY_SPRITES` gets
+      cleared, via the shared `set_sprite_0` exit) - real ASM comment:
+      "enemy routines are off by one, so setting `ENEMY_ROUTINE` to
+      `#$03` results in the 2nd routine being run", i.e. `0` means "no
+      active routine", not "routine index 0". Unit-tested (the guard in
+      both directions for both `advance`/`set_to_a`, wraparound at
+      `0xff`, and `set_enemy_delay_adv_routine`'s own real subtlety - the
+      animation-delay store happens *unconditionally*, before the guard,
+      unlike the routine update itself). Live-verified (`VERIFY_ENEMY_
+      ROUTINE_TRANSITION=1`, hooking all 3 real entries and their real
+      exits - careful not to let `$e78b`'s real fallthrough into `$e78e`
+      silently drop the delay comparison): 172 real calls across a
+      9000-frame session, all 3 entry points genuinely exercised (79
+      `Advance`, 71 `DelayedAdvance`, 22 `SetToA`) - zero mismatches. The
+      guard-rejection case (`ENEMY_ROUTINE` already `0`) wasn't reached
+      this session, noted honestly. Not yet integrated live, same status
+      as every routine above.
+- [ ] Everything else, logic side. Nineteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

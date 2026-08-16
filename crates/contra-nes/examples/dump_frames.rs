@@ -1574,6 +1574,79 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-position-utils calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ENEMY_ROUTINE_TRANSITION").is_ok() {
+            // VERIFY_ENEMY_ROUTINE_TRANSITION=1: verification pass for
+            // `contra_native::enemy_routine_transition`'s 3 real entry
+            // points - by far the most-reused routines found in this
+            // crate (75 real call sites for `advance_enemy_routine`
+            // alone). `set_enemy_delay_adv_routine` ($e78b) is a real ASM
+            // fallthrough straight into `advance_enemy_routine` ($e78e) -
+            // only set `pending` at $e78e if nothing is already pending
+            // from that same fallthrough, so the delay comparison isn't
+            // silently dropped.
+            use contra_native::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a};
+            #[derive(Clone, Copy, Debug)]
+            enum Op {
+                Advance(u8),
+                SetToA(u8, u8),
+                DelayedAdvance(u8, u8),
+            }
+            let mut pending: Option<Op> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xE78B => pending = Some(Op::DelayedAdvance(cpu.a, bus.ram[0x4B8 + x])),
+                    0xE78E => {
+                        if pending.is_none() {
+                            pending = Some(Op::Advance(bus.ram[0x4B8 + x]));
+                        }
+                    }
+                    0xE81A => pending = Some(Op::SetToA(bus.ram[0x4B8 + x], cpu.a)),
+                    0xE796 | 0xE822 | 0xE813 => {
+                        if let Some(op) = pending.take() {
+                            checked += 1;
+                            let real_routine = bus.ram[0x4B8 + x];
+                            let real_sprites = bus.ram[0x30A + x];
+                            match op {
+                                Op::Advance(before) => {
+                                    let expected = advance_enemy_routine(before);
+                                    if expected.routine != real_routine || (expected.sprites.is_some() && expected.sprites != Some(real_sprites)) {
+                                        eprintln!(
+                                            "MISMATCH(enemy_routine_transition Advance) frame={frame} before={before:02X}: expected {expected:?}, got routine={real_routine:02X} sprites={real_sprites:02X}"
+                                        );
+                                    }
+                                }
+                                Op::SetToA(before, a) => {
+                                    let expected = set_enemy_routine_to_a(before, a);
+                                    if expected.routine != real_routine || (expected.sprites.is_some() && expected.sprites != Some(real_sprites)) {
+                                        eprintln!(
+                                            "MISMATCH(enemy_routine_transition SetToA) frame={frame} before={before:02X} a={a:02X}: expected {expected:?}, got routine={real_routine:02X} sprites={real_sprites:02X}"
+                                        );
+                                    }
+                                }
+                                Op::DelayedAdvance(a, before) => {
+                                    let expected = set_enemy_delay_adv_routine(a, before);
+                                    let real_delay = bus.ram[0x538 + x];
+                                    let mismatch = expected.animation_delay != real_delay
+                                        || expected.routine_update.routine != real_routine
+                                        || (expected.routine_update.sprites.is_some() && expected.routine_update.sprites != Some(real_sprites));
+                                    if mismatch {
+                                        eprintln!(
+                                            "MISMATCH(enemy_routine_transition DelayedAdvance) frame={frame} a={a:02X} before={before:02X}: expected {expected:?}, got routine={real_routine:02X} sprites={real_sprites:02X} delay={real_delay:02X}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-routine-transition calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
