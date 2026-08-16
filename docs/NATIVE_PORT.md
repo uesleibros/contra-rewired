@@ -436,7 +436,37 @@ replacement for its real 6502 code, cycle for cycle.
       real branches of the property lookup, not just the common case -
       zero mismatches. Not yet integrated live, same status as every
       routine above.
-- [ ] Everything else, logic side. Seven routines out of what's
+- [x] **`create_enemy_bullet`**
+      (`crates/contra-native/src/create_enemy_bullet.rs`) - ported from
+      `@create_enemy_bullet`/`set_bullet_velocities`/`bullet_gen_exit`
+      (`bank7.asm`, `$f2e4`-`$f333`): the real "spawn an enemy bullet"
+      routine, and this crate's first port that's *purely composition* of
+      prior, independently live-verified building blocks -
+      `enemy_slots::find_next_enemy_slot`, `initialize_enemy::
+      initialize_enemy`, `bullet_physics::calc_bullet_velocities` - with
+      only two small caller-side transforms of its own: splitting the
+      packed `bullet_type_and_angle` byte (`>>5` for `ENEMY_VAR_1`,
+      `&0x1f` for the aim direction), and *saturating* (not masking)
+      `speed_code` to a max of 7 - notably narrower than `adjust_bullet_
+      velocity`'s own internal `&0x07`, meaning this caller path can
+      never trigger that function's wrap-to-0 case. Unit-tested against a
+      synthetic PRG-ROM (slot selection, field composition, and the
+      saturate-vs-mask distinction verified directly by comparing against
+      `adjust_bullet_velocity`'s own masking behavior). Live-verified
+      (`VERIFY_CREATE_ENEMY_BULLET=1`, hooking real entry `$f2e4` and both
+      real exits - success at `$f32e`, failure at `$f333` - deriving the
+      expected slot from the pure function applied to the same
+      `ENEMY_ROUTINE` snapshot rather than trusting `cpu.x` at either
+      exit, since the real routine's own last step before either `rts` is
+      `ldx ENEMY_CURRENT_SLOT`, discarding the real found slot before
+      returning to its own caller): 12 real calls across a 9000-frame
+      session, all on the success path, with real, observed variety in
+      every input (9 distinct destination slots, 6 aim angles, 3 speed
+      codes, all 4 quadrants, varied X/Y positions) - zero mismatches. The
+      failure path (`bullet_gen_exit`, no free slot) wasn't observed live
+      this session - noted honestly, matches this port's unit test only
+      so far. Not yet integrated live, same status as every routine above.
+- [ ] Everything else, logic side. Eight routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
