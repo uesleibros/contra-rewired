@@ -1,28 +1,46 @@
-//! `contra-extract` - validates a user-supplied ROM and tells you exactly
-//! how to play it.
+//! `contra-extract` - validates a user-supplied ROM and, per
+//! `docs/NATIVE_PORT.md`'s "actual end state", is the one place the real
+//! PC port is allowed to touch the ROM at all: a one-time extraction step
+//! that decodes assets into plain files so `contra-pc` never needs to
+//! again. See docs/ASSETS.md for the full story of how this project's
+//! stance on that changed.
 //!
-//! Earlier in this project the plan was for this tool to decompress
-//! Contra's graphics/audio into asset files. That's no longer needed:
-//! `contra-pc` runs the ROM directly through `contra-nes` (a real NES
-//! emulation core), so the original game code decompresses its own
-//! graphics/audio at run time the same way it does on real hardware.
-//! There is nothing to extract. See docs/ASSETS.md for the full story.
-//!
-//! What this tool actually does now: confirm the file is a valid ROM,
-//! confirm `contra-nes` supports its mapper, and print the exact command
-//! to launch it. `contra-pc` performs the same validation internally when
-//! you point it at a ROM directly, so this is mainly useful for a quick
-//! sanity check or scripting, not a required step before playing.
+//! What this tool does today: confirm the file is a valid, supported ROM
+//! and print the exact command to launch it (unchanged, still useful on
+//! its own for a quick sanity check); with `--dump-graphics <dir>`, decode
+//! every documented `graphic_data_XX` blob (see
+//! `crates/contra-native/src/graphics.rs`, ported from the real
+//! `write_graphic_data_to_ppu` routine and proven byte-for-byte identical
+//! to live CHR-RAM - see `crates/contra-nes/examples/extract_graphics.rs`)
+//! straight out of PRG-ROM into pattern-table tile-sheet PNGs; and with
+//! `--dump-palettes <dir>`, render every `game_palettes` group (see
+//! `crates/contra-native/src/palette.rs`) as a color swatch. No emulation
+//! involved in either.
+
+mod graphics;
+mod palette;
 
 use clap::Parser;
 use contra_assets::{NesRom, RomIdentity};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(author, version, about = "Validate your own legally-dumped Contra (NES) ROM and print the command to play it.")]
+#[command(author, version, about = "Validate your own legally-dumped Contra (NES) ROM, print the command to play it, and (optionally) extract its graphics.")]
 struct Args {
     /// Path to your own ROM dump, e.g. baserom.nes
     rom_path: PathBuf,
+
+    /// Decode every documented graphic-data blob straight from PRG-ROM
+    /// into pattern-table tile-sheet PNGs in this directory. No
+    /// emulation involved - this reads raw ROM bytes and decodes them
+    /// with contra-native's own ported decompressor.
+    #[arg(long, value_name = "DIR")]
+    dump_graphics: Option<PathBuf>,
+
+    /// Render every `game_palettes` group to a color-swatch PNG in this
+    /// directory.
+    #[arg(long, value_name = "DIR")]
+    dump_palettes: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -64,6 +82,19 @@ fn main() -> anyhow::Result<()> {
              work - see ROADMAP.md.",
             rom.mapper
         );
+    }
+
+    if let Some(out_dir) = &args.dump_graphics {
+        let (written, skipped_non_chr) = graphics::dump_all(&rom.prg_rom, out_dir)?;
+        println!(
+            "\nWrote {written} tile-sheet PNG(s) to {}. ({skipped_non_chr} segment(s) targeted nametable/attribute data, not CHR - not dumped as tile sheets.)",
+            out_dir.display()
+        );
+    }
+
+    if let Some(out_dir) = &args.dump_palettes {
+        let count = palette::dump_all(&rom.prg_rom, out_dir)?;
+        println!("\nWrote {count} palette swatches to {}/game_palettes.png.", out_dir.display());
     }
 
     Ok(())

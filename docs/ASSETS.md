@@ -14,22 +14,42 @@ sound effects, no level data, no ROM. What's in this repository is:
 - tooling that reads a ROM **you** already own and dumped yourself, at run
   time, on your own machine, and runs it on the emulation core.
 
-## Graphics/audio decoding is no longer this project's problem
+## Graphics/audio decoding: back on, for real this time
 
-Earlier in this project, the plan was to write a decoder for Contra's
-custom-compressed graphics/audio data (documented in the disassembly's
-`Graphics Documentation.md`/`Sound Documentation.md`) and extract it into
-plain asset files. That's no longer necessary: **`contra-nes` runs the
-original 6502 code, which decompresses its own graphics into CHR-RAM and
-plays its own audio at run time, the same way it does on real hardware.**
-There's nothing to extract - the PPU core reads pattern data straight out of
-the CHR-RAM the game itself populated. This is a direct consequence of the
-architecture decision in the main README ("why an emulator core, not a
-hand-ported reimplementation"): running the real code subsumes the asset
-pipeline that reimplementing it would have needed.
+Earlier in this project, the stance here was that graphics/audio decoding
+wasn't needed because `contra-nes` already decompresses everything live at
+run time the same way real hardware does. That was true as far as it went,
+but it settled for "a working emulator-based port," not "a real
+decompilation-based port" in the Ship of Harkinian/SM64-decomp sense -
+**those never touch the original ROM after a one-time extraction step, and
+this project has since committed to the same end state** (see
+docs/NATIVE_PORT.md's "The actual end state: zero ROM dependency at
+runtime"). An emulator that decodes graphics live is still emulating
+*something*, even if the CPU logic around it is eventually all native.
 
-`apps/contra-extract` still exists for a narrower, still-useful job:
-validating a ROM before you point `contra-pc` at it.
+So extraction is a real, active workstream again, and `apps/contra-extract`
+is where it lives. First slice landed: **graphics.** `write_graphic_data_to_
+ppu` - the real routine Contra uses to unpack RLE-compressed CHR pattern
+tiles from PRG-ROM - has been ported to native Rust
+(`contra-native::graphics`, see its doc comment for the exact format) and
+proven correct against real hardware behavior: decoding level 1's graphics
+straight from PRG-ROM bytes (no emulation involved at all) and diffing the
+result against `contra-nes`'s live CHR-RAM after actually playing into the
+level came back byte-for-byte identical across all 8192 CHR bytes
+(`cargo run -p contra-nes --release --example extract_graphics`).
+
+**Palettes landed too.** `load_palette_colors_to_cpu`'s `game_palettes`
+table plus level-header `LEVEL_PALETTE_INDEX` resolution is ported to
+`contra-native::palette`, verified the same way (level 1's background
+palette 0 decoded from PRG-ROM matched live PPU palette RAM exactly), and
+combining it with the graphics decoder produces a real, correctly-colored
+level 1 tile sheet straight from PRG-ROM bytes - no emulation anywhere in
+that pipeline.
+
+Not done yet: per-tile palette assignment (attribute tables/super-tiles),
+audio (DPCM samples, music sequences), and level/enemy data (spawn
+tables) haven't been started. See docs/NATIVE_PORT.md's "Current status"
+for the up-to-date breakdown.
 
 ## What `contra-extract` does today
 
@@ -42,13 +62,28 @@ cargo run -p contra-extract -- path\to\your\baserom.nes
    hash (`7bdad8b4a7a56a634c9649d20bd3011b`) - informational only, so you know
    what you pointed it at. We never bundle, cache, or transmit the ROM.
 3. Reports sizes/mapper, and if the mapper is 2 (UxROM, what Contra USA
-   uses), prints the exact `contra-pc` command to play it. `contra-pc` does
-   the same validation internally, so this is mainly for a quick sanity
-   check or scripting - not a required step before playing.
+   uses), prints the exact `contra-pc` command to play it.
 
-`contra-pc` itself needs no separate extraction step - pass it the ROM path
-directly (`cargo run -p contra-pc -- path\to\your\baserom.nes`) or drop a
-`baserom.nes` next to the executable.
+With `--dump-graphics <dir>`, it additionally decodes all 27 documented
+`graphic_data_XX` blobs (every level, menus, endings) straight from
+PRG-ROM into pattern-table tile-sheet PNGs in `<dir>` - no emulation
+involved, just the ported decompressor above:
+
+```
+cargo run -p contra-extract -- path\to\your\baserom.nes --dump-graphics .\assets\graphics
+```
+
+With `--dump-palettes <dir>`, it renders all 110 `game_palettes` groups as
+color swatches into `<dir>/game_palettes.png`, also straight from PRG-ROM:
+
+```
+cargo run -p contra-extract -- path\to\your\baserom.nes --dump-palettes .\assets\palettes
+```
+
+`contra-pc` doesn't consume these PNGs yet - today it still plays the ROM
+directly through `contra-nes`, same as before. Extraction and "make
+`contra-pc` actually load the extracted files instead of the ROM" are
+separate steps; this is the first one.
 
 ## What's still a limitation
 

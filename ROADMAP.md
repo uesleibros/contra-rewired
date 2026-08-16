@@ -75,6 +75,26 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       hits a wall there) - are blocked on enough of the surrounding game
       logic being ported and integrated first, not just one collision
       routine
+- [x] **Asset extraction - started: graphics, first slice proven
+      byte-perfect.** Ported `write_graphic_data_to_ppu` (the real RLE
+      decompressor Contra uses to unpack CHR tiles from PRG-ROM) to
+      native Rust (`contra-native::graphics`), proved it byte-for-byte
+      identical to live CHR-RAM by decoding level 1's graphics straight
+      from PRG-ROM (no emulation) and diffing against `contra-nes` after
+      actually playing into the level, and wired it into
+      `contra-extract --dump-graphics <dir>`, which now decodes all 27
+      documented graphic-data blobs (every level, menus, endings) from a
+      user's ROM into tile-sheet PNGs. **Palettes too**: ported
+      `load_palette_colors_to_cpu`'s `game_palettes`/`LEVEL_PALETTE_INDEX`
+      resolution (`contra-native::palette`), proved level 1's background
+      palette 0 byte-identical to live PPU palette RAM the same way, and
+      wired it into `contra-extract --dump-palettes <dir>` - combining
+      both now produces a properly-colored, real in-game-accurate level 1
+      tile sheet from PRG-ROM bytes alone, no emulation. Per-tile palette
+      assignment (attribute tables) and audio/level-data extraction
+      haven't been started - see docs/NATIVE_PORT.md's "Current status"
+      for the full breakdown. Equally necessary as the logic-porting work
+      above, not a detail of it
 
 ## Phase 1 - Fidelity, controls, and the two platforms
 

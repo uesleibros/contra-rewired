@@ -12,7 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 contra-assets = { path = "../../crates/contra-assets" }
+contra-native = { path = "../../crates/contra-native" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
+png = "0.17"

@@ -781,8 +781,10 @@ dependencies = [
  "anyhow",
  "clap",
  "contra-assets",
+ "contra-native",
  "env_logger",
  "log",
+ "png",
 ]
 
 [[package]]

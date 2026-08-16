@@ -26,6 +26,37 @@ one verified piece at a time. It's a large, multi-session undertaking -
 this file exists so that's tracked honestly rather than quietly implied to
 be further along than it is.
 
+## The actual end state: zero ROM dependency at runtime
+
+Worth being explicit about, since it's easy to undersell by only talking
+about CPU logic: "real decompilation-based port" means the ROM stops being
+needed at all once the port is finished, the same way Ship of
+Harkinian/SM64-decomp work. Concretely, that's **two** things, not one:
+
+1. **Game logic** (this document's main focus so far) - every routine
+   ported to native Rust and integrated via `HookAction::ReturnNow` (or,
+   once enough of the game is ported, running standalone with no emulated
+   CPU underneath at all).
+2. **Assets** - graphics, audio, and level/enemy data currently live
+   *inside* the ROM and get read from it (via `contra-nes`'s PPU/APU
+   emulation, or a native port peeking at PRG-ROM bytes directly) every
+   time the game needs them. The real end state extracts all of it
+   **once** - decoded to modern formats (PNG spritesheets, audio samples,
+   plain Rust/RON data tables for level headers and enemy placement) via
+   an extraction tool that runs against the player's own legally-owned
+   ROM - and from then on `contra-pc` reads only those extracted files,
+   never the ROM again. This keeps the legal model intact (a ROM is still
+   required *once*, from the player, to produce the assets - this project
+   still ships none of Konami's work) while actually reaching "runs
+   without emulation."
+
+Neither piece is optional for calling this "done"; a port that ported
+every CPU routine but still decoded graphics from the ROM's compressed CHR
+data at runtime, or vice versa, would still be emulating *something*. Both
+are real, substantial, and not yet started beyond the game-logic piece
+above - tracked here as they begin, the same honest way everything else in
+this document is.
+
 ## Why this is realistic here specifically
 
 Three things make this tractable in a way "decompile an NES game from
@@ -247,12 +278,63 @@ replacement for its real 6502 code, cycle for cycle.
       update, every single airborne frame, for reasons even the original
       disassembly's own comment says aren't fully understood - real,
       verified behavior of the original game, ported faithfully regardless.
-- [ ] Everything else. Two routines out of what's realistically hundreds
-      across 8 PRG banks - `bank7.asm` alone (the fixed, always-mapped
-      bank) is close to 11,000 lines of assembly by itself.
+- [ ] Everything else, logic side. Two routines out of what's realistically
+      hundreds across 8 PRG banks - `bank7.asm` alone (the fixed,
+      always-mapped bank) is close to 11,000 lines of assembly by itself.
       No claim is made here about which routine comes next or on what
       timeline; this file should be updated as real ports land, the same
       way ROADMAP.md tracks everything else.
+- [x] **Asset extraction - started: graphics, first slice proven
+      byte-perfect.** `graphics::decompress`/`apply_chr_writes`
+      (`crates/contra-native/src/graphics.rs`) is a native Rust port of
+      `write_graphic_data_to_ppu` (bank 7, `$c9a1`), the RLE decompressor
+      the real game uses to unpack `graphic_data_XX` blobs from PRG-ROM
+      into CHR pattern-table tiles - documented in `nes-contra-us`'s
+      `docs/Graphics Documentation.md` (note: that doc's own pseudocode
+      has a transcription bug where the RLE branch writes the count byte
+      instead of a separate payload byte; this port follows the prose
+      description and worked example instead, which are unambiguous and
+      match). Verified for real, not just unit-tested: decoding all 7
+      `graphic_data_XX` blobs `level_1_graphic_data` loads, straight from
+      PRG-ROM with **no emulation involved**, and comparing the result
+      against `contra-nes`'s live CHR-RAM after actually playing into
+      level 1 came back **byte-for-byte identical across all 8192 CHR
+      bytes** (`cargo run -p contra-nes --release --example
+      extract_graphics`). `contra-extract --dump-graphics <dir>` uses the
+      same decoder to dump all 27 documented `graphic_data_XX` blobs
+      (every level, menus, endings) to tile-sheet PNGs from PRG-ROM alone
+      - confirmed visually correct (Bill/Lance sprites, letters, power-up
+      icons all render recognizably). Not done: audio (DPCM samples, music
+      sequences) and level/enemy data tables (super-tiles, palettes,
+      spawn data) haven't been started; nametable/attribute-bound blobs
+      (`graphic_data_00`/`_02`/`_18`) decode correctly but aren't rendered
+      as tile sheets since they're not CHR data.
+      **Palettes, also proven byte-perfect:** `palette::resolve_palette_rgb`
+      (`crates/contra-native/src/palette.rs`) ports `load_palette_colors_to_
+      cpu` (bank 7, `$d227`'s `game_palettes` table) plus level-header
+      `LEVEL_PALETTE_INDEX` resolution (`level_headers`, bank 2 `$b319`,
+      confirmed 32-byte-per-level layout and the `LEVEL_PALETTE_INDEX`
+      offset two independent ways: counting header fields from
+      `src/bank2.asm`, and RAM-address subtraction `$50 - $40 = 0x10`).
+      Verified the same way: decoding level 1's background palette 0
+      straight from PRG-ROM and comparing against `contra-nes`'s live PPU
+      palette RAM ($3F00-$3F03) after actually playing into the level came
+      back identical. `contra-extract --dump-palettes <dir>` renders all
+      110 `game_palettes` groups as color swatches; combining this with
+      the graphics decoder already produces a properly-colored, real
+      in-game-accurate level 1 tile sheet (see `extract_graphics.rs`'s
+      `decoded_chr_colored.png` output) from PRG-ROM bytes alone. The NES
+      2C02's 64-color master palette isn't ROM data (it's a fixed PPU
+      hardware property) - `palette::NES_MASTER_PALETTE` is its own copy,
+      kept byte-identical to `contra_nes::ppu::NES_PALETTE` by an
+      assertion in the same verification example, so `contra-native` still
+      doesn't depend on the emulator crate at all. Not done: which palette
+      group applies to which *tile* (the attribute table / super-tile
+      palette assignment) isn't wired up yet, so today's colored output
+      uses one fixed palette across a whole tile sheet rather than the
+      real per-tile assignment; and only level 1's indexes have been
+      exercised so far (the other 7 levels' headers use the same decode
+      path but haven't been individually verified).
 
 ## Where to look
 

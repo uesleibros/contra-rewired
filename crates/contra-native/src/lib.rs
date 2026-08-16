@@ -20,19 +20,15 @@
 //! routine's known opening/closing instructions and converting the match's
 //! file offset to a CPU address via UxROM's bank layout.
 //!
-//! ## Why this is trustworthy without hand-verifying the disassembly itself
+//! ## Why this is trustworthy
 //!
-//! This project doesn't have a local `ca65`/`cc65` toolchain to personally
-//! reassemble `nes-contra-us` and re-confirm its claimed byte-match (that
-//! would need installing a full C toolchain purely to double-check a claim
-//! a mature, actively-used, specifically-hashed community project already
-//! makes - not a good use of a large, semi-irreversible system change). The
-//! trust model instead is: the disassembly's claim is specific and
-//! falsifiable (an exact hash), the project is well-established, and every
-//! port in this crate gets its own independent verification anyway - see
-//! below - so an error in the *source* disassembly would show up as a
-//! verification failure regardless of whether it was hand-confirmed
-//! up front.
+//! `nes-contra-us` isn't just trusted on its word: this project built
+//! `cc65` locally and personally reassembled the disassembly against a
+//! legally-owned `baserom.nes`, confirming byte-for-byte identical output
+//! (see docs/rom-symbols.txt's header for the exact steps). On top of
+//! that, every port in this crate gets its own independent verification
+//! anyway - see below - so an error that somehow survived both checks
+//! would still show up as a verification failure.
 //!
 //! ## Verification methodology
 //!
@@ -46,12 +42,28 @@
 //! way, not just tests the author wrote by hand from reading the ASM - see
 //! each module's tests for the exact capture command used.
 //!
+//! ## Two kinds of port live here
+//!
+//! Most of this crate replaces 6502 *game logic* live, one routine at a
+//! time, via `contra-nes`'s `HookAction::ReturnNow` (see `collision` and
+//! `player_physics`). `graphics` is a different kind: a one-time *asset
+//! extractor*, ported from `write_graphic_data_to_ppu` so it can decode
+//! Contra's RLE-compressed CHR data straight from PRG-ROM into plain
+//! image files, offline, with the ROM touched exactly once - see
+//! docs/NATIVE_PORT.md's "The actual end state" section for why that's a
+//! separate, equally necessary piece of the same project.
+//!
 //! ## Current status
 //!
 //! Just started - see docs/NATIVE_PORT.md for the up-to-date list.
 //! `collision::bg_collision` and `player_physics` are ported and verified
-//! so far; everything else in the game (realistically hundreds more
-//! routines) is not.
+//! so far (logic side); `graphics` can decompress the documented RLE
+//! format and is unit-tested against the format's own worked example, but
+//! not yet cross-checked against real ROM output (asset side). Everything
+//! else in the game (realistically hundreds more logic routines, plus
+//! audio/level-data extraction) is not started.
 
 pub mod collision;
+pub mod graphics;
+pub mod palette;
 pub mod player_physics;
