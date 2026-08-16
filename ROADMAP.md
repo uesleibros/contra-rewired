@@ -136,24 +136,33 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       cross-checked against the disassembly's own separately-shipped
       sample files since `contra-nes`'s APU doesn't emulate the DMC
       channel yet (no live oracle to diff against there). **Following an
-      explicit "extract everything" directive, the sound_code bytecode
-      itself (every music track and sound effect's actual command data,
-      not just the 2 DPCM waveforms) is now half-extracted**: the
-      low-format half (`contra-native::sound_code`, sound *effects* - 44
-      of `sound_table_00`'s 94 entries) is ported and verified two ways -
-      by hand against 2 real sounds' raw bytes before writing any code,
-      then mechanically across every low-format entry at once
-      (`extract_sounds.rs`), where a real structural finding turned up
-      along the way (`sound_08` has a genuinely self-referential `$FE`
-      repeat, looping its own opening phrase) - and wired into
-      `contra-extract --dump-sound-codes <dir>`. The high-format half
-      (music/BGM - 50 entries, all the level themes/intro/ending) isn't
-      done: its grammar has runtime-state-dependent variable-length
-      commands the low format's doesn't, needing more careful, separate
-      verification before shipping (see docs/NATIVE_PORT.md's "Current
-      status" for the exact gap). Actually *playing* any of this
-      (low or high) still needs a real playback engine ported as CPU
-      logic - extraction alone doesn't make sound come out of speakers.
+      explicit "extract everything, nothing missing" directive, the
+      sound_code bytecode itself (every music track and sound effect's
+      actual command data, not just the 2 DPCM waveforms) is now fully
+      extracted - all 94 of 94 `sound_table_00` entries**
+      (`contra-native::sound_code`), across all three sub-grammars (low
+      format/sound effects, high format/music, percussion), each verified
+      by hand against real ROM bytes before being coded, then mechanically
+      across every entry at once (`extract_sounds.rs`). Two real bugs got
+      caught and fixed along the way, not just found and worked around:
+      an initial belief that high/percussion format had runtime-
+      state-dependent lengths turned out wrong on closer reading (the
+      dependency is on *interpreter behavior*, not *data layout* - the
+      bytes are still fixed-length in the ROM either way); and an early
+      high-format implementation wrongly reused low format's narrower
+      "`>= 0xFD` is a control command" rule instead of high/percussion's
+      real "`>= 0xF0`" rule, which would have silently corrupted every
+      length after the first `0xF0`-`0xFC` byte in any music track. Also
+      surfaced a genuine structural finding along the way (`sound_08` has
+      a self-referential `$FE` repeat looping its own opening phrase;
+      `sound_2a` has one that targets partway into its own already-
+      scanned range instead, retracing its own tail to the same real
+      terminator - both correct, not bugs). Wired into `contra-extract
+      --dump-sound-codes <dir>` - 232 distinct blobs from the real US
+      ROM. **What extraction still can't give you**: every one of those
+      bytes is a *program*, not a sound - making any of it audible needs
+      a real bytecode-interpreter/APU-driver port as CPU logic (same
+      category as `collision`/`player_physics`), not started.
       **Enemy placement - hard-coded spawns**: ported
       each outdoor level's fixed per-screen enemy list
       (`contra-native::enemy_spawn`) - not the *random* soldier generation

@@ -495,17 +495,51 @@ replacement for its real 6502 code, cycle for cycle.
       into `contra-extract --dump-sound-codes <dir>`, which extracts
       every low-format sound's raw bytecode - deduplicating shared blobs
       so nothing is written twice - plus an index tying sound codes back
-      to files. **Still not done, and now the clearest remaining audio
-      gap**: the **high-format** half (`read_high_sound_cmd`/
-      `parse_percussion_cmd`) - every piece of actual music (level
-      themes, intro, ending, game over) plus percussion sound effects, 50
-      of `sound_table_00`'s 94 entries. Its grammar has commands whose
-      byte length depends on runtime-checked values in ways the low
-      format's doesn't (e.g. a vibrato command that reads a different
-      number of trailing bytes depending on whether the first one is
-      `$FF`), so it wasn't shipped without the same kind of verification
-      the low format got - see `contra_native::sound_code`'s module doc
-      comment.
+      to files.
+      **Update: the high-format half (music) is ported too now - all 94
+      of 94 `sound_table_00` entries are extracted, nothing left
+      unaccounted for.** Reading `read_high_sound_cmd`/
+      `parse_percussion_cmd`/`sound_cmd_routine_00`-`03` further showed
+      the earlier "runtime-dependent length" concern didn't actually hold
+      up: `sound_cmd_routine_01`'s branch on `UNKNOWN_SOUND_01` (a real
+      RAM variable, confirmed via `src/ram.asm`) only changes which
+      *interpreter path* runs, not how many bytes the *data* occupies -
+      the bytes are compiled into the ROM at a fixed length either way.
+      The one place a command's length genuinely varies with the data
+      itself (`sound_cmd_routine_02`'s vibrato command, one byte shorter
+      when the byte right after it happens to be `$FF`) is handled by
+      peeking that byte, the same pattern as the low format's `0xF8`
+      escape - real, ROM-fixed variability, not ambiguity. **A second
+      real bug was caught before shipping**: an early version reused low
+      format's `$FD`/`$FE`/`$FF`-dispatch condition (byte literally
+      `>= 0xFD`) for high/percussion format too, which actually dispatches
+      to the same control handling for *any* byte `>= 0xF0` - left
+      unfixed, this would have silently misparsed `0xF0`-`0xFC` bytes in
+      music data as 1-byte units instead of real 3-byte child-jumps,
+      corrupting every subsequent length in the blob. Verified against 3
+      more real sounds: `sound_26` (22 bytes, no children - exact),
+      `sound_29` (10 bytes, the percussion sub-format specifically -
+      exact), and `sound_2a` (843 bytes) - which surfaced a genuine
+      structural finding worth documenting rather than just fixing: its
+      one repeat command targets an address 29 bytes into its *own*
+      already-scanned range (not the very start, unlike `sound_08`'s
+      low-format self-reference) - walking that "child" from scratch
+      retraces the parent's own tail and lands on the exact same
+      terminator (`29 + 814 == 843` exactly), which is correct,
+      self-consistent behavior (a repeat replaying a middle section back
+      to the phrase's own end), not a bug. `contra-extract
+      --dump-sound-codes <dir>` now extracts all 94 sound codes across
+      all three sub-formats - 232 distinct blobs total from the real US
+      ROM. **What's still genuinely missing, and always will need more
+      than extraction**: every one of these bytes is still just
+      *bytecode* - a program, not a sound. Making Contra's real music and
+      sound effects actually play requires porting the bytecode
+      *interpreter* itself (`handle_sound_code` and everything under it)
+      plus the 2A03 APU register semantics it drives, as real CPU logic
+      (the same category of work as `collision`/`player_physics`, not
+      extraction) - not started. "Nothing missing" now genuinely applies
+      to *what data exists in the ROM*; it doesn't yet apply to *what the
+      game can play*.
 - [x] **Enemy placement - hard-coded spawns for outdoor levels.**
       `contra-native::enemy_spawn` ports the fixed, same-every-playthrough
       enemy placements each level defines per screen (`docs/Enemy

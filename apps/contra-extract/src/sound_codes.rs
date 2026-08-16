@@ -1,19 +1,34 @@
 //! Wires `contra_native::sound_code` into a real extraction command:
 //! walks `sound_table_00` (bank 1, `$88e8`) straight from PRG-ROM,
-//! extracts every low-format sound_code's raw bytecode (see
-//! `crates/contra-native/src/sound_code.rs`'s doc comment for exactly
-//! what "low-format" covers and why high-format/music isn't here yet),
-//! and writes one file per *distinct* blob (shared/repeated blobs get
-//! written once, not duplicated per sound that references them), plus a
-//! plain-text index tying sound codes back to their files. No emulation
-//! involved.
+//! extracts every sound_code's raw bytecode - low format (sound
+//! effects), high format (music), and percussion, all three (see
+//! `crates/contra-native/src/sound_code.rs`'s doc comment for the
+//! grammar and how each was verified) - and writes one file per
+//! *distinct* blob (shared/repeated blobs get written once, not
+//! duplicated per sound that references them, though blobs that only
+//! partially overlap - a repeat command replaying the tail of its own
+//! parent phrase, see the module doc comment's `sound_2a` account - are
+//! written as separate files even though their bytes overlap on disk).
+//! Plus a plain-text index tying sound codes back to their files. No
+//! emulation involved.
+
+use contra_native::sound_code::Slot;
 
 const SOUND_TABLE_00_PRG_OFFSET: usize = 0x48E8;
 const SOUND_TABLE_00_ENTRIES: usize = 0x5e;
 
-/// Extracts every low-format sound_code's raw bytes to `<out_dir>/blob_
-/// XXXXXX.bin` (one per distinct PRG-ROM offset) plus `index.txt`.
-/// Returns `(low_format_sounds, distinct_blobs_written, high_format_sounds_skipped)`.
+fn slot_for(byte0: u8) -> Slot {
+    match byte0 & 0x07 {
+        0 | 4 => Slot::Pulse1,
+        1 => Slot::Pulse2,
+        2 => Slot::Triangle,
+        _ => Slot::Noise,
+    }
+}
+
+/// Extracts every sound_code's raw bytes to `<out_dir>/blob_XXXXXX.bin`
+/// (one per distinct PRG-ROM offset) plus `index.txt`. Returns
+/// `(low_format_sounds, high_format_sounds, distinct_blobs_written)`.
 pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<(usize, usize, usize)> {
     std::fs::create_dir_all(out_dir)?;
 
@@ -24,23 +39,25 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<(us
 
     for entry in 0..SOUND_TABLE_00_ENTRIES {
         let base = SOUND_TABLE_00_PRG_OFFSET + entry * 3;
+        let byte0 = prg_rom[base];
         let mem_addr = u16::from_le_bytes([prg_rom[base + 1], prg_rom[base + 2]]);
         let prg_offset = 0x4000 + (mem_addr as usize & 0x3FFF);
         let first_byte = prg_rom[prg_offset];
 
-        if first_byte >= 0x30 {
+        let (format, all) = if first_byte < 0x30 {
+            low_count += 1;
+            ("LOW", contra_native::sound_code::walk_low_recursive(prg_rom, prg_offset))
+        } else {
             high_count += 1;
-            index.push_str(&format!("sound_{entry:02x}: HIGH format (music/BGM) - not decoded yet\n"));
-            continue;
-        }
+            let slot = slot_for(byte0);
+            (if slot == Slot::Noise { "PERCUSSION" } else { "HIGH" }, contra_native::sound_code::walk_high_recursive(prg_rom, prg_offset, slot))
+        };
 
-        low_count += 1;
-        let all = contra_native::sound_code::walk_low_recursive(prg_rom, prg_offset);
         for (offset, extent) in &all {
             blob_lengths.insert(*offset, extent.length);
         }
         let child_offsets: Vec<usize> = all.iter().filter(|(off, _)| *off != prg_offset).map(|(off, _)| *off).collect();
-        index.push_str(&format!("sound_{entry:02x}: LOW format, top-level blob_{prg_offset:06x}.bin"));
+        index.push_str(&format!("sound_{entry:02x}: {format} format, top-level blob_{prg_offset:06x}.bin"));
         if child_offsets.is_empty() {
             index.push('\n');
         } else {
@@ -56,5 +73,5 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<(us
     }
     std::fs::write(out_dir.join("index.txt"), &index)?;
 
-    Ok((low_count, blob_lengths.len(), high_count))
+    Ok((low_count, high_count, blob_lengths.len()))
 }

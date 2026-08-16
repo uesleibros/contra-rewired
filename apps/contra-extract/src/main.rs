@@ -28,10 +28,11 @@
 //! `crates/contra-native/src/enemy_spawn.rs`, verified against the
 //! disassembly's own worked example through the real pointer-table walk -
 //! see `crates/contra-nes/examples/extract_enemies.rs`); and with
-//! `--dump-sound-codes <dir>`, extract every low-format sound_code's raw
-//! bytecode (sound *effects* - not music/BGM yet, see
-//! `crates/contra-native/src/sound_code.rs`'s doc comment for exactly
-//! what that means and why). No emulation involved in any of the six.
+//! `--dump-sound-codes <dir>`, extract every sound_code's raw bytecode -
+//! sound effects, music, and percussion alike (see
+//! `crates/contra-native/src/sound_code.rs`'s doc comment for the grammar
+//! and how each format was verified). No emulation involved in any of
+//! the six.
 
 mod audio;
 mod enemies;
@@ -81,9 +82,9 @@ struct Args {
     #[arg(long, value_name = "DIR")]
     dump_enemies: Option<PathBuf>,
 
-    /// Extract every low-format sound_code's raw bytecode (sound
-    /// effects - not music/BGM yet) to this directory, one file per
-    /// distinct shared blob, plus an index.txt tying sound codes to files.
+    /// Extract every sound_code's raw bytecode - sound effects, music,
+    /// and percussion - to this directory, one file per distinct shared
+    /// blob, plus an index.txt tying sound codes to files.
     #[arg(long, value_name = "DIR")]
     dump_sound_codes: Option<PathBuf>,
 }
@@ -158,9 +159,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(out_dir) = &args.dump_sound_codes {
-        let (low, blobs, high) = sound_codes::dump_all(&rom.prg_rom, out_dir)?;
+        let (low, high, blobs) = sound_codes::dump_all(&rom.prg_rom, out_dir)?;
         println!(
-            "\nWrote {blobs} distinct sound-effect blob(s) (from {low} low-format sound_code(s)) to {} ({high} high-format/music sound_code(s) noted as not-yet-decoded).",
+            "\nWrote {blobs} distinct sound_code blob(s) ({low} low-format/sound-effect + {high} high-format/music-and-percussion) to {}.",
             out_dir.display()
         );
     }
