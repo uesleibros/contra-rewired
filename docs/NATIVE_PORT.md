@@ -319,7 +319,37 @@ replacement for its real 6502 code, cycle for cycle.
       mismatches. Not yet integrated live (`HookAction::ReturnNow`) - unit-
       and gameplay-verified only so far, same status `bg_collision` and
       `player_physics` had before their own integration passes.
-- [ ] Everything else, logic side. Three routines out of what's
+- [x] **`bullet_physics::calc_bullet_velocities`**
+      (`crates/contra-native/src/bullet_physics.rs`) - ported from
+      `calc_bullet_velocities` (`bank7.asm`, `$f334`-`$f37e`; real comment:
+      "used by bullets, eye projectile, and spinning bubbles" - despite the
+      "enemy" naming of the RAM it writes through, real gameplay capture
+      confirms it's also on the *player's own* bullet-firing path, since
+      Contra's bullet objects share the enemy-slot object pool). Looks up
+      a base X/Y fractional velocity for a 0-23 `aim_dir` (`bullet_fract_
+      vel_dir_lookup_tbl`/`bullet_fract_vel_tbl`, both ported as plain
+      tables), scales both axes through the already-ported
+      `adjust_bullet_velocity`, then negates whichever axis a `quadrant`
+      bit says should flip - a 16-bit two's-complement negation
+      (`negate16`) rather than anything speed-code-specific. Unlike
+      `adjust_bullet_velocity`, this is a normal `jsr`/`rts` call (single
+      real call site, `set_bullet_velocities` at `$f313`), so verification
+      could hook its own entry/exit directly instead of needing a call-site
+      workaround. Unit-tested via `adjust_bullet_velocity`'s speed-code-2
+      identity case (isolates the table lookup/negation logic from needing
+      to re-verify the scaling math) for both negation branches, then
+      against real gameplay (`VERIFY_CALC_BULLET_VELOCITIES=1`, entry hook
+      at `$f334`, exit hook at the call site's return address `$f316`; the
+      scripted input also aims up periodically under this flag only, to
+      exercise more than one aim direction): 12 real calls across a
+      9000-frame session, with real, observed variety in every input - 6
+      distinct `aim_dir` values (all within the table's real 0-23 domain,
+      confirming the wider `& $1f`/0-31 range every caller masks to is
+      never actually reached), all 4 `quadrant` bit combinations (both
+      negation paths and neither), and 3 different speed codes - zero
+      mismatches. Also not yet integrated live, same status as the routine
+      above.
+- [ ] Everything else, logic side. Four routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

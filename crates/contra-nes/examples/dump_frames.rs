@@ -176,6 +176,7 @@ fn main() {
 
     let mut illegal_seen: HashMap<u8, u32> = HashMap::new();
     let mut saved = 0;
+    let verify_calc_bullet_velocities = std::env::var("VERIFY_CALC_BULLET_VELOCITIES").is_ok();
 
     // MEASURE_BG_COLLISION_CYCLES=1: a real, whole-run histogram of
     // `get_bg_collision`'s actual entry-to-`$e12a` cycle cost, replacing an
@@ -206,6 +207,14 @@ fn main() {
             let mut b = BUTTON_RIGHT | BUTTON_B;
             if frame % 40 < 4 {
                 b |= BUTTON_A;
+            }
+            // VERIFY_CALC_BULLET_VELOCITIES only: also aim up periodically
+            // to exercise more than the single straight-ahead aim_dir/
+            // quadrant combo the default walk-and-shoot script produces -
+            // gated behind the env var so every other verification mode's
+            // exact frame timing (screenshots, other hooks) is unaffected.
+            if verify_calc_bullet_velocities && frame % 90 < 30 {
+                b |= BUTTON_UP;
             }
             b
         } else {
@@ -526,6 +535,46 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} bullet-velocity calls verified this frame, no mismatches unless printed above");
+            }
+        } else if verify_calc_bullet_velocities {
+            // VERIFY_CALC_BULLET_VELOCITIES=1: verification pass for
+            // `contra_native::bullet_physics::calc_bullet_velocities`.
+            // Unlike `adjust_bullet_velocity`, this routine is a normal
+            // `jsr`/`rts` call (not the inline-jump-table pattern) - its
+            // one real call site is `set_bullet_velocities` ($f313), whose
+            // first instruction is `jsr calc_bullet_velocities` ($f334),
+            // so the return address right after it ($f316) is where the
+            // real output ($04/$05/$0a/$0b) can be read.
+            let mut pending: Option<(u8, u8, u8)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF334 => {
+                        pending = Some((cpu.a, bus.ram[0x06], bus.ram[0x07]));
+                    }
+                    0xF316 => {
+                        if let Some((aim_dir, speed_code, quadrant)) = pending.take() {
+                            let expected = contra_native::bullet_physics::calc_bullet_velocities(aim_dir, speed_code, quadrant);
+                            let real = contra_native::bullet_physics::BulletVelocity {
+                                frac_y: bus.ram[0x04],
+                                fast_y: bus.ram[0x05],
+                                frac_x: bus.ram[0x0a],
+                                fast_x: bus.ram[0x0b],
+                            };
+                            checked += 1;
+                            if expected != real {
+                                eprintln!(
+                                    "MISMATCH(calc_bullet_velocities) frame={frame} in=(aim_dir=${aim_dir:02X} speed=${speed_code:02X} quadrant=${quadrant:02X}): expected {expected:?}, got {real:?}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} calc_bullet_velocities calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();
