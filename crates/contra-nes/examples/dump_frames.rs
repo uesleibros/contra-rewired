@@ -947,6 +947,68 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} quadrant-aim-dir calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_QUADRANT_AIM_DIR_FOR_PLAYER").is_ok() {
+            // VERIFY_QUADRANT_AIM_DIR_FOR_PLAYER=1: verification pass for
+            // `contra_native::quadrant_aim_dir::get_quadrant_aim_dir_
+            // for_player`. Entry ($f52c) takes `player_index` in `a`;
+            // this routine has no `rts` of its own - it falls straight
+            // into `get_quadrant_aim_dir`'s shared exit ($f5ab), same as
+            // that routine's own verification pass above.
+            use contra_native::quadrant_aim_dir::{
+                get_quadrant_aim_dir_for_player, QUADRANT_AIM_DIR_00, QUADRANT_AIM_DIR_01, QUADRANT_AIM_DIR_02,
+            };
+            let mut pending: Option<(u8, u8, u8, [u8; 2], [u8; 2], [u8; 2], u8, u8)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF52C => {
+                        pending = Some((
+                            bus.ram[0x08],
+                            bus.ram[0x09],
+                            cpu.a, // player_index
+                            [bus.ram[0x90], bus.ram[0x91]],
+                            [bus.ram[0x31A], bus.ram[0x31B]],
+                            [bus.ram[0x334], bus.ram[0x335]],
+                            bus.ram[0x40],
+                            bus.ram[0x0f],
+                        ));
+                    }
+                    0xF5AB => {
+                        if let Some((source_y, source_x, player_index, player_state, sprite_y, sprite_x, level_loc, table_index)) =
+                            pending.take()
+                        {
+                            let table = match table_index {
+                                0 => &QUADRANT_AIM_DIR_00,
+                                1 => &QUADRANT_AIM_DIR_01,
+                                _ => &QUADRANT_AIM_DIR_02,
+                            };
+                            let expected = get_quadrant_aim_dir_for_player(
+                                source_y,
+                                source_x,
+                                player_index,
+                                player_state,
+                                sprite_y,
+                                sprite_x,
+                                level_loc,
+                                table,
+                            );
+                            let real_aim_dir = cpu.a;
+                            let real_quadrant = bus.ram[0x07];
+                            checked += 1;
+                            if expected.aim_dir != real_aim_dir || expected.quadrant != real_quadrant {
+                                eprintln!(
+                                    "MISMATCH(quadrant_aim_dir_for_player) frame={frame} player_idx={player_index:02X} states={player_state:?} tbl={table_index}: expected {expected:?}, got aim_dir={real_aim_dir:02X} quadrant={real_quadrant:02X}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} quadrant-aim-dir-for-player calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

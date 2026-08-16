@@ -501,22 +501,41 @@ replacement for its real 6502 code, cycle for cycle.
       transcribed as plain `[u8; 32]` consts - unlike `initialize_enemy`'s
       property table, these have an unambiguous, fully-documented row/
       col/nibble layout with no contradictory comments, so transcription
-      was safe here). Its real caller one level up,
-      `get_quadrant_aim_dir_for_player` (resolves *which* player position
-      to target, including a fallback to a fixed off-screen position when
-      neither player is in a normal state), is **not ported yet** - noted
-      in this module's own doc comment. Unit-tested (same-position edge
-      case, both quadrant bits independently, a hand-traced row/column
-      bucketing example, and the bit-5-of-distance nibble-selection
-      switch). Live-verified (`VERIFY_QUADRANT_AIM_DIR=1`, hooking the
-      real entry `$f55e` and the routine's single real exit `$f5ab`,
-      right before the `quadrant_aim_dir_lookup_ptr_tbl` label): 16 real
-      calls across a 9000-frame session, with real, observed variety -
-      tables 0 *and* 1 (table 2, the level 3 dragon boss's seeking arm,
-      wasn't reached this session - noted honestly), aim directions
-      `1`/`2`/`5`/`6`, and **all 4 real quadrant values** - zero
-      mismatches. Not yet integrated live, same status as every routine
-      above.
+      was safe here). Unit-tested (same-position edge case, both quadrant
+      bits independently, a hand-traced row/column bucketing example, and
+      the bit-5-of-distance nibble-selection switch). Live-verified
+      (`VERIFY_QUADRANT_AIM_DIR=1`, hooking the real entry `$f55e` and the
+      routine's single real exit `$f5ab`, right before the `quadrant_aim_
+      dir_lookup_ptr_tbl` label): 16 real calls across a 9000-frame
+      session, with real, observed variety - tables 0 *and* 1 (table 2,
+      the level 3 dragon boss's seeking arm, wasn't reached this session -
+      noted honestly), aim directions `1`/`2`/`5`/`6`, and **all 4 real
+      quadrant values** - zero mismatches. Not yet integrated live, same
+      status as every routine above.
+- [x] **`quadrant_aim_dir::get_quadrant_aim_dir_for_player`** (same
+      module) - ported from `get_quadrant_aim_dir_for_player` (`bank7.
+      asm`, `$f52c`-`$f55d`): `get_quadrant_aim_dir`'s real caller one
+      level up - resolves *which* player position to target: the
+      requested player if `PLAYER_STATE` says normal, else their
+      teammate if *that* player is normal, else a fixed off-screen
+      fallback (`Y=$ff, X=$80`) if neither is - then delegates to
+      `get_quadrant_aim_dir`. Unit-tested (all 3 resolution outcomes,
+      plus the indoor-only Y-position override leaving X alone). Live-
+      verified (`VERIFY_QUADRANT_AIM_DIR_FOR_PLAYER=1`, hooking real entry
+      `$f52c` - before `player_index` moves out of `a` - and the same
+      shared exit `get_quadrant_aim_dir` itself uses, since this routine
+      has no `rts` of its own): 16 real calls across a 9000-frame
+      session, and notably **the riskiest branch - neither player
+      normal, full off-screen fallback - was genuinely exercised live**
+      (player 1's `PLAYER_STATE` toggled between `1` normal and `2` not-
+      normal across the session; player 2 was always inactive/`0` in
+      this single-player run, so whenever player 1 wasn't normal the
+      real routine fell all the way through to the fixed fallback
+      position) - zero mismatches on either outcome. The middle "fall
+      back to teammate" branch wasn't observed live this session (needs
+      an active, normal player 2 while player 1 isn't - not reachable in
+      a single-player run) - noted honestly, unit-tested only so far.
+      Not yet integrated live, same status as every routine above.
 - [ ] Everything else, logic side. Ten routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
