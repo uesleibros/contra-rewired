@@ -1230,6 +1230,88 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} add-scroll-to-enemy-pos calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_UPDATE_ENEMY_POS").is_ok() {
+            // VERIFY_UPDATE_ENEMY_POS=1: verification pass for
+            // `contra_native::update_enemy_pos::update_enemy_pos`. Real
+            // routine has 2 real exits: success/no-removal
+            // (`apply_vel_exit`'s own rts, $e849, shared by both the
+            // horizontal and vertical branches' full-success paths), and
+            // the same shared "removed" tail `add_scroll_to_enemy_pos`
+            // uses ($e813).
+            use contra_native::update_enemy_pos::update_enemy_pos;
+            #[allow(clippy::type_complexity)]
+            let mut pending: Option<(usize, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8)> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE837 => {
+                        let x = cpu.x as usize;
+                        pending = Some((
+                            x,
+                            bus.ram[0x41],       // level_scrolling_type
+                            bus.ram[0x68],       // frame_scroll
+                            bus.ram[0x33E + x],  // x_pos
+                            bus.ram[0x4D8 + x],  // x_vel_accum
+                            bus.ram[0x518 + x],  // x_vel_fract
+                            bus.ram[0x508 + x],  // x_vel_fast
+                            bus.ram[0x324 + x],  // y_pos
+                            bus.ram[0x4C8 + x],  // y_vel_accum
+                            bus.ram[0x4F8 + x],  // y_vel_fract
+                            bus.ram[0x4E8 + x],  // y_vel_fast
+                        ));
+                    }
+                    0xE849 | 0xE813 => {
+                        if let Some((
+                            x,
+                            scroll_type,
+                            frame_scroll,
+                            x_pos,
+                            x_vel_accum,
+                            x_vel_fract,
+                            x_vel_fast,
+                            y_pos,
+                            y_vel_accum,
+                            y_vel_fract,
+                            y_vel_fast,
+                        )) = pending.take()
+                        {
+                            let expected = update_enemy_pos(
+                                scroll_type,
+                                frame_scroll,
+                                x_pos,
+                                x_vel_accum,
+                                x_vel_fract,
+                                x_vel_fast,
+                                y_pos,
+                                y_vel_accum,
+                                y_vel_fract,
+                                y_vel_fast,
+                            );
+                            let real_x_pos = bus.ram[0x33E + x];
+                            let real_x_accum = bus.ram[0x4D8 + x];
+                            let real_y_pos = bus.ram[0x324 + x];
+                            let real_y_accum = bus.ram[0x4C8 + x];
+                            let real_removed = cpu.pc == 0xE813;
+                            checked += 1;
+                            let mismatch = expected.x.pos != real_x_pos
+                                || expected.x.vel_accum != real_x_accum
+                                || expected.y.pos != real_y_pos
+                                || expected.y.vel_accum != real_y_accum
+                                || expected.removed.is_some() != real_removed;
+                            if mismatch {
+                                eprintln!(
+                                    "MISMATCH(update_enemy_pos) frame={frame} x={x} scroll_type={scroll_type:02X} frame_scroll={frame_scroll:02X}: expected {expected:?}, got x_pos={real_x_pos:02X} x_accum={real_x_accum:02X} y_pos={real_y_pos:02X} y_accum={real_y_accum:02X} removed={real_removed}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} update-enemy-pos calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

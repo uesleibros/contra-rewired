@@ -638,7 +638,32 @@ replacement for its real 6502 code, cycle for cycle.
       far the largest live-verification sample of any port in this
       crate** - zero mismatches. Not yet integrated live, same status as
       every routine above.
-- [ ] Everything else, logic side. Fourteen routines out of what's
+- [x] **`update_enemy_pos`** (`crates/contra-native/src/update_enemy_pos.rs`)
+      - ported from `update_enemy_pos`/`update_enemy_x_pos`/`update_enemy_
+      y_pos` and their `_with_scroll` variants, plus `remove_enemy`
+      (`bank7.asm`, `$e809`-`$e969`): the enemy-object analog of
+      `player_physics::integrate_y_position` - applies each axis's
+      fixed-point velocity to its position (shared integrator, ported
+      once as a private `update_axis` and reused by both axes' public
+      functions), adds camera scroll to whichever axis matches
+      `LEVEL_SCROLLING_TYPE`, and removes the enemy if either axis ends
+      up off-screen. **Completes `add_scroll_to_enemy_pos`'s own
+      previously-unported `remove_enemy` side effect** (now a real,
+      tested `remove_enemy()` function both modules can use). The
+      trickiest real control-flow detail, ported faithfully: a removal
+      triggered by the *first*-checked axis (X for horizontal levels, Y
+      for vertical) skips the second axis's update **entirely** - not
+      just its removal check, the whole `jsr` never runs - so this
+      port's `removed: Some(..)` case returns the second axis's
+      `AxisUpdate` as an exact passthrough of the original input, not a
+      computed value; a unit test asserts this explicitly rather than
+      just checking the removal flag. Live-verified (`VERIFY_UPDATE_
+      ENEMY_POS=1`, hooking real entry `$e837` and both real exits -
+      success `$e849`, removed `$e813` shared with `add_scroll_to_enemy_
+      pos`): 3732 real calls across a 9000-frame session - the second-
+      largest live sample in this crate - zero mismatches. Not yet
+      integrated live, same status as every routine above.
+- [ ] Everything else, logic side. Fifteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

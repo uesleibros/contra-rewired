@@ -12,11 +12,12 @@
 //! axis - the other stays whatever it already was. This port's
 //! `should_remove` flag mirrors the real decision (`ENEMY_X_POS < $08`
 //! horizontally, `ENEMY_Y_POS >= $e8` vertically) but **does not itself
-//! perform the removal** (`remove_enemy`/`set_sprite_0`, which zero
-//! `ENEMY_ROUTINE`/`ENEMY_SPRITES`) - that's a separate real routine not
-//! ported yet; a caller integrating this port live would need to apply
-//! that removal itself when `should_remove` is `true`, exactly like the
-//! real ASM's `remove_enemy_far: jmp remove_enemy` does.
+//! perform the removal** - a caller integrating this port live should
+//! call [`crate::update_enemy_pos::remove_enemy`] when `should_remove`
+//! is `true`, exactly like the real ASM's `remove_enemy_far: jmp
+//! remove_enemy` does (that function now lives in the sibling
+//! `update_enemy_pos` module, which shares the same real `remove_enemy`/
+//! `set_sprite_0` routine this one jumps into).
 
 /// The result of one frame's scroll update: the enemy's new position
 /// (only one axis actually changes, depending on `LEVEL_SCROLLING_TYPE`)

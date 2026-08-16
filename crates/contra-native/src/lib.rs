@@ -82,3 +82,4 @@ pub mod quadrant_aim_dir;
 pub mod sound_code;
 pub mod sound_engine;
 pub mod supertile;
+pub mod update_enemy_pos;
