@@ -241,15 +241,17 @@ status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
       Y), built a bridge from this project's own verified extraction code
       to nesrecomp's data-exclusion config, and - the concrete result -
       **got a real recompiled build of Contra's ~6700 auto-discovered
-      functions to boot the real ROM and run 274+ real frames of the
-      actual game loop without crashing**, correctly identifying all 3
-      CPU vectors and falling back to interpretation for undiscovered
-      functions exactly as designed. Not a working alternative yet -
-      substantial data (collision maps, weapon/enemy-AI tables) isn't
-      excluded from discovery yet, and nothing has been confirmed on
-      screen - see docs/NATIVE_PORT.md's "A possible shortcut" section for
-      the full account. Whether to keep pushing this or treat it as a
-      side track remains open.
+      functions to boot the real ROM, run 480+ real frames of the actual
+      game loop without crashing, and render Contra's real title screen
+      correctly** (Konami logo, Contra logo, menu text, copyright text,
+      all pixel-legible - confirmed via a nametable dump, after an
+      initial screenshot patch's own bug wrongly suggested a black
+      screen). Not a working alternative yet - substantial data
+      (collision maps, weapon/enemy-AI tables) isn't excluded from
+      discovery yet, and gameplay itself hasn't been reached - see
+      docs/NATIVE_PORT.md's "A possible shortcut" section for the full
+      account. Whether to keep pushing this or treat it as a side track
+      remains open.
       **Enemy placement - hard-coded spawns**: ported
       each outdoor level's fixed per-screen enemy list
       (`contra-native::enemy_spawn`) - not the *random* soldier generation

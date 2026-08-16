@@ -863,10 +863,33 @@ misses (calls to addresses the static discovery pass didn't find) fell
 through to the interpreter fallback exactly as designed, each logged as a
 ready-to-paste `extra_func` config line. This is a real, running,
 partially-native execution of Contra's actual code - not proof the port
-is "done" (most of what's executing 274 frames in is still the
-interpreter fallback for undiscovered functions, and nothing has been
-visually confirmed on screen yet), but a concrete, replicable answer to
-"is this viable at all": yes, further.
+is "done" (most of what's executing is still the interpreter fallback
+for undiscovered functions), but a concrete, replicable answer to "is
+this viable at all": yes, further.
+
+**Checked visually - the real title screen renders correctly.** First
+attempt (patching in the runner's own normally-disabled periodic
+screenshot hook) showed solid black at frames 0/120/240/360/480 - looked
+like a real rendering gap, with a plausible lead (Contra's CHR is RAM,
+populated at runtime by the exact routine `contra_native::graphics::
+decompress` already ports and verified byte-for-byte; if the boot code
+calling it wasn't discovered, CHR-RAM would stay blank). Checked that
+lead directly before trusting it: `func_C9A1` (`write_graphic_data_to_
+ppu`, the graphics loader, at its real CPU address) **is** discovered and
+has 3 real call sites in bank 7's recompiled code - the lead was wrong.
+Switched to the runner's `NESRECOMP_NT_DUMP` env-gated debug tap (dumps
+the raw nametable independent of the presentation path) instead of the
+patched screenshot hook, at frame 300 - and it rendered Contra's **real
+title screen**, correctly: the Konami logo, the Contra logo, "PLAY
+SELECT / 1 PLAYER / 2 PLAYERS", and the real copyright text, all
+pixel-legible. The earlier all-black screenshots were a bug in the
+ad-hoc patch itself (capturing the wrong buffer or the wrong point in the
+frame pipeline), not a real rendering failure - corrected here rather
+than left standing now that better evidence exists. This is the
+strongest evidence yet that the recompiled build isn't just "not
+crashing" - it's correctly executing enough of Contra's real boot
+sequence (CHR-RAM population, nametable/attribute writes, palette setup)
+to produce the exact real title screen a player would see.
 
 Whether to keep pushing this track, treat it as a complement to
 hand-porting, or set it aside remains an open call.
