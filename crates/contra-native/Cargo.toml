@@ -1,0 +1,9 @@
+[package]
+name = "contra-native"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native Rust reimplementations of real Contra (US) game-logic routines, ported directly from the verified byte-matching disassembly (vermiceli/nes-contra-us), one routine at a time - see this crate's module docs for the methodology and current status. Not a game engine of its own: today a routine here is a drop-in, behavior-verified replacement for the equivalent 6502 code contra-nes would otherwise interpret."
+
+[dependencies]

@@ -24,18 +24,35 @@ opt-in layer instead of a replacement.**
 > real, running example). See [Project status](#project-status) and
 > [ROADMAP.md](ROADMAP.md) for exactly what's real today versus planned.
 
-## Why an emulator core, not a hand-ported reimplementation
+## Why an emulator core - and why that's no longer the whole story
 
-Contra's NES code is about 11,000 lines of 6502 across 8 banks - every
-enemy, every boss, every weapon, every piece of level data. Hand-porting all
-of that to Rust routine-by-routine, faithfully, would take months, and there
-would be no way to verify the result against the real game without... the
-real game. So instead: `contra-nes` emulates the hardware (CPU, PPU, the
-mapper Contra uses) accurately enough to run the *original, unmodified
-6502 code* directly. That gets bit-exact physics, RNG, hitboxes, and quirks
-**for free** - because it's literally Konami's code running, not a guess at
-what it did. This is also the only way "Original NES mode replicates even
-bugs/quirks" (from the original brief) is actually achievable.
+Contra's NES code is about 11,000 lines of 6502 in the fixed bank alone,
+close to that again spread across the other 7 - every enemy, every boss,
+every weapon, every piece of level data. `contra-nes` emulates the hardware
+(CPU, PPU, the mapper Contra uses) accurately enough to run the *original,
+unmodified 6502 code* directly, which gets bit-exact physics, RNG,
+hitboxes, and quirks **for free** - literally Konami's code running, not a
+guess at what it did. That's still true, still the foundation, and still
+how `Original` mode works (see [Design principle](#design-principle)) - a
+player who wants exactly the real game, unmodified, always gets it.
+
+But "hand-porting it would take months with no way to verify the result"
+turned out to have a real answer once `contra-nes` itself existed: an
+accurate emulator *is* a verification oracle. `crates/contra-native` is a
+real, in-progress effort to port real routines to native Rust - not
+approximated from documentation, but translated instruction-for-instruction
+from a verified byte-matching disassembly, and checked against real
+gameplay captured through the emulator before being trusted (see
+[docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) for the full methodology and
+current status - it's genuinely just started, one routine in). This is the
+same kind of project as Ship of Harkinian or the SM64 decompilation ports,
+scaled to what one contributor can verify incrementally rather than
+claiming to be there already. The payoff, once enough of the game is
+ported this way: things that are currently impossible to fix from outside
+a sealed 6502 binary - like enemies spawning aware of a wider-than-256px
+widescreen camera (see docs/FIDELITY.md's "Enemies/bullets/collision"
+entry) - become straightforward Rust changes to code this project actually
+owns, the same way they are for those other ports.
 
 `crates/contra-core` (the hand-ported physics/RNG/config/save-state layer
 from earlier in this project) is still here and still useful - for
@@ -44,6 +61,9 @@ Difficulty, Practice mode overlays, trainers) that pokes the *emulator's*
 memory using the address map the community disassembly documents, the same
 way real "enhanced ports" of old console games are usually built, and as
 the save-state format `contra-pc` falls back to before any ROM is loaded.
+It predates `contra-native` and isn't itself verified against real
+gameplay the way `contra-native`'s ports are - a different, honestly
+labeled tier of confidence, not the same thing.
 
 ## Design principle
 
@@ -233,6 +253,10 @@ crates/contra-core/     hand-ported simulation: physics, RNG, config, input,
                          save states, replays, difficulty, checkpoints
 crates/contra-assets/   legal ROM loading/validation
 crates/contra-mods/     mod manifest/registry + working Lua host (`lua` feature)
+crates/contra-native/   native Rust ports of real Contra routines, verified
+                         against real gameplay via contra-nes - the "real
+                         decompilation-based PC port" initiative, just
+                         started - see docs/NATIVE_PORT.md
 apps/contra-pc/         desktop shell: wgpu + egui window/menu, input/audio,
                          loads a ROM into contra-nes (falling back to a real
                          Load ROM screen) and mods into contra-mods

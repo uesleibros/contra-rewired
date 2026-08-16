@@ -11,4 +11,5 @@ serde = { workspace = true }
 
 [dev-dependencies]
 contra-assets = { path = "../contra-assets" }
+contra-native = { path = "../contra-native" }
 png = "0.17"

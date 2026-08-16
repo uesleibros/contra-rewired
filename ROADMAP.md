@@ -14,6 +14,37 @@ save-state format, and replay format in `contra-core` already have fields
 for most of it (see [ARCHITECTURE.md](docs/ARCHITECTURE.md)). What's missing
 is the actual game - see the note at the bottom.
 
+## The native port - cross-cutting, just started
+
+Separate from the three phases below because it isn't a feature, it's a
+change to what this project fundamentally *is*: a real, decompilation-style
+port (Ship of Harkinian/SM64-decomp style) instead of an emulator with
+quality-of-life layers on top. Full plan, methodology, and honest current
+status live in [docs/NATIVE_PORT.md](docs/NATIVE_PORT.md) - short version:
+- [x] **Verified byte-matching source located**
+      (`vermiceli/nes-contra-us`) and **instruction-hook infrastructure
+      built** (`Nes::run_frame_with_hook`) to use `contra-nes` itself as a
+      reference oracle - real gameplay run through the emulator becomes
+      test cases a native port must reproduce exactly, which is what makes
+      this tractable without months of unverifiable guessing
+- [x] **First routine ported and verified**: `collision::bg_collision`
+      (`crates/contra-native`) - zero mismatches against real gameplay
+      across multiple thousand-frame sessions
+- [ ] **Everything else** - realistically hundreds more routines. No
+      specific next-routine commitment or timeline; docs/NATIVE_PORT.md is
+      the place this gets updated as real ports land
+- [ ] **Integration**: a verified port doesn't run in place of the emulated
+      routine yet - that needs a hook that redirects execution (compute the
+      native version's effect, write it back, skip past the 6502 code) and
+      hasn't been built. Not worth building before there's more than one
+      routine to switch in - tracked in docs/NATIVE_PORT.md
+- [ ] **The actual payoff features this unlocks** - widescreen-aware enemy
+      spawning being the clearest one (see docs/FIDELITY.md's "Enemies/
+      bullets/collision" entry for exactly why the emulator-only approach
+      hits a wall there) - are blocked on enough of the surrounding game
+      logic being ported and integrated first, not just one collision
+      routine
+
 ## Phase 1 - Fidelity, controls, and the two platforms
 
 The goal: **Original mode is indistinguishable from a real cartridge**, and

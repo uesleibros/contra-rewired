@@ -160,6 +160,7 @@ fn main() {
         // checked against real gameplay before trusting them in the actual
         // `enemy_spawn` mod event.
         let trace_spawn = std::env::var("TRACE_ENEMY_SPAWN").is_ok();
+        let verify_bg_collision = std::env::var("VERIFY_BG_COLLISION").is_ok();
         if std::env::var("PC_TRACE_FRAME").ok().and_then(|s| s.parse::<u32>().ok()) == Some(frame) {
             let mut hist: HashMap<u16, u32> = HashMap::new();
             nes.run_frame_with_pc_trace(&mut |pc| *hist.entry(pc).or_insert(0) += 1);
@@ -168,6 +169,44 @@ fn main() {
             eprintln!("PC trace for frame {frame} - top addresses by instruction count:");
             for (pc, count) in counts.iter().take(15) {
                 eprintln!("  ${pc:04X}: {count} instructions");
+            }
+        } else if verify_bg_collision {
+            // VERIFY_BG_COLLISION=1: the actual verification pass for
+            // `contra_native::collision::bg_collision` (see that crate's
+            // module docs for the methodology this implements). Hooks the
+            // real ROM's `get_bg_collision` at its entry (`$e0bb`) to
+            // capture every real call's inputs, and at its `rts`-adjacent
+            // exit (`$e12a`, the `sta $14` right before the final `lda $14;
+            // rts` - `a` already holds the answer there) to capture the
+            // real answer, then calls the native Rust port with the same
+            // inputs and asserts the two agree. Entry/exit hits are paired
+            // in call order via `pending`, which only works because this
+            // routine doesn't call itself recursively (true for the real
+            // ROM - it's a short, self-contained leaf routine).
+            let mut pending: Option<(u8, u8, u8, u8, u8, [u8; contra_native::collision::BG_COLLISION_DATA_LEN])> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                if cpu.pc == 0xE0BB {
+                    let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
+                    for (i, b) in data.iter_mut().enumerate() {
+                        *b = bus.ram[0x0680 + i];
+                    }
+                    pending = Some((cpu.a, cpu.y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF], data));
+                } else if cpu.pc == 0xE12A {
+                    if let Some((x, y, vs, hs, ppuctrl, data)) = pending.take() {
+                        let expected = cpu.a;
+                        let actual = contra_native::collision::bg_collision(x, y, vs, hs, ppuctrl, &data).to_raw_byte();
+                        checked += 1;
+                        if actual != expected {
+                            eprintln!(
+                                "MISMATCH frame={frame} x={x} y={y} vs={vs} hs={hs} ppuctrl=${ppuctrl:02X}: expected=${expected:02X} got=${actual:02X}"
+                            );
+                        }
+                    }
+                }
+            });
+            if frame % 200 == 0 && checked > 0 {
+                eprintln!("frame={frame}: {checked} bg_collision calls verified this frame, no mismatches unless printed above");
             }
         } else if trace_spawn {
             let mut spawned_slots: Vec<u8> = Vec::new();

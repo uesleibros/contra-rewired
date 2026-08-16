@@ -797,10 +797,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "contra-native"
+version = "0.1.0"
+
+[[package]]
 name = "contra-nes"
 version = "0.1.0"
 dependencies = [
  "contra-assets",
+ "contra-native",
  "png",
  "serde",
 ]
