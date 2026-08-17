@@ -1521,7 +1521,33 @@ replacement for its real 6502 code, cycle for cycle.
       across 1800-frame sessions - same as the rest of the indoor
       family, not reachable from the current scripted outdoor level-1
       playthrough.
-- [ ] Everything else, logic side. Eighty-two routines out of what's
+- [x] **`indoor_roller_gen::indoor_roller_gen_routine_00` / `indoor_roller_gen_routine_01`**
+      (`crates/contra-native/src/enemy/indoor_roller_gen.rs`, new
+      module) - the indoor family's roller generator, reading its own
+      per-generator pattern from raw PRG-ROM (`roller_gen_init_tbl` ->
+      `roller_gen_init_00`/`_01`, same pointer-chase approach `indoor_
+      soldier_gen` already uses) and composing the already-ported
+      `create_roller_with_segment_a` - but unlike every *other* real
+      caller of that routine, this one takes the horizontal segment
+      directly from the level data's own high nibble rather than
+      computing it via `find_far_segment_for_x_pos`. Can spawn multiple
+      rollers in a single call, back to back, whenever consecutive
+      pattern entries have a `0` delay byte - ported with the same
+      bounded-loop approach (64 iterations) `red_blue_soldier_gen_
+      routine_01` already uses for its own real-ASM-has-no-hard-limit
+      spawn loop, well above the real data's own largest table (`$39`
+      bytes).
+      Unit-tested (8 new tests: every gating branch, a single-roller
+      spawn with the segment/attributes/position decoded correctly from
+      the packed byte, back-to-back multi-roller spawns via a `0` delay,
+      the `$ff` wraparound sentinel restarting the pattern read from
+      offset `0`, and a slot-exhausted/attack-flag-off case that still
+      advances the generator's own state).
+      **Live verification attempted but had 0 real hits for both**
+      across 1800-frame sessions - same as the rest of the indoor
+      family, not reachable from the current scripted outdoor level-1
+      playthrough.
+- [ ] Everything else, logic side. Eighty-four routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

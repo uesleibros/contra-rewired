@@ -50,7 +50,7 @@ const INDOOR_ENEMY_GEN_TBL_ADDR: u16 = 0x8DCF;
 /// Converts a bank-0 (switchable, currently-mapped) CPU address to a
 /// PRG-ROM byte offset - valid only while `bank_select() == 0`, same
 /// convention every bank0.asm-sourced port in this crate relies on.
-fn bank0_prg_offset(addr: u16) -> usize {
+pub(crate) fn bank0_prg_offset(addr: u16) -> usize {
     addr as usize - 0x8000
 }
 

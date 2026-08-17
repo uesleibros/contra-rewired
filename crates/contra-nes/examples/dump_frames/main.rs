@@ -3384,6 +3384,86 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} indoor-soldier-gen-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_INDOOR_ROLLER_GEN_ROUTINE_00").is_ok() {
+            // VERIFY_INDOOR_ROLLER_GEN_ROUTINE_00=1: verification pass
+            // for `contra_native::enemy::indoor_roller_gen::indoor_
+            // roller_gen_routine_00`. Real entry $95c8 (switchable bank,
+            // gated). Real exit: the 2 shared exits ($e796/$e813) via
+            // `jmp advance_enemy_routine` - no nested calls at all, so
+            // no disambiguation is needed.
+            let mut pending: Option<IndoorRollerGenRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x95C8 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(IndoorRollerGenRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_roller_gen_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-roller-gen-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_INDOOR_ROLLER_GEN_ROUTINE_01").is_ok() {
+            // VERIFY_INDOOR_ROLLER_GEN_ROUTINE_01=1: verification pass
+            // for `contra_native::enemy::indoor_roller_gen::indoor_
+            // roller_gen_routine_01`. Real entry $95cd (switchable bank,
+            // gated). Real exits: `@exit` ($9628, switchable, gated -
+            // the `EvenFrame`/`StillWaiting`/`Entry` outcomes; every
+            // `jsr create_roller_with_segment_a` inside the roller-
+            // creation loop returns to a point *before* this address, so
+            // no nested-return ambiguity), and `remove_enemy`'s own
+            // address ($e809, fixed bank - the `RoundsExhausted`
+            // outcome via `jmp remove_enemy`, reached with no nested
+            // `jsr`s along the way at all).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<IndoorRollerGenRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x95CD if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(IndoorRollerGenRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attack_flag: bus.ram[0x8E],
+                            indoor_enemy_attack_count: bus.ram[0x88],
+                            frame_counter: bus.ram[0x1A],
+                            animation_delay: bus.ram[0x538 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0x9628 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_roller_gen_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_roller_gen_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-roller-gen-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

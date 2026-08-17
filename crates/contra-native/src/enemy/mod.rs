@@ -15,6 +15,7 @@ pub mod enemy_spawn;
 pub mod find_far_segment;
 pub mod four_soldiers;
 pub mod grenade_launcher;
+pub mod indoor_roller_gen;
 pub mod indoor_soldier;
 pub mod indoor_soldier_gen;
 pub mod initialize_enemy;
