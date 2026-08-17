@@ -1547,7 +1547,45 @@ replacement for its real 6502 code, cycle for cycle.
       across 1800-frame sessions - same as the rest of the indoor
       family, not reachable from the current scripted outdoor level-1
       playthrough.
-- [ ] Everything else, logic side. Eighty-four routines out of what's
+- [x] **`jumping_soldier::jumping_soldier_routine_04` / `enemy_explosion::play_explosion_sound`
+      / `create_two_explosion_89` / `create_explosion_a` / `create_enemy_for_explosion`
+      / `create_explosion_sequence`**
+      (`crates/contra-native/src/enemy/jumping_soldier.rs` and `enemy_
+      explosion.rs`) - the jumping soldier's own routine-4 entry ("soldier
+      destroyed, if red soldier play explosion and create weapon item"),
+      closing the last gap in this enemy type's own table (all 8 entries
+      now ported). Only a red jumping soldier (`ENEMY_ATTRIBUTES` bit 1),
+      inside the `$64..$9c` X range, with bit 7 clear (real comment:
+      "not sure when this happens" - ported as-is) actually explodes;
+      everything else just advances to the next routine.
+      `create_explosion_sequence`/`create_explosion_a`/`create_enemy_for_
+      explosion`/`create_two_explosion_89` are a small real family (one
+      shared core, 3 thin fixed-parameter wrappers) that spawns a new
+      "explosion sensor" enemy (`ENEMY_TYPE=$02`, real comment: "isn't
+      important, it's just an enemy that has the `enemy_routine_init_
+      explosion` routine sequence") at a given position - composes the
+      already-ported `find_next_enemy_slot`/`initialize_enemy` pipeline,
+      same shape as every other spawn helper in this crate.
+      `play_explosion_sound` then converts the *calling* enemy's own slot
+      in place into a weapon item drop (`ENEMY_TYPE=0`, `ENEMY_ROUTINE=1`)
+      rather than spawning a new enemy for that part - a real, deliberate
+      difference from the explosion sensor it also spawns alongside it.
+      One instruction-ordering quirk worth calling out: `jumping_soldier_
+      routine_04`'s own `lsr ENEMY_ATTRIBUTES,x` (twice, `>> 2`) runs
+      *before* the tail-jump into `play_explosion_sound`, which itself
+      reads `ENEMY_ATTRIBUTES,x` again and masks it to the low 3 bits for
+      the weapon type - so the real weapon type is `(original_attributes
+      >> 2) & 7`, not a fresh `& 7` of the original value. Ported by
+      threading the already-shifted value through explicitly.
+      Unit-tested (12 new tests across both files: every spawn-helper
+      wrapper's fixed parameters, `play_explosion_sound`'s full
+      composition and its attribute masking, and `jumping_soldier_
+      routine_04`'s full gating logic including the X-range's exclusive
+      right edge).
+      **Live verification attempted but had 0 real hits** across a
+      1800-frame session - same as the rest of the indoor family, not
+      reachable from the current scripted outdoor level-1 playthrough.
+- [ ] Everything else, logic side. Ninety routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

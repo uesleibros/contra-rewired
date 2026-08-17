@@ -3073,6 +3073,55 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} jumping-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_JUMPING_SOLDIER_ROUTINE_04").is_ok() {
+            // VERIFY_JUMPING_SOLDIER_ROUTINE_04=1: verification pass for
+            // `contra_native::enemy::jumping_soldier::jumping_soldier_
+            // routine_04`. Real entry $9437 (switchable bank, gated).
+            // Real exits: the 2 shared exits ($e796/$e813, the
+            // `AdvancedOnly` outcome via `jmp advance_enemy_routine`),
+            // and `weapon_box_exit_1` ($82f4, switchable bank, gated -
+            // the `ExplodedAndDroppedWeapon` outcome via `jmp play_
+            // explosion_sound`). No nested `jsr`s revisit either address
+            // along the way, so no disambiguation is needed.
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<JumpingSoldierRoutine04Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9437 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(JumpingSoldierRoutine04Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attributes: bus.ram[0x5A8 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0x82F4 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_jumping_soldier_routine_04(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_jumping_soldier_routine_04(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} jumping-soldier-routine-04 calls verified this frame, no mismatches unless printed above");
+            }
         } else if std::env::var("VERIFY_GRENADE_LAUNCHER_ROUTINE_00").is_ok() {
             // VERIFY_GRENADE_LAUNCHER_ROUTINE_00=1: verification pass for
             // `contra_native::enemy::grenade_launcher::grenade_launcher_

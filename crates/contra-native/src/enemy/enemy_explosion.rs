@@ -22,8 +22,11 @@
 //! live gameplay is responsible for actually invoking the sound engine.
 
 use crate::enemy::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
+use crate::enemy::enemy_clear::EnemyClearFields;
 use crate::enemy::enemy_collision_flags::disable_enemy_collision;
 use crate::enemy::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, DelayedRoutineUpdate, EnemyRoutineUpdate};
+use crate::enemy::enemy_slots::{find_next_enemy_slot, ENEMY_SLOT_COUNT};
+use crate::enemy::initialize_enemy::initialize_enemy;
 use crate::enemy::update_enemy_pos::{remove_enemy, RemovedEnemy};
 
 /// `enemy_routine_init_explosion`'s real destruction sound code
@@ -246,6 +249,121 @@ pub fn shared_enemy_routine_03(
     show_explosion_a(2, 3, enemy_state_width, enemy_x_pos, enemy_y_pos, level_scrolling_type, frame_scroll, current_routine, enemy_animation_delay, enemy_frame)
 }
 
+/// `ENEMY_TYPE` code [`create_explosion_sequence`] spawns with (real
+/// comment: "pill box sensor" / "weapon box" - not actually important,
+/// it's just an enemy whose only job is to run the [`enemy_routine_
+/// init_explosion`]/[`show_explosion_a`]/`enemy_routine_remove_enemy`
+/// sequence at a fixed position).
+pub const ENEMY_TYPE_EXPLOSION_SENSOR: u8 = 0x02;
+
+/// A spawned explosion-sequence enemy's full real field set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreatedExplosionEnemy {
+    pub slot: u8,
+    pub enemy_type: u8,
+    pub hp: u8,
+    /// `ENEMY_ROUTINE` - `$06` (2 rounds of explosions) or `$09` (one
+    /// round), overwritten *after* `initialize_enemy`'s own `routine=1`
+    /// default, unlike every other spawn helper in this crate.
+    pub routine: u8,
+    pub fields: EnemyClearFields,
+}
+
+/// Native port of `create_explosion_sequence` (`$eabd`) - the shared
+/// core every real caller below falls into: claims a slot, initializes
+/// it, then overwrites `ENEMY_ROUTINE`/`ENEMY_SPRITES`/`ENEMY_STATE_
+/// WIDTH`/position with the given explosion parameters. `ENEMY_
+/// ATTRIBUTES` is left at `initialize_enemy`'s own zeroed default - real
+/// ASM never touches it here.
+pub fn create_explosion_sequence(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    routine: u8,
+    explosion_type: u8,
+    x_pos: u8,
+    y_pos: u8,
+) -> Option<CreatedExplosionEnemy> {
+    let slot = find_next_enemy_slot(enemy_routine)?;
+    let init = initialize_enemy(prg_rom, ENEMY_TYPE_EXPLOSION_SENSOR, current_level);
+    let mut fields = init.fields;
+    fields.sprites = 1;
+    fields.state_width = explosion_type;
+    fields.y_pos = y_pos;
+    fields.x_pos = x_pos;
+    Some(CreatedExplosionEnemy { slot, enemy_type: ENEMY_TYPE_EXPLOSION_SENSOR, hp: init.hp, routine, fields })
+}
+
+/// Native port of `create_explosion_a` (`$eab9`) - `create_explosion_
+/// sequence` with `ENEMY_ROUTINE` fixed to `$06` (2 rounds of
+/// explosions).
+pub fn create_explosion_a(prg_rom: &[u8], enemy_routine: &[u8; ENEMY_SLOT_COUNT], current_level: u8, explosion_type: u8, x_pos: u8, y_pos: u8) -> Option<CreatedExplosionEnemy> {
+    create_explosion_sequence(prg_rom, enemy_routine, current_level, 0x06, explosion_type, x_pos, y_pos)
+}
+
+/// Native port of `create_enemy_for_explosion` (`$eab7`) - [`create_
+/// explosion_a`] with `explosion_type` fixed to `$08`.
+pub fn create_enemy_for_explosion(prg_rom: &[u8], enemy_routine: &[u8; ENEMY_SLOT_COUNT], current_level: u8, x_pos: u8, y_pos: u8) -> Option<CreatedExplosionEnemy> {
+    create_explosion_a(prg_rom, enemy_routine, current_level, 0x08, x_pos, y_pos)
+}
+
+/// Native port of `create_two_explosion_89` (`$eab3`) - [`create_
+/// explosion_a`] with `explosion_type` fixed to `$89`.
+pub fn create_two_explosion_89(prg_rom: &[u8], enemy_routine: &[u8; ENEMY_SLOT_COUNT], current_level: u8, x_pos: u8, y_pos: u8) -> Option<CreatedExplosionEnemy> {
+    create_explosion_a(prg_rom, enemy_routine, current_level, 0x89, x_pos, y_pos)
+}
+
+/// [`play_explosion_sound`]'s real destruction sound code (`sound_19`) -
+/// same real sound code [`enemy_routine_init_explosion`] can also play,
+/// coincidentally.
+const PLAY_EXPLOSION_SOUND_CODE: u8 = 0x19;
+
+/// The full result of one [`play_explosion_sound`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayExplosionSoundResult {
+    /// Always `$19` - see this module's own doc comment on why `play_
+    /// sound` itself isn't ported.
+    pub sound: u8,
+    pub explosion: Option<CreatedExplosionEnemy>,
+    /// `ENEMY_ATTRIBUTES & 7` - the specific weapon item type to create,
+    /// written back to the *calling* enemy's own slot (real ASM: `sta
+    /// ENEMY_ATTRIBUTES,x`, not a new enemy).
+    pub attributes: u8,
+    /// [`crate::enemy::enemy_clear::clear_sprite_and_pt_3`]'s own output -
+    /// the fields it zeroes, applied to the *calling* enemy's own slot.
+    pub cleared: EnemyClearFields,
+    /// Always `1` - `ENEMY_ROUTINE`, matching `weapon_item_routine_ptr_
+    /// tbl`'s own off-by-one convention.
+    pub routine: u8,
+    /// Always `0` - `ENEMY_TYPE`, converting the calling enemy's own
+    /// slot into a weapon item drop in place.
+    pub enemy_type: u8,
+}
+
+/// Native port of `play_explosion_sound` (`$82d4`) - plays the
+/// destruction sound, spawns a 2-round `$89`-type explosion at the
+/// calling enemy's own position (`set_08_09_to_enemy_pos`'s zero-offset
+/// case), then converts the calling enemy's own slot in place into a
+/// weapon item drop. `enemy_attributes` here is whatever the real ASM's
+/// `ENEMY_ATTRIBUTES,x` holds *at the point this is called* - real
+/// callers may have already transformed it first (see [`crate::enemy::
+/// jumping_soldier::jumping_soldier_routine_04`]'s own doc comment for
+/// one that does).
+pub fn play_explosion_sound(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_attributes: u8,
+) -> PlayExplosionSoundResult {
+    let explosion = create_two_explosion_89(prg_rom, enemy_routine, current_level, enemy_x_pos, enemy_y_pos);
+    let attributes = enemy_attributes & 0x07;
+    let mut cleared = EnemyClearFields::default();
+    crate::enemy::enemy_clear::clear_sprite_and_pt_3(&mut cleared);
+    PlayExplosionSoundResult { sound: PLAY_EXPLOSION_SOUND_CODE, explosion, attributes, cleared, routine: 1, enemy_type: 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,5 +520,94 @@ mod tests {
         // frame 2 -> new_frame 3, 3 < 4 (max_sprites=4): still animating (would have
         // advanced already if max_sprites were still 3).
         assert!(matches!(r4.outcome, ShowExplosionAOutcome::Animating { .. }));
+    }
+
+    /// Shared property table record for `ENEMY_TYPE_EXPLOSION_SENSOR`
+    /// (`$02 < $10`), same shape as `create_enemy_bullet`'s own fixture.
+    fn synthetic_prg_rom() -> Vec<u8> {
+        let mut rom = vec![0u8; 8 * 0x4000];
+        let ptr_tbl_off = 7 * 0x4000 + (0xEE8D_usize - 0xC000);
+        let shared_table_addr: u16 = 0xEF00;
+        rom[ptr_tbl_off + 0x10..ptr_tbl_off + 0x12].copy_from_slice(&shared_table_addr.to_le_bytes());
+        let record_off = 7 * 0x4000 + (shared_table_addr as usize - 0xC000) + ENEMY_TYPE_EXPLOSION_SENSOR as usize * 4;
+        rom[record_off..record_off + 4].copy_from_slice(&[0x80, 0x00, 0x05, 0x00]);
+        rom
+    }
+
+    #[test]
+    fn create_explosion_sequence_sets_routine_sprites_and_position() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let created = create_explosion_sequence(&rom, &routine, 0, 0x09, 0x08, 0x50, 0x60).unwrap();
+        assert_eq!(created.enemy_type, ENEMY_TYPE_EXPLOSION_SENSOR);
+        assert_eq!(created.routine, 0x09);
+        assert_eq!(created.hp, 0x05);
+        assert_eq!(created.fields.sprites, 1);
+        assert_eq!(created.fields.state_width, 0x08);
+        assert_eq!(created.fields.x_pos, 0x50);
+        assert_eq!(created.fields.y_pos, 0x60);
+        assert_eq!(created.fields.attributes, 0); // never touched
+    }
+
+    #[test]
+    fn create_explosion_sequence_returns_none_without_a_free_slot() {
+        let rom = synthetic_prg_rom();
+        let full = [1u8; ENEMY_SLOT_COUNT];
+        assert_eq!(create_explosion_sequence(&rom, &full, 0, 0x09, 0x08, 0x50, 0x60), None);
+    }
+
+    #[test]
+    fn create_explosion_a_fixes_routine_to_6() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let created = create_explosion_a(&rom, &routine, 0, 0x89, 0x50, 0x60).unwrap();
+        assert_eq!(created.routine, 0x06);
+        assert_eq!(created.fields.state_width, 0x89);
+    }
+
+    #[test]
+    fn create_enemy_for_explosion_fixes_type_to_8() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let created = create_enemy_for_explosion(&rom, &routine, 0, 0x50, 0x60).unwrap();
+        assert_eq!(created.fields.state_width, 0x08);
+        assert_eq!(created.routine, 0x06);
+    }
+
+    #[test]
+    fn create_two_explosion_89_fixes_type_to_0x89() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let created = create_two_explosion_89(&rom, &routine, 0, 0x50, 0x60).unwrap();
+        assert_eq!(created.fields.state_width, 0x89);
+        assert_eq!(created.routine, 0x06);
+    }
+
+    #[test]
+    fn play_explosion_sound_composes_explosion_weapon_type_and_clear() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let r = play_explosion_sound(&rom, &routine, 0, 0x50, 0x60, 0b0000_0101);
+        assert_eq!(r.sound, 0x19);
+        assert_eq!(r.attributes, 0x05); // 0b101 & 7
+        assert_eq!(r.routine, 1);
+        assert_eq!(r.enemy_type, 0);
+        let explosion = r.explosion.unwrap();
+        assert_eq!(explosion.fields.state_width, 0x89);
+        assert_eq!(explosion.fields.x_pos, 0x50);
+        assert_eq!(explosion.fields.y_pos, 0x60);
+        assert_eq!(explosion.routine, 0x06);
+        // clear_sprite_and_pt_3's own output, cross-checked directly.
+        let mut expected_cleared = EnemyClearFields::default();
+        crate::enemy::enemy_clear::clear_sprite_and_pt_3(&mut expected_cleared);
+        assert_eq!(r.cleared, expected_cleared);
+    }
+
+    #[test]
+    fn play_explosion_sound_masks_attributes_to_the_low_3_bits() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let r = play_explosion_sound(&rom, &routine, 0, 0x50, 0x60, 0b1111_1111);
+        assert_eq!(r.attributes, 0x07);
     }
 }

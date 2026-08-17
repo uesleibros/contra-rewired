@@ -1,28 +1,35 @@
 //! Native port of the "jumping soldier" enemy type's ($16) own `_00`/
-//! `_01` table entries (`src/bank0.asm`, `$9380`/`$93a5`) - the other 3
-//! entries of `jumping_soldier_routine_ptr_tbl` this type shares with the
-//! rest of the indoor family are already ported in [`crate::enemy::
-//! indoor_soldier`]/[`crate::enemy::enemy_explosion`]. `jumping_soldier_
-//! routine_04` ("soldier destroyed, if red soldier play explosion and
-//! create weapon item") is **not yet ported** - it needs `play_explosion_
-//! sound`, which itself composes `create_two_explosion_89` and a weapon-
-//! item-creation chain, none of which exist in this crate yet; deferred
-//! to a future pass rather than guessed at.
+//! `_01`/`_04` table entries (`src/bank0.asm`, `$9380`/`$93a5`/`$9437`) -
+//! the other 3 entries of `jumping_soldier_routine_ptr_tbl` this type
+//! shares with the rest of the indoor family are already ported in
+//! [`crate::enemy::indoor_soldier`]/[`crate::enemy::enemy_explosion`].
 //!
 //! ## The "red" jumping soldier
 //!
 //! `ENEMY_ATTRIBUTES` bit 1 marks a jumping soldier as the level's
-//! special "red" one (drops a weapon item on death, once
-//! `jumping_soldier_routine_04` is ported). [`jumping_soldier_routine_00`]
-//! only lets the *first* jumping soldier spawned after `INDOOR_ENEMY_
-//! ATTACK_COUNT` has advanced past its first round actually keep that
-//! bit - every other candidate (round 0, or a red one already created
-//! this screen) gets it silently cleared. A red jumping soldier also
-//! never fires bullets in [`jumping_soldier_routine_01`] (real ASM: bit 1
-//! set skips the firing check unconditionally, real comment gives no
-//! reason - ported as-is).
+//! special "red" one (drops a weapon item on death - see [`jumping_
+//! soldier_routine_04`]). [`jumping_soldier_routine_00`] only lets the
+//! *first* jumping soldier spawned after `INDOOR_ENEMY_ATTACK_COUNT` has
+//! advanced past its first round actually keep that bit - every other
+//! candidate (round 0, or a red one already created this screen) gets it
+//! silently cleared. A red jumping soldier also never fires bullets in
+//! [`jumping_soldier_routine_01`] (real ASM: bit 1 set skips the firing
+//! check unconditionally, real comment gives no reason - ported as-is).
+//!
+//! ## `jumping_soldier_routine_04`'s double shift before `play_
+//! explosion_sound` reads `ENEMY_ATTRIBUTES` again
+//!
+//! Real ASM: `lsr ENEMY_ATTRIBUTES,x; lsr ENEMY_ATTRIBUTES,x` (an
+//! in-place read-modify-write, twice) runs *before* the tail-jump into
+//! [`crate::enemy::enemy_explosion::play_explosion_sound`], which itself
+//! reads `ENEMY_ATTRIBUTES,x` again and masks it to the low 3 bits for
+//! the weapon item type - so the real weapon type ends up `(original_
+//! attributes >> 2) & 7`, not `original_attributes & 7`. This port
+//! threads that already-shifted value through explicitly rather than
+//! re-deriving it inside `play_explosion_sound` itself.
 
 use crate::enemy::create_enemy_bullet::{aim_and_create_enemy_bullet, CreatedBullet};
+use crate::enemy::enemy_explosion::{play_explosion_sound, PlayExplosionSoundResult};
 use crate::enemy::enemy_routine_transition::{advance_enemy_routine, EnemyRoutineUpdate};
 use crate::enemy::enemy_slots::ENEMY_SLOT_COUNT;
 use crate::enemy::indoor_soldier::{apply_enemy_velocity_set_bg_priority, init_indoor_enemy_pos_and_vel, ApplyEnemyVelocityResult, InitIndoorEnemyPosAndVelResult};
@@ -199,20 +206,67 @@ pub fn jumping_soldier_routine_01(
     JumpingSoldierRoutine01Result { sprites, sprite_attr, outcome }
 }
 
+/// The real branch [`jumping_soldier_routine_04`] takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpingSoldierRoutine04Outcome {
+    /// Not a red soldier, outside the `$64..$9c` X range, or `ENEMY_
+    /// ATTRIBUTES` bit 7 was set (real comment: "not sure when this
+    /// happens" - ported as-is) - just advances to the next routine.
+    AdvancedOnly(EnemyRoutineUpdate),
+    /// Red soldier, in range, bit 7 clear - explodes and drops a weapon
+    /// item. See this module's doc comment for why `play_result.
+    /// attributes` reflects the already-shifted value, not a fresh `&7`
+    /// of the original.
+    ExplodedAndDroppedWeapon {
+        /// `ENEMY_ATTRIBUTES` after the real double `lsr` (`>> 2`).
+        attributes_after_shift: u8,
+        play_result: PlayExplosionSoundResult,
+    },
+}
+
+/// Native port of `jumping_soldier_routine_04` (`$9437`) - "soldier
+/// destroyed, if red soldier play explosion and create weapon item".
+pub fn jumping_soldier_routine_04(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_attributes: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    current_routine: u8,
+) -> JumpingSoldierRoutine04Outcome {
+    let is_red = enemy_attributes & RED_SOLDIER_BIT != 0;
+    let in_range = enemy_x_pos >= 0x64 && enemy_x_pos < 0x9C;
+    let bit7_clear = enemy_attributes & 0x80 == 0;
+
+    if !is_red || !in_range || !bit7_clear {
+        return JumpingSoldierRoutine04Outcome::AdvancedOnly(advance_enemy_routine(current_routine));
+    }
+
+    let attributes_after_shift = enemy_attributes >> 2;
+    let play_result = play_explosion_sound(prg_rom, enemy_routine, current_level, enemy_x_pos, enemy_y_pos, attributes_after_shift);
+
+    JumpingSoldierRoutine04Outcome::ExplodedAndDroppedWeapon { attributes_after_shift, play_result }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Same shape as `create_enemy_bullet`'s own synthetic-ROM test
-    /// fixture: a shared property-table pointer with a recognizable
-    /// record at enemy_type=1's (bullets') offset.
+    /// fixture: a shared property-table pointer with recognizable
+    /// records at enemy_type=1's (bullets', used by `routine_01`'s own
+    /// firing test) and enemy_type=2's (`ENEMY_TYPE_EXPLOSION_SENSOR`,
+    /// used by `routine_04`'s `play_explosion_sound` chain) offsets.
     fn synthetic_prg_rom() -> Vec<u8> {
         let mut rom = vec![0u8; 8 * 0x4000];
         let ptr_tbl_off = 7 * 0x4000 + (0xEE8D_usize - 0xC000);
         let shared_table_addr: u16 = 0xEF00;
         rom[ptr_tbl_off + 0x10..ptr_tbl_off + 0x12].copy_from_slice(&shared_table_addr.to_le_bytes());
-        let record_off = 7 * 0x4000 + (shared_table_addr as usize - 0xC000) + 4;
-        rom[record_off..record_off + 4].copy_from_slice(&[0x80, 0x00, 0x01, 0x00]);
+        let bullet_off = 7 * 0x4000 + (shared_table_addr as usize - 0xC000) + 1 * 4;
+        rom[bullet_off..bullet_off + 4].copy_from_slice(&[0x80, 0x00, 0x01, 0x00]);
+        let explosion_off = 7 * 0x4000 + (shared_table_addr as usize - 0xC000) + 0x02 * 4;
+        rom[explosion_off..explosion_off + 4].copy_from_slice(&[0x80, 0x00, 0x05, 0x00]);
         rom
     }
 
@@ -330,5 +384,56 @@ mod tests {
             }
             other => panic!("expected Jumping, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn routine_04_non_red_just_advances() {
+        let rom = synthetic_prg_rom();
+        let r = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0x00, 0x80, 0x6D, 5);
+        assert_eq!(r, JumpingSoldierRoutine04Outcome::AdvancedOnly(advance_enemy_routine(5)));
+    }
+
+    #[test]
+    fn routine_04_red_but_outside_x_range_just_advances() {
+        let rom = synthetic_prg_rom();
+        let too_far_left = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0x02, 0x50, 0x6D, 5);
+        assert_eq!(too_far_left, JumpingSoldierRoutine04Outcome::AdvancedOnly(advance_enemy_routine(5)));
+        let too_far_right = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0x02, 0xA0, 0x6D, 5);
+        assert_eq!(too_far_right, JumpingSoldierRoutine04Outcome::AdvancedOnly(advance_enemy_routine(5)));
+    }
+
+    #[test]
+    fn routine_04_red_with_bit_7_set_just_advances() {
+        let rom = synthetic_prg_rom();
+        let r = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0b1000_0010, 0x80, 0x6D, 5);
+        assert_eq!(r, JumpingSoldierRoutine04Outcome::AdvancedOnly(advance_enemy_routine(5)));
+    }
+
+    #[test]
+    fn routine_04_red_in_range_explodes_and_shifts_attributes_by_2() {
+        let rom = synthetic_prg_rom();
+        // attrs = 0b0001_0110 (0x16): red bit (bit1) set, bit7 clear.
+        let r = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0b0001_0110, 0x80, 0x6D, 5);
+        match r {
+            JumpingSoldierRoutine04Outcome::ExplodedAndDroppedWeapon { attributes_after_shift, play_result } => {
+                assert_eq!(attributes_after_shift, 0b0001_0110 >> 2);
+                assert_eq!(play_result.attributes, (0b0001_0110_u8 >> 2) & 0x07);
+                assert_eq!(play_result.routine, 1);
+                assert_eq!(play_result.enemy_type, 0);
+                let explosion = play_result.explosion.unwrap();
+                assert_eq!(explosion.fields.x_pos, 0x80);
+                assert_eq!(explosion.fields.y_pos, 0x6D);
+            }
+            other => panic!("expected ExplodedAndDroppedWeapon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_04_x_range_is_exclusive_on_the_right_edge() {
+        let rom = synthetic_prg_rom();
+        let at_left_edge = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0x02, 0x64, 0x6D, 5);
+        assert!(matches!(at_left_edge, JumpingSoldierRoutine04Outcome::ExplodedAndDroppedWeapon { .. }));
+        let at_right_edge = jumping_soldier_routine_04(&rom, &[0; ENEMY_SLOT_COUNT], 0, 0x02, 0x9C, 0x6D, 5);
+        assert_eq!(at_right_edge, JumpingSoldierRoutine04Outcome::AdvancedOnly(advance_enemy_routine(5)));
     }
 }
