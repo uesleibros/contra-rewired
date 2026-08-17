@@ -1207,7 +1207,32 @@ replacement for its real 6502 code, cycle for cycle.
       routine_00` above (this enemy type isn't present in the current
       scripted playthrough). Not yet integrated live, same status as
       every routine above.
-- [ ] Everything else, logic side. Fifty-one routines out of what's
+- [x] **`red_blue_soldier::red_soldier_routine_01` / `red_soldier_routine_02`**
+      (`crates/contra-native/src/enemy/red_blue_soldier.rs`) - completes
+      the red soldier's own routine table (it shares entry 0, `red_blue_
+      soldier_routine_00`, and the 2 running/bg-priority helpers, with
+      the blue soldier, all ported above). `red_soldier_routine_01`
+      (`$a266`-`$a29f`) runs across the screen, then once inside a real X
+      trigger range checks real proximity to a player - with a minimum
+      attack distance itself picked from `ENEMY_ATTRIBUTES` bit 1 (`$10`
+      or `$30`, not a single fixed value) - before committing to fire.
+      `red_soldier_routine_02` (`$a2bb`-`$a2fd`) fires up to 3 bullets via
+      the already-verified `aim_and_create_enemy_bullet`, one every `$30`
+      frames, stripping a recoil sprite-attribute bit at one specific
+      real point in the cycle (`ENEMY_ATTACK_DELAY == $2c` exactly) before
+      returning to `red_soldier_routine_01` once all 3 are spent.
+      `play_sound`-style non-port: `aim_and_create_enemy_bullet` was
+      already ported in an earlier session and needed no changes.
+      Unit-tested (9 new tests: `red_soldier_routine_01`'s already-fired
+      short-circuit, both X-range exits, the attack commit, and the bit-
+      1-driven distance widening; `red_soldier_routine_02`'s exact-`$2c`
+      recoil strip, the plain-wait no-op case, a successful bullet fire,
+      and the all-bullets-fired transition).
+      **Live verification attempted but had 0 real hits for both**
+      across 25000-frame sessions - same reason as the rest of this
+      enemy family. Not yet integrated live, same status as every
+      routine above.
+- [ ] Everything else, logic side. Fifty-three routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

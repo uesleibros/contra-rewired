@@ -12,13 +12,16 @@
 //! init state ([`blue_soldier_routine_01`]/[`_02`]/[`_03`]: run across
 //! the screen, jump-attack windup, then fall) and the 2 small helpers
 //! both blue *and* red soldiers share ([`red_blue_soldier_set_run_frame`]/
-//! [`red_blue_soldier_set_bg_priority`]) - the red soldier's own routines
-//! (`red_soldier_routine_01`/`02`, not yet ported) reuse these same two
-//! helpers too.
+//! [`red_blue_soldier_set_bg_priority`]) - the red soldier's own routines,
+//! [`red_soldier_routine_01`]/[`_02`], reuse these same two helpers too.
 
+use crate::enemy::create_enemy_bullet::{aim_and_create_enemy_bullet, CreatedBullet};
 use crate::enemy::enemy_collision_flags::enable_enemy_collision;
 use crate::enemy::enemy_position_utils::add_10_to_enemy_y_fract_vel;
-use crate::enemy::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, DelayedRoutineUpdate, EnemyRoutineUpdate};
+use crate::enemy::enemy_routine_transition::{
+    advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate,
+};
+use crate::enemy::enemy_slots::ENEMY_SLOT_COUNT;
 use crate::enemy::player_enemy_distance::player_enemy_x_dist;
 use crate::enemy::update_enemy_pos::{update_enemy_pos, UpdatedEnemyPos};
 
@@ -287,6 +290,189 @@ pub fn blue_soldier_routine_03(
     BlueSoldierRoutine03Result { sprites, animation_delay, y_velocity, position }
 }
 
+/// The real, branchy result of one [`red_soldier_routine_01`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedSoldierRoutine01Outcome {
+    /// `ENEMY_VAR_2` already nonzero - already fired once, just keeps
+    /// running off screen, no further checks this call.
+    AlreadyFired,
+    /// Outside the trigger X range, or too far from every player once
+    /// inside it.
+    StillRunning,
+    /// Close enough to a player: commits to firing, advances to `red_
+    /// soldier_routine_02`.
+    Attack { var_1: u8, attack_delay: u8, routine_update: EnemyRoutineUpdate },
+}
+
+/// The full result of one [`red_soldier_routine_01`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedSoldierRoutine01Result {
+    pub enemy_frame: u8,
+    /// `ENEMY_SPRITES` - `$8f` (facing the player) on the `Attack`
+    /// outcome, overriding the run-animation sprite that was already
+    /// computed and stored earlier in the same call; the plain run
+    /// sprite (`enemy_frame + $8c`) on every other outcome.
+    pub sprites: u8,
+    pub sprite_attr: u8,
+    pub position: UpdatedEnemyPos,
+    pub outcome: RedSoldierRoutine01Outcome,
+}
+
+/// Native port of `red_soldier_routine_01` (`$a266`) - "run across
+/// screen, once past trigger point, see if close to player, if so
+/// advance routine to fire at player; if already fired from `red_
+/// soldier_routine_02`, just continue running off screen". The real
+/// minimum attack distance is itself picked from `ENEMY_ATTRIBUTES` bit
+/// 1 (`$10` or `$30`), not a single fixed value.
+#[allow(clippy::too_many_arguments)]
+pub fn red_soldier_routine_01(
+    enemy_frame: u8,
+    frame_counter: u8,
+    enemy_attributes: u8,
+    enemy_var_2: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    enemy_x_pos: u8,
+    x_vel_accum: u8,
+    x_vel_fract: u8,
+    x_vel_fast: u8,
+    enemy_y_pos: u8,
+    y_vel_accum: u8,
+    y_vel_fract: u8,
+    y_vel_fast: u8,
+    sprite_x_pos: [u8; 2],
+    player_state: [u8; 2],
+    current_routine: u8,
+) -> RedSoldierRoutine01Result {
+    let new_frame = red_blue_soldier_set_run_frame(frame_counter, enemy_frame);
+    let run_sprite = new_frame.wrapping_add(0x8C);
+    let sprite_attr_base = if enemy_attributes & 0x01 == 0 { 0x46 } else { 0x06 };
+    let sprite_attr = red_blue_soldier_set_bg_priority(enemy_x_pos, sprite_attr_base);
+
+    let position = update_enemy_pos(
+        level_scrolling_type,
+        frame_scroll,
+        enemy_x_pos,
+        x_vel_accum,
+        x_vel_fract,
+        x_vel_fast,
+        enemy_y_pos,
+        y_vel_accum,
+        y_vel_fract,
+        y_vel_fast,
+    );
+
+    let outcome = if enemy_var_2 != 0 {
+        RedSoldierRoutine01Outcome::AlreadyFired
+    } else {
+        let updated_x = position.x.pos;
+        if updated_x >= 0xD8 || updated_x < 0x28 {
+            RedSoldierRoutine01Outcome::StillRunning
+        } else {
+            let min_dist = if enemy_attributes & 0x02 == 0 { 0x10 } else { 0x30 };
+            let closest = player_enemy_x_dist(sprite_x_pos, updated_x, player_state);
+            if closest.distance >= min_dist {
+                RedSoldierRoutine01Outcome::StillRunning
+            } else {
+                let routine_update = advance_enemy_routine(current_routine);
+                RedSoldierRoutine01Outcome::Attack { var_1: 0x03, attack_delay: 0x10, routine_update }
+            }
+        }
+    };
+
+    let sprites = match outcome {
+        RedSoldierRoutine01Outcome::Attack { .. } => 0x8F,
+        _ => run_sprite,
+    };
+
+    RedSoldierRoutine01Result { enemy_frame: new_frame, sprites, sprite_attr, position, outcome }
+}
+
+/// The result of one [`red_soldier_routine_02`] call's `Fired` outcome -
+/// a bullet spawn attempt via the already-verified [`aim_and_create_
+/// enemy_bullet`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedSoldierRoutine02FiredResult {
+    pub sprites: u8,
+    pub var_1: u8,
+    pub attack_delay: u8,
+    pub sprite_attr: u8,
+    pub bullet: Option<CreatedBullet>,
+}
+
+/// The real, branchy result of one [`red_soldier_routine_02`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedSoldierRoutine02Outcome {
+    /// Attack delay hadn't elapsed. `sprite_attr` is `Some` only on the
+    /// real, specific case the delay lands on exactly `$2c` (a fixed
+    /// point partway through the recoil animation) - strips the recoil
+    /// sprite-attribute bit.
+    Waiting { attack_delay: u8, sprite_attr: Option<u8> },
+    /// Delay elapsed and bullets remain: fires one.
+    Fired(RedSoldierRoutine02FiredResult),
+    /// Delay elapsed and `ENEMY_VAR_1` just went negative (all bullets
+    /// fired): marks the soldier as having fired and returns to `red_
+    /// soldier_routine_01` to keep running off screen.
+    AllFired { var_2: u8, routine_update: EnemyRoutineUpdate },
+}
+
+/// Native port of `red_soldier_routine_02` (`$a2bb`) - "fire `ENEMY_
+/// VAR_1` times and then go back to `red_soldier_routine_01`".
+#[allow(clippy::too_many_arguments)]
+pub fn red_soldier_routine_02(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_attack_flag: u8,
+    enemy_attack_delay: u8,
+    enemy_var_1: u8,
+    enemy_var_2: u8,
+    enemy_sprite_attr: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+    current_routine: u8,
+) -> RedSoldierRoutine02Outcome {
+    let delay = enemy_attack_delay.wrapping_sub(1);
+    if delay != 0 {
+        let sprite_attr = if delay == 0x2C { Some(enemy_sprite_attr & 0xF7) } else { None };
+        return RedSoldierRoutine02Outcome::Waiting { attack_delay: delay, sprite_attr };
+    }
+
+    let sprites = 0x90;
+    let var_1 = enemy_var_1.wrapping_sub(1);
+    if (var_1 as i8) < 0 {
+        let var_2 = enemy_var_2.wrapping_add(1);
+        let routine_update = set_enemy_routine_to_a(current_routine, 0x02);
+        return RedSoldierRoutine02Outcome::AllFired { var_2, routine_update };
+    }
+
+    let attack_delay = 0x30;
+    let sprite_attr = enemy_sprite_attr | 0x08;
+    let closest = player_enemy_x_dist(sprite_x_pos, enemy_x_pos, player_state);
+    let bullet = aim_and_create_enemy_bullet(
+        prg_rom,
+        enemy_routine,
+        current_level,
+        enemy_attack_flag,
+        0x00,
+        0x04,
+        enemy_y_pos,
+        enemy_x_pos,
+        closest.player_index,
+        0,
+        0,
+        player_state,
+        sprite_y_pos,
+        sprite_x_pos,
+        level_location_type,
+    );
+    RedSoldierRoutine02Outcome::Fired(RedSoldierRoutine02FiredResult { sprites, var_1, attack_delay, sprite_attr, bullet })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +601,89 @@ mod tests {
         let r = blue_soldier_routine_03(0x05, 0, 0x00, 0x50, 0, 0, 0, 0x60, 0, 0x00, 0x10);
         assert_eq!(r.sprites, 0x8A);
         assert_eq!(r.animation_delay, 0x04);
+    }
+
+    fn synthetic_prg_rom() -> Vec<u8> {
+        // Same shape as `create_enemy_bullet`'s own synthetic-ROM test
+        // fixture: a shared property-table pointer with a recognizable
+        // record at enemy_type=1's (bullets') offset.
+        let mut rom = vec![0u8; 8 * 0x4000];
+        let ptr_tbl_off = 7 * 0x4000 + (0xEE8D_usize - 0xC000);
+        let shared_table_addr: u16 = 0xEF00;
+        rom[ptr_tbl_off + 0x10..ptr_tbl_off + 0x12].copy_from_slice(&shared_table_addr.to_le_bytes());
+        let record_off = 7 * 0x4000 + (shared_table_addr as usize - 0xC000) + 4;
+        rom[record_off..record_off + 4].copy_from_slice(&[0x80, 0x00, 0x01, 0x00]);
+        rom
+    }
+
+    #[test]
+    fn routine_01_already_fired_skips_every_other_check() {
+        let r = red_soldier_routine_01(0x00, 0x00, 0x00, 0x01, 0, 0x00, 0x50, 0, 0, 0x00, 0x60, 0, 0, 0, [0, 0], [0, 0], 5);
+        assert_eq!(r.outcome, RedSoldierRoutine01Outcome::AlreadyFired);
+    }
+
+    #[test]
+    fn routine_01_still_running_outside_trigger_range() {
+        let r = red_soldier_routine_01(0x00, 0x00, 0x00, 0x00, 0, 0x00, 0x50, 0, 0, 0xFF, 0x60, 0, 0, 0, [0, 0], [0, 0], 5);
+        assert_eq!(r.outcome, RedSoldierRoutine01Outcome::StillRunning);
+    }
+
+    #[test]
+    fn routine_01_attacks_when_close_enough_and_overrides_the_sprite() {
+        // attrs bit1=0 -> min_dist=0x10; player at 0x55, enemy ends up at 0x50 -> dist=5 < 0x10.
+        let r = red_soldier_routine_01(0x00, 0x00, 0x00, 0x00, 0, 0x00, 0x50, 0, 0, 0x00, 0x60, 0, 0, 0, [0x55, 0x00], [1, 0], 5);
+        assert_eq!(r.sprites, 0x8F);
+        match r.outcome {
+            RedSoldierRoutine01Outcome::Attack { var_1, attack_delay, routine_update } => {
+                assert_eq!(var_1, 0x03);
+                assert_eq!(attack_delay, 0x10);
+                assert_eq!(routine_update, advance_enemy_routine(5));
+            }
+            other => panic!("expected Attack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_01_min_dist_widens_when_attribute_bit_1_is_set() {
+        // player at distance 0x20: within 0x30 (bit1 set) but not within 0x10 (bit1 clear).
+        let narrow = red_soldier_routine_01(0x00, 0x00, 0x00, 0x00, 0, 0x00, 0x50, 0, 0, 0x00, 0x60, 0, 0, 0, [0x70, 0x00], [1, 0], 5);
+        assert_eq!(narrow.outcome, RedSoldierRoutine01Outcome::StillRunning);
+        let wide = red_soldier_routine_01(0x00, 0x00, 0x02, 0x00, 0, 0x00, 0x50, 0, 0, 0x00, 0x60, 0, 0, 0, [0x70, 0x00], [1, 0], 5);
+        assert!(matches!(wide.outcome, RedSoldierRoutine01Outcome::Attack { .. }));
+    }
+
+    #[test]
+    fn routine_02_waits_and_strips_recoil_exactly_at_0x2c() {
+        let r = red_soldier_routine_02(&synthetic_prg_rom(), &[0u8; ENEMY_SLOT_COUNT], 0, 1, 0x2D, 0x02, 0x00, 0b0000_1000, 0x50, 0x60, [0, 0], [0, 0], [0, 0], 0, 5);
+        assert_eq!(r, RedSoldierRoutine02Outcome::Waiting { attack_delay: 0x2C, sprite_attr: Some(0x00) });
+    }
+
+    #[test]
+    fn routine_02_waits_without_touching_sprite_attr_otherwise() {
+        let r = red_soldier_routine_02(&synthetic_prg_rom(), &[0u8; ENEMY_SLOT_COUNT], 0, 1, 0x05, 0x02, 0x00, 0x00, 0x50, 0x60, [0, 0], [0, 0], [0, 0], 0, 5);
+        assert_eq!(r, RedSoldierRoutine02Outcome::Waiting { attack_delay: 0x04, sprite_attr: None });
+    }
+
+    #[test]
+    fn routine_02_fires_a_bullet_when_bullets_remain() {
+        let mut routine = [1u8; ENEMY_SLOT_COUNT];
+        routine[5] = 0; // free slot
+        let r = red_soldier_routine_02(&synthetic_prg_rom(), &routine, 0, 1, 0x01, 0x02, 0x00, 0x00, 0x50, 0x60, [1, 0], [0, 0], [0x60, 0], 0, 5);
+        match r {
+            RedSoldierRoutine02Outcome::Fired(f) => {
+                assert_eq!(f.sprites, 0x90);
+                assert_eq!(f.var_1, 0x01);
+                assert_eq!(f.attack_delay, 0x30);
+                assert_eq!(f.sprite_attr, 0x08);
+                assert!(f.bullet.is_some());
+            }
+            other => panic!("expected Fired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_02_all_fired_marks_var_2_and_returns_to_routine_01() {
+        let r = red_soldier_routine_02(&synthetic_prg_rom(), &[0u8; ENEMY_SLOT_COUNT], 0, 1, 0x01, 0x00, 0x00, 0x00, 0x50, 0x60, [0, 0], [0, 0], [0, 0], 0, 5);
+        assert_eq!(r, RedSoldierRoutine02Outcome::AllFired { var_2: 0x01, routine_update: set_enemy_routine_to_a(5, 0x02) });
     }
 }

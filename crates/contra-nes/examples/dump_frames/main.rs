@@ -2542,6 +2542,120 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} blue-soldier-routine-03 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_RED_SOLDIER_ROUTINE_01").is_ok() {
+            // VERIFY_RED_SOLDIER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::red_blue_soldier::red_soldier_
+            // routine_01`. Real entry $a266 (switchable bank, gated).
+            // Real exits: `red_soldier_routine_exit` ($a2cf, the
+            // `AlreadyFired`/`StillRunning` outcomes - reached only via
+            // direct branches here, no nested `jsr` shares this address
+            // for this specific routine, so no ambiguity), and the 2
+            // shared exits ($e796/$e813, the `Attack` outcome). $e813 can
+            // still fire early as a nested return from this routine's own
+            // real `jsr update_enemy_pos`'s off-screen removal;
+            // disambiguated the usual way - a nested return lands inside
+            // this routine's own body (`$a266`-`$a2cf`).
+            let mut pending: Option<RedSoldierRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA266 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RedSoldierRoutine01Ctx {
+                            x,
+                            frame: bus.ram[0x568 + x],
+                            frame_counter: bus.ram[0x1A],
+                            attributes: bus.ram[0x5A8 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_accum: bus.ram[0x4D8 + x],
+                            x_fract: bus.ram[0x518 + x],
+                            x_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_accum: bus.ram[0x4C8 + x],
+                            y_fract: bus.ram[0x4F8 + x],
+                            y_fast: bus.ram[0x4E8 + x],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xA2CF | 0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xA266..0xA2CF).contains(&ret) {
+                            // Nested return from this routine's own body
+                            // - not our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_red_soldier_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} red-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_RED_SOLDIER_ROUTINE_02").is_ok() {
+            // VERIFY_RED_SOLDIER_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::red_blue_soldier::red_soldier_
+            // routine_02`. Real entry $a2bb (switchable bank, gated).
+            // Real exits: `red_soldier_routine_exit` ($a2cf, the
+            // `Waiting` outcome - no nested `jsr` before it, no
+            // ambiguity), the 2 shared exits ($e796/$e813, the
+            // `AllFired` outcome via `jmp set_enemy_routine_to_a` -
+            // also no nested `jsr` before it in that specific path, no
+            // ambiguity), and `bullet_gen_exit` ($f32f, the shared real
+            // exit for the entire `create_enemy_bullet_if_attack_
+            // enabled` chain `aim_and_create_enemy_bullet` tail-jumps
+            // into - the `Fired` outcome).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<RedSoldierRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA2BB if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(RedSoldierRoutine02Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attack_flag: bus.ram[0x8E],
+                            attack_delay: bus.ram[0x558 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            sprite_y_pos: [bus.ram[0x31A], bus.ram[0x31B]],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            level_location_type: bus.ram[0x40],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0xA2CF | 0xE796 | 0xE813 | 0xF32F => {
+                        if let Some(ctx) = pending.take() {
+                            verify_red_soldier_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} red-soldier-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
