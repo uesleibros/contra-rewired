@@ -14,13 +14,13 @@
 //! transform like everything else in this crate. This port instead
 //! returns *whether and which* sound code would be triggered
 //! ([`EnemyRoutineInitExplosionResult::sound`]) as plain data, the same
-//! way [`crate::create_enemy_bullet`] returns a bullet's fields rather
+//! way [`crate::enemy::create_enemy_bullet`] returns a bullet's fields rather
 //! than performing the spawn itself - a caller integrating this into
 //! live gameplay is responsible for actually invoking the sound engine.
 
-use crate::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
-use crate::enemy_routine_transition::{set_enemy_delay_adv_routine, DelayedRoutineUpdate};
-use crate::update_enemy_pos::{remove_enemy, RemovedEnemy};
+use crate::enemy::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
+use crate::enemy::enemy_routine_transition::{set_enemy_delay_adv_routine, DelayedRoutineUpdate};
+use crate::enemy::update_enemy_pos::{remove_enemy, RemovedEnemy};
 
 /// `enemy_routine_init_explosion`'s real destruction sound code
 /// (`sound_19`).

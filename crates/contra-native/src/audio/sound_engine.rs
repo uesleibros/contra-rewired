@@ -83,7 +83,7 @@
 //! against `contra-nes`.
 //!
 //! **The volume-envelope path is now real, resolved, and verified** -
-//! `crate::sound_code::PULSE_VOLUME_PTR_TBL`/`pulse_volume_ptr_tbl_entry`/
+//! `crate::audio::sound_code::PULSE_VOLUME_PTR_TBL`/`pulse_volume_ptr_tbl_entry`/
 //! `walk_pulse_volume` (all verified byte-for-byte against the real ROM)
 //! let [`SoundSlot::step_low`]'s sustain path implement `@check_pulse_
 //! volume`'s full branch structure - the envelope-table read
@@ -108,9 +108,9 @@
 //! `trigger()` resets (which the real ROM never does for these slots
 //! either).
 //!
-//! [`decode_low_command`]: crate::sound_code::decode_low_command
+//! [`decode_low_command`]: crate::audio::sound_code::decode_low_command
 
-use crate::sound_code::{bank1_prg_offset, decode_high_command, decode_low_command, HighCommand, LowCommand, Slot};
+use crate::audio::sound_code::{bank1_prg_offset, decode_high_command, decode_low_command, HighCommand, LowCommand, Slot};
 
 /// Global (not per-slot) scratch state that `SOUND_VOL_ENV,4`/`,5`'s
 /// aliasing reads from - see this module's doc comment.
@@ -127,7 +127,7 @@ pub struct SharedScratch {
 /// Where a sustain frame's pulse volume came from this frame - resolved
 /// down to a real `PULSE_VOLUME` value where real ROM data makes that
 /// possible (ported from `@check_pulse_volume`'s full branch structure,
-/// `src/bank1.asm`, using [`crate::sound_code::PULSE_VOLUME_PTR_TBL`]/
+/// `src/bank1.asm`, using [`crate::audio::sound_code::PULSE_VOLUME_PTR_TBL`]/
 /// `pulse_volume_ptr_tbl_entry`/`walk_pulse_volume`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PulseVolumeSource {
@@ -386,7 +386,7 @@ impl SoundSlot {
                 5 => scratch.sound_chnl_reg_offset,
                 _ => unreachable!("SoundSlot only models slots 4 and 5"),
             };
-            let entry_addr = crate::sound_code::pulse_volume_ptr_tbl_entry(prg_rom, vol_env);
+            let entry_addr = crate::audio::sound_code::pulse_volume_ptr_tbl_entry(prg_rom, vol_env);
             let stream_start = bank1_prg_offset(entry_addr);
             let byte = prg_rom[stream_start + self.lvl_pulse_vol_index as usize];
             if byte >= 0xfe {

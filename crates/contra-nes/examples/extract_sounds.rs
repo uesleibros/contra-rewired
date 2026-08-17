@@ -13,7 +13,7 @@
 //! cargo run -p contra-nes --release --example extract_sounds -- <rom>
 //! ```
 
-use contra_native::sound_code::Slot;
+use contra_native::audio::sound_code::Slot;
 
 const SOUND_TABLE_00_PRG_OFFSET: usize = 0x48E8;
 const SOUND_TABLE_00_ENTRIES: usize = 0x5e;
@@ -47,7 +47,7 @@ fn main() {
 
         if first_byte < 0x30 {
             low_count += 1;
-            let all = contra_native::sound_code::walk_low_recursive(&rom.prg_rom, prg_offset);
+            let all = contra_native::audio::sound_code::walk_low_recursive(&rom.prg_rom, prg_offset);
             let (_, top_extent) = all.iter().find(|(off, _)| *off == prg_offset).unwrap();
             println!(
                 "entry {entry:#04x}: LOW  mem={mem_addr:#06x} prg={prg_offset:#06x} top_len={} children={} total_blobs={}",
@@ -58,7 +58,7 @@ fn main() {
         } else {
             high_count += 1;
             let slot = slot_for(byte0);
-            let all = contra_native::sound_code::walk_high_recursive(&rom.prg_rom, prg_offset, slot);
+            let all = contra_native::audio::sound_code::walk_high_recursive(&rom.prg_rom, prg_offset, slot);
             let (_, top_extent) = all.iter().find(|(off, _)| *off == prg_offset).unwrap();
             println!(
                 "entry {entry:#04x}: HIGH mem={mem_addr:#06x} prg={prg_offset:#06x} slot={slot:?} top_len={} children={} total_blobs={}",

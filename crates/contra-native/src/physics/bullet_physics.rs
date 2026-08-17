@@ -208,7 +208,7 @@ const BULLET_FRACT_VEL_TBL: [(u8, u8); 7] = [
 /// quantity (`frac` low byte, `fast` high byte) - the real routine's
 /// `lda #$00 / sec / sbc frac / sta frac / lda #$00 / sbc fast / sta fast`
 /// idiom, a standard chained-borrow 16-bit two's-complement negation.
-/// `pub(crate)` since [`crate::enemy_position_utils::reverse_enemy_x_direction`]
+/// `pub(crate)` since [`crate::enemy::enemy_position_utils::reverse_enemy_x_direction`]
 /// uses the exact same idiom on a different velocity pair.
 pub(crate) fn negate16(frac: u8, fast: u8) -> (u8, u8) {
     let v = ((fast as u16) << 8) | frac as u16;

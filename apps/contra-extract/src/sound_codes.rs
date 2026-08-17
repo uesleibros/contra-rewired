@@ -12,7 +12,7 @@
 //! Plus a plain-text index tying sound codes back to their files. No
 //! emulation involved.
 
-use contra_native::sound_code::Slot;
+use contra_native::audio::sound_code::Slot;
 
 const SOUND_TABLE_00_PRG_OFFSET: usize = 0x48E8;
 const SOUND_TABLE_00_ENTRIES: usize = 0x5e;
@@ -46,11 +46,11 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<(us
 
         let (format, all) = if first_byte < 0x30 {
             low_count += 1;
-            ("LOW", contra_native::sound_code::walk_low_recursive(prg_rom, prg_offset))
+            ("LOW", contra_native::audio::sound_code::walk_low_recursive(prg_rom, prg_offset))
         } else {
             high_count += 1;
             let slot = slot_for(byte0);
-            (if slot == Slot::Noise { "PERCUSSION" } else { "HIGH" }, contra_native::sound_code::walk_high_recursive(prg_rom, prg_offset, slot))
+            (if slot == Slot::Noise { "PERCUSSION" } else { "HIGH" }, contra_native::audio::sound_code::walk_high_recursive(prg_rom, prg_offset, slot))
         };
 
         for (offset, extent) in &all {

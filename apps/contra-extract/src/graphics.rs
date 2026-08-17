@@ -68,11 +68,11 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<(us
 
     for (index, description) in GRAPHIC_DATA_DESCRIPTIONS {
         let name = format!("graphic_data_{index:02x}");
-        let entry = contra_native::graphics::graphic_data_prg_offset(prg_rom, index);
+        let entry = contra_native::world::graphics::graphic_data_prg_offset(prg_rom, index);
         let blob = prg_rom.get(entry.prg_offset..).ok_or_else(|| {
             anyhow::anyhow!("{name}: PRG offset {:#06x} is past the end of this ROM's PRG-ROM ({} bytes)", entry.prg_offset, prg_rom.len())
         })?;
-        let segments = contra_native::graphics::decompress(blob, entry.flip);
+        let segments = contra_native::world::graphics::decompress(blob, entry.flip);
         log::info!("{name} ({description}): {} segment(s){}", segments.len(), if entry.flip { ", flipped" } else { "" });
 
         for (i, segment) in segments.iter().enumerate() {

@@ -13,8 +13,8 @@
 //! cargo run -p contra-nes --release --example emit_data_regions -- <rom> > regions.toml
 //! ```
 
-use contra_native::level::{level_header, screen_prg_offset, LocationType, ScrollingType};
-use contra_native::sound_code::Slot;
+use contra_native::world::level::{level_header, screen_prg_offset, LocationType, ScrollingType};
+use contra_native::audio::sound_code::Slot;
 use std::collections::BTreeSet;
 
 const SOUND_TABLE_00_PRG_OFFSET: usize = 0x48E8;
@@ -85,9 +85,9 @@ fn main() {
         let prg_offset = 0x4000 + (mem_addr as usize & 0x3FFF);
         let first_byte = prg[prg_offset];
         let all = if first_byte < 0x30 {
-            contra_native::sound_code::walk_low_recursive(prg, prg_offset)
+            contra_native::audio::sound_code::walk_low_recursive(prg, prg_offset)
         } else {
-            contra_native::sound_code::walk_high_recursive(prg, prg_offset, slot_for(byte0))
+            contra_native::audio::sound_code::walk_high_recursive(prg, prg_offset, slot_for(byte0))
         };
         for (off, extent) in &all {
             if visited_sound_blobs.insert(*off) {
@@ -97,12 +97,12 @@ fn main() {
     }
 
     // ── Graphics tables (bank 7, fixed) ────────────────────────────────
-    emit(&mut regions, contra_native::graphics::LEVEL_GRAPHIC_DATA_TBL_PRG_OFFSET, LEVEL_COUNT * 2 + 5 * 2); // levels + boss/intro/ending contexts, rounded up
-    emit(&mut regions, contra_native::graphics::GRAPHIC_DATA_PTR_TBL_PRG_OFFSET, GRAPHIC_DATA_ENTRY_COUNT * 3);
+    emit(&mut regions, contra_native::world::graphics::LEVEL_GRAPHIC_DATA_TBL_PRG_OFFSET, LEVEL_COUNT * 2 + 5 * 2); // levels + boss/intro/ending contexts, rounded up
+    emit(&mut regions, contra_native::world::graphics::GRAPHIC_DATA_PTR_TBL_PRG_OFFSET, GRAPHIC_DATA_ENTRY_COUNT * 3);
 
     // ── Palette tables ──────────────────────────────────────────────────
-    emit(&mut regions, contra_native::palette::GAME_PALETTES_PRG_OFFSET, contra_native::palette::GAME_PALETTES_LEN);
-    emit(&mut regions, contra_native::palette::LEVEL_HEADERS_PRG_OFFSET, LEVEL_COUNT * contra_native::palette::LEVEL_HEADER_LEN);
+    emit(&mut regions, contra_native::world::palette::GAME_PALETTES_PRG_OFFSET, contra_native::world::palette::GAME_PALETTES_LEN);
+    emit(&mut regions, contra_native::world::palette::LEVEL_HEADERS_PRG_OFFSET, LEVEL_COUNT * contra_native::world::palette::LEVEL_HEADER_LEN);
 
     // ── Per-level data: graphics blobs, level screens, enemy spawns ────
     let mut visited_graphics_blobs: BTreeSet<usize> = BTreeSet::new();
@@ -117,28 +117,28 @@ fn main() {
 
         for screen_index in 0..header.screen_count {
             let screen_off = screen_prg_offset(prg, &header, screen_index);
-            let len = contra_native::supertile::decompress_screen_len(&prg[screen_off..], expected_len);
+            let len = contra_native::world::supertile::decompress_screen_len(&prg[screen_off..], expected_len);
             emit(&mut regions, screen_off, len);
         }
 
-        for entry in contra_native::graphics::level_graphic_data_entries(prg, level_index) {
+        for entry in contra_native::world::graphics::level_graphic_data_entries(prg, level_index) {
             if visited_graphics_blobs.insert(entry.prg_offset) {
-                let len = contra_native::graphics::decompressed_len(&prg[entry.prg_offset..], entry.flip);
+                let len = contra_native::world::graphics::decompressed_len(&prg[entry.prg_offset..], entry.flip);
                 emit(&mut regions, entry.prg_offset, len);
             }
         }
 
         if header.location_type == LocationType::Outdoor {
-            let ptr_tbl = contra_native::enemy_spawn::level_enemy_screen_ptr_tbl_prg_offset(prg, level_index);
+            let ptr_tbl = contra_native::enemy::enemy_spawn::level_enemy_screen_ptr_tbl_prg_offset(prg, level_index);
             emit(&mut regions, ptr_tbl, header.screen_count * 2);
             for screen_index in 0..header.screen_count {
-                let screen_off = contra_native::enemy_spawn::enemy_screen_prg_offset(prg, ptr_tbl, screen_index);
-                let len = contra_native::enemy_spawn::decompress_outdoor_enemy_screen_len(&prg[screen_off..]);
+                let screen_off = contra_native::enemy::enemy_spawn::enemy_screen_prg_offset(prg, ptr_tbl, screen_index);
+                let len = contra_native::enemy::enemy_spawn::decompress_outdoor_enemy_screen_len(&prg[screen_off..]);
                 emit(&mut regions, screen_off, len);
             }
         }
     }
-    emit(&mut regions, contra_native::enemy_spawn::LEVEL_ENEMY_SCREEN_PTR_PTR_TBL_PRG_OFFSET, LEVEL_COUNT * 2);
+    emit(&mut regions, contra_native::enemy::enemy_spawn::LEVEL_ENEMY_SCREEN_PTR_PTR_TBL_PRG_OFFSET, LEVEL_COUNT * 2);
 
     // Merge overlapping/adjacent same-bank regions so the emitted TOML is
     // compact and doesn't exceed nesrecomp's GAME_CFG_MAX_DATA_REGIONS.

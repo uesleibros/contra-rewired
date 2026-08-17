@@ -13,7 +13,7 @@
 //! `should_remove` flag mirrors the real decision (`ENEMY_X_POS < $08`
 //! horizontally, `ENEMY_Y_POS >= $e8` vertically) but **does not itself
 //! perform the removal** - a caller integrating this port live should
-//! call [`crate::update_enemy_pos::remove_enemy`] when `should_remove`
+//! call [`crate::enemy::update_enemy_pos::remove_enemy`] when `should_remove`
 //! is `true`, exactly like the real ASM's `remove_enemy_far: jmp
 //! remove_enemy` does (that function now lives in the sibling
 //! `update_enemy_pos` module, which shares the same real `remove_enemy`/

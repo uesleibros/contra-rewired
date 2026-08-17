@@ -116,7 +116,7 @@ fn main() {
     let mut decoded_chr = [0u8; 0x2000];
     for (name, offset) in LEVEL_1_GRAPHIC_DATA_PRG_OFFSETS {
         let blob = &rom.prg_rom[offset..];
-        contra_native::graphics::apply_chr_writes(blob, &mut decoded_chr, false);
+        contra_native::world::graphics::apply_chr_writes(blob, &mut decoded_chr, false);
         eprintln!("decoded {name} @ prg[{offset:#06x}]");
     }
     save_chr_sheet(&std::path::Path::new(out_dir).join("decoded_chr.png"), &decoded_chr);
@@ -165,14 +165,14 @@ fn main() {
     // 1's background palette group 0 (read from PRG-ROM, no compression)
     // against the PPU's actual live palette RAM after the same play session.
     assert_eq!(
-        contra_native::palette::NES_MASTER_PALETTE,
+        contra_native::world::palette::NES_MASTER_PALETTE,
         contra_nes::ppu::NES_PALETTE,
         "contra-native's standalone master-palette copy has drifted from contra-nes's"
     );
-    let bg_group_indexes = contra_native::palette::level_palette_group_indexes(&rom.prg_rom, 0);
-    let decoded_bg0 = contra_native::palette::resolve_palette_rgb(&rom.prg_rom, bg_group_indexes[0]);
+    let bg_group_indexes = contra_native::world::palette::level_palette_group_indexes(&rom.prg_rom, 0);
+    let decoded_bg0 = contra_native::world::palette::resolve_palette_rgb(&rom.prg_rom, bg_group_indexes[0]);
     let live_palette = nes.bus.ppu.palette;
-    let live_bg0: [u32; 4] = std::array::from_fn(|i| contra_native::palette::NES_MASTER_PALETTE[(live_palette[i] & 0x3F) as usize]);
+    let live_bg0: [u32; 4] = std::array::from_fn(|i| contra_native::world::palette::NES_MASTER_PALETTE[(live_palette[i] & 0x3F) as usize]);
     if decoded_bg0 == live_bg0 {
         println!("MATCH: decoded level 1 background palette 0 is identical to live PPU palette RAM ($3F00-$3F03).");
     } else {

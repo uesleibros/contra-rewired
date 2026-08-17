@@ -68,9 +68,9 @@ fn abs_diff_with_borrow_flag(target: u8, source: u8) -> (u8, bool) {
 }
 
 /// The real routine's two outputs: `aim_dir` (bits an angle-table lookup
-/// like [`crate::bullet_physics::calc_bullet_velocities`] can consume)
+/// like [`crate::physics::bullet_physics::calc_bullet_velocities`] can consume)
 /// and `quadrant` (the same 0-3 quadrant code
-/// [`crate::create_enemy_bullet::create_enemy_bullet`] takes directly).
+/// [`crate::enemy::create_enemy_bullet::create_enemy_bullet`] takes directly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuadrantAimDir {
     pub aim_dir: u8,

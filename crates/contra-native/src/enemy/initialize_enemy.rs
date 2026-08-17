@@ -1,9 +1,9 @@
 //! Native port of `initialize_enemy` (`src/bank7.asm`, CPU `$ee47`-`$ee79`)
 //! - the universal "set up a freshly-claimed enemy slot" helper almost
 //! every spawn path in the game calls right after finding a free slot
-//! (see [`crate::enemy_slots`]) and setting `ENEMY_TYPE[x]`: sets
+//! (see [`crate::enemy::enemy_slots`]) and setting `ENEMY_TYPE[x]`: sets
 //! `ENEMY_ROUTINE`/`ENEMY_SPRITES` to 1, clears most other per-slot
-//! fields via [`crate::enemy_clear::clear_enemy_pt_2`], then looks up
+//! fields via [`crate::enemy::enemy_clear::clear_enemy_pt_2`], then looks up
 //! `ENEMY_STATE_WIDTH`/`ENEMY_SCORE_COLLISION`/`ENEMY_HP`/`ENEMY_VAR_A`
 //! from a per-(level, enemy-type) property table.
 //!
@@ -34,7 +34,7 @@
 //! `enemy_spawn` already use - and lets live-gameplay verification
 //! (this module's own hook, not prose) be the actual source of truth.
 
-use crate::enemy_clear::{clear_enemy_pt_2, EnemyClearFields};
+use crate::enemy::enemy_clear::{clear_enemy_pt_2, EnemyClearFields};
 
 /// `enemy_prop_ptr_tbl`'s own CPU address (bank 7, fixed at `$c000`-
 /// `$ffff`) - 9 2-byte pointers (levels 1-8, then one shared entry at

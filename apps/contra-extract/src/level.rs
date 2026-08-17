@@ -14,10 +14,10 @@ const SCREEN_ROWS_HORIZONTAL: usize = 7;
 const SCREEN_ROWS_VERTICAL: usize = 8;
 const SCREEN_TILES_W: usize = SCREEN_COLS * 4;
 
-fn screen_rows(scrolling_type: contra_native::level::ScrollingType) -> usize {
+fn screen_rows(scrolling_type: contra_native::world::level::ScrollingType) -> usize {
     match scrolling_type {
-        contra_native::level::ScrollingType::Horizontal => SCREEN_ROWS_HORIZONTAL,
-        contra_native::level::ScrollingType::Vertical => SCREEN_ROWS_VERTICAL,
+        contra_native::world::level::ScrollingType::Horizontal => SCREEN_ROWS_HORIZONTAL,
+        contra_native::world::level::ScrollingType::Vertical => SCREEN_ROWS_VERTICAL,
     }
 }
 
@@ -32,34 +32,34 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usi
 }
 
 fn render_level(prg_rom: &[u8], level_index: usize, out_dir: &std::path::Path) -> anyhow::Result<()> {
-    let header = contra_native::level::level_header(prg_rom, level_index);
+    let header = contra_native::world::level::level_header(prg_rom, level_index);
     let rows = screen_rows(header.scrolling_type);
     let screen_supertiles = SCREEN_COLS * rows;
     let screen_tiles_h = rows * 4;
 
     let mut chr = [0u8; 0x2000];
-    for entry in contra_native::graphics::level_graphic_data_entries(prg_rom, level_index) {
-        contra_native::graphics::apply_chr_writes(&prg_rom[entry.prg_offset..], &mut chr, entry.flip);
+    for entry in contra_native::world::graphics::level_graphic_data_entries(prg_rom, level_index) {
+        contra_native::world::graphics::apply_chr_writes(&prg_rom[entry.prg_offset..], &mut chr, entry.flip);
     }
 
-    let bg_group_indexes = contra_native::palette::level_palette_group_indexes(prg_rom, level_index);
-    let bg_palettes: [[u32; 4]; 4] = std::array::from_fn(|i| contra_native::palette::resolve_palette_rgb(prg_rom, bg_group_indexes[i]));
+    let bg_group_indexes = contra_native::world::palette::level_palette_group_indexes(prg_rom, level_index);
+    let bg_palettes: [[u32; 4]; 4] = std::array::from_fn(|i| contra_native::world::palette::resolve_palette_rgb(prg_rom, bg_group_indexes[i]));
 
     let level_tiles_w = SCREEN_TILES_W * header.screen_count;
     let mut tile_grid = vec![0u8; level_tiles_w * screen_tiles_h];
     let mut palette_grid = vec![0u8; level_tiles_w * screen_tiles_h];
 
     for screen_index in 0..header.screen_count {
-        let offset = contra_native::level::screen_prg_offset(prg_rom, &header, screen_index);
-        let screen_ids = contra_native::supertile::decompress_screen(&prg_rom[offset..], screen_supertiles);
+        let offset = contra_native::world::level::screen_prg_offset(prg_rom, &header, screen_index);
+        let screen_ids = contra_native::world::supertile::decompress_screen(&prg_rom[offset..], screen_supertiles);
         let screen_x_offset = screen_index * SCREEN_TILES_W;
 
         for (i, &supertile_id) in screen_ids.iter().enumerate() {
             let super_col = i % SCREEN_COLS;
             let super_row = i / SCREEN_COLS;
-            let tiles = contra_native::supertile::supertile_tiles(&prg_rom[header.supertile_data_prg_offset..], supertile_id);
-            let attr_byte = contra_native::supertile::supertile_attribute_byte(&prg_rom[header.palette_data_prg_offset..], supertile_id);
-            let quadrants = contra_native::supertile::attribute_quadrants(attr_byte);
+            let tiles = contra_native::world::supertile::supertile_tiles(&prg_rom[header.supertile_data_prg_offset..], supertile_id);
+            let attr_byte = contra_native::world::supertile::supertile_attribute_byte(&prg_rom[header.palette_data_prg_offset..], supertile_id);
+            let quadrants = contra_native::world::supertile::attribute_quadrants(attr_byte);
 
             for local in 0..16 {
                 let local_col = local % 4;

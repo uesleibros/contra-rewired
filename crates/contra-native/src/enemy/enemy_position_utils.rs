@@ -14,7 +14,7 @@
 //! `pos=$63, a=$04` rounds to `$60` first, giving `$64`, not the `$67` a
 //! plain add would).
 
-use crate::bullet_physics::negate16;
+use crate::physics::bullet_physics::negate16;
 
 /// Native port of `add_a_to_enemy_y_pos` (`$eb1f`).
 pub fn add_a_to_enemy_y_pos(a: u8, enemy_y_pos: u8) -> u8 {
@@ -28,7 +28,7 @@ pub fn add_a_to_enemy_x_pos(a: u8, enemy_x_pos: u8) -> u8 {
 
 /// Native port of `add_a_to_enemy_y_fract_vel` (`$eb42`) - adds `a` to
 /// the enemy's Y fractional velocity, carrying into the fast velocity
-/// byte exactly like [`crate::update_enemy_pos`]'s own fixed-point
+/// byte exactly like [`crate::enemy::update_enemy_pos`]'s own fixed-point
 /// integrator.
 pub fn add_a_to_enemy_y_fract_vel(a: u8, y_vel_fract: u8, y_vel_fast: u8) -> (u8, u8) {
     let (new_fract, carry) = y_vel_fract.overflowing_add(a);
@@ -46,7 +46,7 @@ pub fn add_10_to_enemy_y_fract_vel(y_vel_fract: u8, y_vel_fast: u8) -> (u8, u8) 
 /// Native port of `reverse_enemy_x_direction` (`$e91e`) - flips an
 /// enemy's X velocity to the opposite direction (e.g. hitting a wall or
 /// screen edge), the same 16-bit two's-complement negation
-/// [`crate::bullet_physics`] uses for bullet direction flips.
+/// [`crate::physics::bullet_physics`] uses for bullet direction flips.
 pub fn reverse_enemy_x_direction(x_vel_fract: u8, x_vel_fast: u8) -> (u8, u8) {
     negate16(x_vel_fract, x_vel_fast)
 }

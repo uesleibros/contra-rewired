@@ -2,7 +2,7 @@
 //! binary) for `contra_native::sound_engine`: runs real gameplay through
 //! `contra-nes` (triggering real low-format sound effects on slots #$04/
 //! #$05 naturally), and every time a *new* sound_code is triggered on
-//! one of those slots, spins up a fresh `contra_native::sound_engine::
+//! one of those slots, spins up a fresh `contra_native::audio::sound_engine::
 //! SoundSlot`, steps it in lockstep with real frames, and compares its
 //! computed `cfg_low`/`cfg_high`/`period`/`cmd_length` against the real
 //! RAM state at the same point - mechanical, exhaustive verification
@@ -46,7 +46,7 @@
 
 use contra_nes::controller::*;
 use contra_nes::{Mirroring, Nes};
-use contra_native::sound_engine::{SharedScratch, SoundSlot};
+use contra_native::audio::sound_engine::{SharedScratch, SoundSlot};
 
 const SOUND_CODE: u16 = 0x106;
 const SOUND_CMD_LENGTH: u16 = 0x100;

@@ -3,9 +3,9 @@
 //! `set_bullet_velocities`/`bullet_gen_exit`) is the real "spawn an enemy
 //! bullet object" routine, composing three already-ported building
 //! blocks exactly the way the real ASM does:
-//! [`crate::enemy_slots::find_next_enemy_slot`] (claim a slot),
-//! [`crate::initialize_enemy::initialize_enemy`] (set up its baseline
-//! fields), then [`crate::bullet_physics::calc_bullet_velocities`]
+//! [`crate::enemy::enemy_slots::find_next_enemy_slot`] (claim a slot),
+//! [`crate::enemy::initialize_enemy::initialize_enemy`] (set up its baseline
+//! fields), then [`crate::physics::bullet_physics::calc_bullet_velocities`]
 //! (compute and write its velocity) - the first port in this crate
 //! that's *purely* composition of prior, independently live-verified
 //! routines, with no new 6502 control flow of its own beyond a couple of
@@ -15,7 +15,7 @@
 //! callers: [`create_enemy_bullet_angle_a`] (computes the aim quadrant
 //! from a raw angle byte via [`quadrant_from_angle`]) and
 //! [`aim_and_create_enemy_bullet`] (resolves aim by targeting a player,
-//! via [`crate::quadrant_aim_dir`], instead of using a fixed angle).
+//! via [`crate::enemy::quadrant_aim_dir`], instead of using a fixed angle).
 //!
 //! ## `aim_and_create_enemy_bullet`'s live-verification gap, and an
 //! apparently-unreachable branch inside it
@@ -49,7 +49,7 @@
 //!   bits 0-4 (`& 0x1f`, handed to `calc_bullet_velocities`).
 //! - `speed_code` is **saturated** to a max of 7 here (`cmp #$07 / bcc /
 //!   lda #$07`) - not masked. This is a *different, narrower* clamp than
-//!   [`crate::bullet_physics::adjust_bullet_velocity`]'s own internal
+//!   [`crate::physics::bullet_physics::adjust_bullet_velocity`]'s own internal
 //!   `& 0x07`: a value that reaches `adjust_bullet_velocity` through
 //!   *this* caller can never actually be 8 or higher, so it can never
 //!   trigger that function's own wrap-to-0 masking behavior - only a
@@ -70,11 +70,11 @@
 //! the real routine returns) - just not something the literal 6502
 //! caller convention hands back.
 
-use crate::bullet_physics::calc_bullet_velocities;
-use crate::enemy_clear::EnemyClearFields;
-use crate::enemy_slots::{find_next_enemy_slot, ENEMY_SLOT_COUNT};
-use crate::initialize_enemy::initialize_enemy;
-use crate::quadrant_aim_dir::{get_quadrant_aim_dir, get_quadrant_aim_dir_for_player, QUADRANT_AIM_DIR_01};
+use crate::physics::bullet_physics::calc_bullet_velocities;
+use crate::enemy::enemy_clear::EnemyClearFields;
+use crate::enemy::enemy_slots::{find_next_enemy_slot, ENEMY_SLOT_COUNT};
+use crate::enemy::initialize_enemy::initialize_enemy;
+use crate::enemy::quadrant_aim_dir::{get_quadrant_aim_dir, get_quadrant_aim_dir_for_player, QUADRANT_AIM_DIR_01};
 
 /// `ENEMY_TYPE` value real bullets are created with (`bank7.asm`'s own
 /// `lda #$01 ; sta ENEMY_TYPE,x`).
@@ -211,11 +211,11 @@ pub fn create_enemy_bullet_angle_a(
 /// the real ASM's own reuse of `$0a` for two different things depending
 /// on a sign check: bit 7 **clear** means "resolve via player state" -
 /// `aim_target & 1` is the player index, handed straight to
-/// [`crate::quadrant_aim_dir::get_quadrant_aim_dir_for_player`]; bit 7
+/// [`crate::enemy::quadrant_aim_dir::get_quadrant_aim_dir_for_player`]; bit 7
 /// **set** means "aim at an already-known fixed target position"
 /// instead, bypassing player-state resolution entirely and using
 /// `direct_target_y`/`direct_target_x` (the real ASM's own `$0c`/`$0b`)
-/// with [`crate::quadrant_aim_dir::get_quadrant_aim_dir`] directly - the
+/// with [`crate::enemy::quadrant_aim_dir::get_quadrant_aim_dir`] directly - the
 /// path the level 3 dragon boss's arm-orb projectiles take.
 #[allow(clippy::too_many_arguments)]
 pub fn aim_and_create_enemy_bullet(

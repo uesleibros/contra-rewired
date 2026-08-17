@@ -11,30 +11,30 @@
 //! walking sub-path once it's not yet ported. This crate's first
 //! **composed enemy AI states** - every step is a call into an already
 //! independently-verified building block
-//! ([`crate::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos`],
-//! [`crate::update_enemy_pos::remove_enemy`],
-//! [`crate::enemy_position_utils::add_4_to_enemy_y_pos`],
-//! [`crate::enemy_routine_transition::set_enemy_delay_adv_routine`],
-//! [`crate::collision::add_y_to_y_pos_get_bg_collision`],
-//! [`crate::enemy_collision_flags::enable_enemy_collision`]) -
+//! ([`crate::enemy::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos`],
+//! [`crate::enemy::update_enemy_pos::remove_enemy`],
+//! [`crate::enemy::enemy_position_utils::add_4_to_enemy_y_pos`],
+//! [`crate::enemy::enemy_routine_transition::set_enemy_delay_adv_routine`],
+//! [`crate::physics::collision::add_y_to_y_pos_get_bg_collision`],
+//! [`crate::enemy::enemy_collision_flags::enable_enemy_collision`]) -
 //! demonstrating the same real composition the ROM itself uses, no new
 //! arithmetic beyond small bit tests, table lookups, and one real quirk
 //! reproduced exactly: see [`SoldierRoutine01Outcome::DelayNotYetZero`]
 //! for `soldier_routine_01`'s one path that decrements
 //! `ENEMY_ANIMATION_DELAY` twice in a single call.
 
-use crate::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
-use crate::collision::{add_y_to_y_pos_get_bg_collision, check_enemy_collision_solid_bg, get_bg_collision_far, CollisionCode, BG_COLLISION_DATA_LEN};
-use crate::create_enemy_bullet::{create_enemy_bullet_angle_a, CreatedBullet};
-use crate::enemy_collision_flags::{disable_enemy_collision, enable_enemy_collision};
-use crate::enemy_position_utils::{
+use crate::enemy::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
+use crate::physics::collision::{add_y_to_y_pos_get_bg_collision, check_enemy_collision_solid_bg, get_bg_collision_far, CollisionCode, BG_COLLISION_DATA_LEN};
+use crate::enemy::create_enemy_bullet::{create_enemy_bullet_angle_a, CreatedBullet};
+use crate::enemy::enemy_collision_flags::{disable_enemy_collision, enable_enemy_collision};
+use crate::enemy::enemy_position_utils::{
     add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos, add_a_to_enemy_y_fract_vel, add_a_to_enemy_y_pos, reverse_enemy_x_direction,
 };
-use crate::enemy_routine_transition::{
+use crate::enemy::enemy_routine_transition::{
     advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate,
 };
-use crate::enemy_slots::ENEMY_SLOT_COUNT;
-use crate::update_enemy_pos::{
+use crate::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+use crate::enemy::update_enemy_pos::{
     remove_enemy, set_enemy_x_velocity_to_0, set_enemy_y_velocity_to_0, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos, ZeroedVelocity,
 };
 
@@ -113,7 +113,7 @@ pub struct SoldierStoppedYVelocity {
 
 /// Native port of `soldier_stop_y_set_x_velocity` (`$8638`) - sets X
 /// velocity from [`soldier_set_x_velocity`], then zeroes Y velocity via
-/// [`crate::update_enemy_pos::set_enemy_y_velocity_to_0`].
+/// [`crate::enemy::update_enemy_pos::set_enemy_y_velocity_to_0`].
 pub fn soldier_stop_y_set_x_velocity(enemy_var_2: u8, level_scrolling_type: u8) -> SoldierStoppedYVelocity {
     SoldierStoppedYVelocity {
         x_velocity: soldier_set_x_velocity(enemy_var_2, level_scrolling_type),
@@ -567,7 +567,7 @@ const SOLDIER_BULLET_TYPE_TBL: [u8; 2] = [0x06, 0x00];
 /// Native port of `bullet_generation` (`$f2be`) - real ASM is a single
 /// `asl` immediately falling through into `create_enemy_bullet_angle_a`;
 /// this crate already has that routine ported
-/// ([`crate::create_enemy_bullet::create_enemy_bullet_angle_a`]), so this
+/// ([`crate::enemy::create_enemy_bullet::create_enemy_bullet_angle_a`]), so this
 /// is just the one-instruction caller-side transform feeding into it.
 pub fn bullet_generation(bullet_type_and_angle_pre_shift: u8) -> u8 {
     bullet_type_and_angle_pre_shift << 1
@@ -1151,11 +1151,11 @@ mod tests {
     }
 
     /// Test-only helper: sets the `BG_COLLISION_DATA` bits governing
-    /// `(x, y)` to `code`, using [`crate::collision::bg_collision_scratch`]
+    /// `(x, y)` to `code`, using [`crate::physics::collision::bg_collision_scratch`]
     /// to find the right byte/column rather than hand-deriving the
     /// offset formula again.
     fn set_collision_at(data: &mut [u8; BG_COLLISION_DATA_LEN], x: u8, y: u8, code: CollisionCode) {
-        let scratch = crate::collision::bg_collision_scratch(x, y, 0, 0, 0);
+        let scratch = crate::physics::collision::bg_collision_scratch(x, y, 0, 0, 0);
         let shift = match scratch.s12 & 0x03 {
             0 => 6,
             1 => 4,

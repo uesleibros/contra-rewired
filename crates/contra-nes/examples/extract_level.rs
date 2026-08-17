@@ -29,10 +29,10 @@ const SCREEN_ROWS_HORIZONTAL: usize = 7;
 const SCREEN_ROWS_VERTICAL: usize = 8;
 const SCREEN_TILES_W: usize = SCREEN_COLS * 4;
 
-fn screen_rows(scrolling_type: contra_native::level::ScrollingType) -> usize {
+fn screen_rows(scrolling_type: contra_native::world::level::ScrollingType) -> usize {
     match scrolling_type {
-        contra_native::level::ScrollingType::Horizontal => SCREEN_ROWS_HORIZONTAL,
-        contra_native::level::ScrollingType::Vertical => SCREEN_ROWS_VERTICAL,
+        contra_native::world::level::ScrollingType::Horizontal => SCREEN_ROWS_HORIZONTAL,
+        contra_native::world::level::ScrollingType::Vertical => SCREEN_ROWS_VERTICAL,
     }
 }
 
@@ -41,23 +41,23 @@ fn screen_rows(scrolling_type: contra_native::level::ScrollingType) -> usize {
 /// assembled tile grid, screen width in tiles, and each screen's decoded
 /// super-tile ID list (for the live-PPU check level 1 gets).
 fn extract_and_render_level(prg_rom: &[u8], level_index: usize, out_dir: &std::path::Path) -> (Vec<u8>, usize, usize, Vec<Vec<u8>>) {
-    let header = contra_native::level::level_header(prg_rom, level_index);
+    let header = contra_native::world::level::level_header(prg_rom, level_index);
     let screen_rows = screen_rows(header.scrolling_type);
     let screen_supertiles = SCREEN_COLS * screen_rows;
     let screen_tiles_h = screen_rows * 4;
 
     let mut chr = [0u8; 0x2000];
-    for entry in contra_native::graphics::level_graphic_data_entries(prg_rom, level_index) {
-        contra_native::graphics::apply_chr_writes(&prg_rom[entry.prg_offset..], &mut chr, entry.flip);
+    for entry in contra_native::world::graphics::level_graphic_data_entries(prg_rom, level_index) {
+        contra_native::world::graphics::apply_chr_writes(&prg_rom[entry.prg_offset..], &mut chr, entry.flip);
     }
 
-    let bg_group_indexes = contra_native::palette::level_palette_group_indexes(prg_rom, level_index);
-    let bg_palettes: [[u32; 4]; 4] = std::array::from_fn(|i| contra_native::palette::resolve_palette_rgb(prg_rom, bg_group_indexes[i]));
+    let bg_group_indexes = contra_native::world::palette::level_palette_group_indexes(prg_rom, level_index);
+    let bg_palettes: [[u32; 4]; 4] = std::array::from_fn(|i| contra_native::world::palette::resolve_palette_rgb(prg_rom, bg_group_indexes[i]));
 
     let mut all_screen_ids: Vec<Vec<u8>> = Vec::with_capacity(header.screen_count);
     for screen_index in 0..header.screen_count {
-        let offset = contra_native::level::screen_prg_offset(prg_rom, &header, screen_index);
-        all_screen_ids.push(contra_native::supertile::decompress_screen(&prg_rom[offset..], screen_supertiles));
+        let offset = contra_native::world::level::screen_prg_offset(prg_rom, &header, screen_index);
+        all_screen_ids.push(contra_native::world::supertile::decompress_screen(&prg_rom[offset..], screen_supertiles));
     }
 
     let level_tiles_w = SCREEN_TILES_W * header.screen_count;
@@ -69,9 +69,9 @@ fn extract_and_render_level(prg_rom: &[u8], level_index: usize, out_dir: &std::p
         for (i, &supertile_id) in screen_ids.iter().enumerate() {
             let super_col = i % SCREEN_COLS;
             let super_row = i / SCREEN_COLS;
-            let tiles = contra_native::supertile::supertile_tiles(&prg_rom[header.supertile_data_prg_offset..], supertile_id);
-            let attr_byte = contra_native::supertile::supertile_attribute_byte(&prg_rom[header.palette_data_prg_offset..], supertile_id);
-            let quadrants = contra_native::supertile::attribute_quadrants(attr_byte);
+            let tiles = contra_native::world::supertile::supertile_tiles(&prg_rom[header.supertile_data_prg_offset..], supertile_id);
+            let attr_byte = contra_native::world::supertile::supertile_attribute_byte(&prg_rom[header.palette_data_prg_offset..], supertile_id);
+            let quadrants = contra_native::world::supertile::attribute_quadrants(attr_byte);
 
             for local in 0..16 {
                 let local_col = local % 4;
@@ -165,8 +165,8 @@ fn main() {
 
     let live_chr = nes.bus.ppu.chr_ram;
     let mut level1_chr = [0u8; 0x2000];
-    for entry in contra_native::graphics::level_graphic_data_entries(&rom.prg_rom, 0) {
-        contra_native::graphics::apply_chr_writes(&rom.prg_rom[entry.prg_offset..], &mut level1_chr, entry.flip);
+    for entry in contra_native::world::graphics::level_graphic_data_entries(&rom.prg_rom, 0) {
+        contra_native::world::graphics::apply_chr_writes(&rom.prg_rom[entry.prg_offset..], &mut level1_chr, entry.flip);
     }
     let mut used_tiles: Vec<u8> = level1_tile_grid.clone();
     used_tiles.sort_unstable();
@@ -190,11 +190,11 @@ fn main() {
         }
     }
     let mut attr_diffs = 0usize;
-    let header = contra_native::level::level_header(&rom.prg_rom, 0);
+    let header = contra_native::world::level::level_header(&rom.prg_rom, 0);
     for super_row in 0..SCREEN_ROWS_HORIZONTAL {
         for super_col in 0..SCREEN_COLS {
             let supertile_id = level1_screen_ids[0][super_row * SCREEN_COLS + super_col];
-            let decoded_attr = contra_native::supertile::supertile_attribute_byte(&rom.prg_rom[header.palette_data_prg_offset..], supertile_id);
+            let decoded_attr = contra_native::world::supertile::supertile_attribute_byte(&rom.prg_rom[header.palette_data_prg_offset..], supertile_id);
             let live_attr = nes.peek_ppu(0x23C0 + (super_row * 8 + super_col) as u16);
             if decoded_attr != live_attr {
                 attr_diffs += 1;

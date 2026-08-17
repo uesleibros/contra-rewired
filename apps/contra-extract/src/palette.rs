@@ -6,7 +6,7 @@
 //! that proved it byte-for-byte identical to live PPU palette RAM for
 //! level 1's background palette 0.
 
-const GROUP_COUNT: usize = contra_native::palette::GAME_PALETTES_LEN / 3;
+const GROUP_COUNT: usize = contra_native::world::palette::GAME_PALETTES_LEN / 3;
 
 /// Renders every `game_palettes` group as a 32x32 swatch (4 stacked 8px
 /// stripes: hard-coded black, then the group's 3 colors, top to bottom),
@@ -23,7 +23,7 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usi
     let mut buf = vec![0u8; w * h * 3];
 
     for group in 0..GROUP_COUNT {
-        let colors = contra_native::palette::resolve_palette_rgb(prg_rom, group as u8);
+        let colors = contra_native::world::palette::resolve_palette_rgb(prg_rom, group as u8);
         let cell_x = (group % COLS) * CELL;
         let cell_y = (group / COLS) * CELL;
         for (stripe, &rgb) in colors.iter().enumerate() {

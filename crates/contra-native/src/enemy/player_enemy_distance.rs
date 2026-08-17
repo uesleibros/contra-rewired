@@ -16,7 +16,7 @@
 //! sentinel, `$fe`, still wins over player 2's `$ff` - real, deliberate
 //! tie-breaking behavior, not an oversight).
 
-use crate::quadrant_aim_dir::PLAYER_STATE_NORMAL;
+use crate::enemy::quadrant_aim_dir::PLAYER_STATE_NORMAL;
 
 // Live-verified via `VERIFY_PLAYER_ENEMY_DIST=1` in `crates/contra-nes/
 // examples/dump_frames.rs`: 207 real calls (both axes) across a

@@ -11,16 +11,16 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usi
     let mut written = 0usize;
 
     for level_index in 0..8 {
-        let header = contra_native::level::level_header(prg_rom, level_index);
+        let header = contra_native::world::level::level_header(prg_rom, level_index);
         let path = out_dir.join(format!("level{}_enemies.txt", level_index + 1));
-        let ptr_tbl = contra_native::enemy_spawn::level_enemy_screen_ptr_tbl_prg_offset(prg_rom, level_index);
+        let ptr_tbl = contra_native::enemy::enemy_spawn::level_enemy_screen_ptr_tbl_prg_offset(prg_rom, level_index);
 
-        let text = if header.location_type == contra_native::level::LocationType::Outdoor {
+        let text = if header.location_type == contra_native::world::level::LocationType::Outdoor {
             let mut text = String::new();
             let mut total = 0usize;
             for screen_index in 1..header.screen_count {
-                let offset = contra_native::enemy_spawn::enemy_screen_prg_offset(prg_rom, ptr_tbl, screen_index);
-                let spawns = contra_native::enemy_spawn::decompress_outdoor_enemy_screen(&prg_rom[offset..]);
+                let offset = contra_native::enemy::enemy_spawn::enemy_screen_prg_offset(prg_rom, ptr_tbl, screen_index);
+                let spawns = contra_native::enemy::enemy_spawn::decompress_outdoor_enemy_screen(&prg_rom[offset..]);
                 if spawns.is_empty() {
                     continue;
                 }
@@ -35,7 +35,7 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usi
             // Indoor/base level: unlike outdoor, every screen (including
             // screen 0) can have real placements - both real indoor
             // levels' own screen 0 do (confirmed via live gameplay
-            // capture, see `contra_native::enemy_spawn::
+            // capture, see `contra_native::enemy::enemy_spawn::
             // decompress_indoor_enemy_screen`'s doc comment) - and a
             // screen's whole enemy list is read in one pass, not
             // incrementally by scroll position, so there's no "skip
@@ -43,8 +43,8 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usi
             let mut text = String::new();
             let mut total = 0usize;
             for screen_index in 0..header.screen_count {
-                let offset = contra_native::enemy_spawn::enemy_screen_prg_offset(prg_rom, ptr_tbl, screen_index);
-                let Some(screen) = contra_native::enemy_spawn::decompress_indoor_enemy_screen(&prg_rom[offset..]) else {
+                let offset = contra_native::enemy::enemy_spawn::enemy_screen_prg_offset(prg_rom, ptr_tbl, screen_index);
+                let Some(screen) = contra_native::enemy::enemy_spawn::decompress_indoor_enemy_screen(&prg_rom[offset..]) else {
                     continue;
                 };
                 if screen.spawns.is_empty() {

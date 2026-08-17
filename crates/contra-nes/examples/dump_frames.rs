@@ -45,8 +45,8 @@ fn draw_rect_outline(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, bw: i3
 
 /// Reads one enemy slot's `enemy_clear`-relevant fields straight from real
 /// RAM - shared by `VERIFY_ENEMY_CLEAR` and `VERIFY_INITIALIZE_ENEMY`.
-fn read_enemy_clear_fields(bus: &contra_nes::bus::NesBus, x: usize) -> contra_native::enemy_clear::EnemyClearFields {
-    contra_native::enemy_clear::EnemyClearFields {
+fn read_enemy_clear_fields(bus: &contra_nes::bus::NesBus, x: usize) -> contra_native::enemy::enemy_clear::EnemyClearFields {
+    contra_native::enemy::enemy_clear::EnemyClearFields {
         attributes: bus.ram[0x5A8 + x],
         y_pos: bus.ram[0x324 + x],
         x_pos: bus.ram[0x33E + x],
@@ -148,7 +148,7 @@ struct SoldierRoutine01Ctx {
     vscroll: u8,
     hscroll: u8,
     ppuctrl: u8,
-    data: [u8; contra_native::collision::BG_COLLISION_DATA_LEN],
+    data: [u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN],
     routine: u8,
 }
 
@@ -159,7 +159,7 @@ fn verify_soldier_routine_01(
     frame: u32,
     checked: &mut u64,
 ) {
-    use contra_native::soldier::{soldier_routine_01, SoldierRoutine01Outcome};
+    use contra_native::enemy::soldier::{soldier_routine_01, SoldierRoutine01Outcome};
 
     let x = ctx.x;
     let expected = soldier_routine_01(
@@ -238,7 +238,7 @@ struct SoldierRoutine02JumpingCtx {
     vscroll: u8,
     hscroll: u8,
     ppuctrl: u8,
-    data: [u8; contra_native::collision::BG_COLLISION_DATA_LEN],
+    data: [u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN],
     scroll_type: u8,
     frame_scroll: u8,
     x_accum: u8,
@@ -257,7 +257,7 @@ fn verify_soldier_routine_02_jumping(
     frame: u32,
     checked: &mut u64,
 ) {
-    use contra_native::soldier::{soldier_routine_02_jumping, SoldierApplyVelOutcome, SoldierRoutine02Landing};
+    use contra_native::enemy::soldier::{soldier_routine_02_jumping, SoldierApplyVelOutcome, SoldierRoutine02Landing};
 
     let x = ctx.x;
     let expected = soldier_routine_02_jumping(
@@ -350,7 +350,7 @@ struct SoldierRoutine03Ctx {
     scroll_type: u8,
     frame_scroll: u8,
     routine: u8,
-    enemy_routine: [u8; contra_native::enemy_slots::ENEMY_SLOT_COUNT],
+    enemy_routine: [u8; contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT],
 }
 
 fn verify_soldier_routine_03(
@@ -361,7 +361,7 @@ fn verify_soldier_routine_03(
     frame: u32,
     checked: &mut u64,
 ) {
-    use contra_native::soldier::{soldier_routine_03, SoldierRoutine03Outcome};
+    use contra_native::enemy::soldier::{soldier_routine_03, SoldierRoutine03Outcome};
 
     let x = ctx.x;
     let expected = soldier_routine_03(
@@ -452,7 +452,7 @@ struct SoldierRoutine04Ctx {
 }
 
 fn verify_soldier_routine_04(ctx: SoldierRoutine04Ctx, cpu: &contra_nes::cpu::Cpu, bus: &contra_nes::bus::NesBus, frame: u32, checked: &mut u64) {
-    use contra_native::soldier::soldier_routine_04;
+    use contra_native::enemy::soldier::soldier_routine_04;
 
     let x = ctx.x;
     let expected = soldier_routine_04(ctx.x_pos, ctx.y_pos, ctx.var_2, ctx.var_1, ctx.state_width, ctx.scroll_type, ctx.frame_scroll, ctx.routine);
@@ -518,7 +518,7 @@ struct SoldierRoutine05Ctx {
 }
 
 fn verify_soldier_routine_05(ctx: SoldierRoutine05Ctx, cpu: &contra_nes::cpu::Cpu, bus: &contra_nes::bus::NesBus, frame: u32, checked: &mut u64) {
-    use contra_native::soldier::{soldier_routine_05, SoldierRoutine05Outcome};
+    use contra_native::enemy::soldier::{soldier_routine_05, SoldierRoutine05Outcome};
 
     let x = ctx.x;
     let expected = soldier_routine_05(
@@ -592,7 +592,7 @@ struct SoldierRoutine09Ctx {
 }
 
 fn verify_soldier_routine_09(ctx: SoldierRoutine09Ctx, cpu: &contra_nes::cpu::Cpu, bus: &contra_nes::bus::NesBus, frame: u32, checked: &mut u64) {
-    use contra_native::soldier::soldier_routine_09;
+    use contra_native::enemy::soldier::soldier_routine_09;
 
     let x = ctx.x;
     let expected = soldier_routine_09(ctx.x_pos, ctx.y_pos, ctx.var_2, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine);
@@ -644,7 +644,7 @@ struct SoldierRoutine0aCtx {
 }
 
 fn verify_soldier_routine_0a(ctx: SoldierRoutine0aCtx, cpu: &contra_nes::cpu::Cpu, bus: &contra_nes::bus::NesBus, frame: u32, checked: &mut u64) {
-    use contra_native::soldier::{soldier_routine_0a, SoldierRoutine0aOutcome};
+    use contra_native::enemy::soldier::{soldier_routine_0a, SoldierRoutine0aOutcome};
 
     let x = ctx.x;
     let expected =
@@ -718,7 +718,7 @@ fn verify_enemy_routine_remove_enemy(
     frame: u32,
     checked: &mut u64,
 ) {
-    use contra_native::update_enemy_pos::enemy_routine_remove_enemy;
+    use contra_native::enemy::update_enemy_pos::enemy_routine_remove_enemy;
 
     let x = ctx.x;
     let expected = enemy_routine_remove_enemy(ctx.scroll_type, ctx.frame_scroll, ctx.x_pos, ctx.y_pos);
@@ -763,7 +763,7 @@ fn verify_enemy_routine_init_explosion(
     frame: u32,
     checked: &mut u64,
 ) {
-    use contra_native::enemy_explosion::{enemy_routine_init_explosion, EnemyRoutineInitExplosionOutcome};
+    use contra_native::enemy::enemy_explosion::{enemy_routine_init_explosion, EnemyRoutineInitExplosionOutcome};
 
     let x = ctx.x;
     let expected =
@@ -1033,17 +1033,17 @@ fn main() {
             nes.run_frame_with_hook(&mut |cpu, bus| {
                 if cpu.pc == 0xE0BB {
                     let (x, y) = (cpu.a, cpu.y);
-                    let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
+                    let mut data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
                     for (i, b) in data.iter_mut().enumerate() {
                         *b = bus.ram[0x0680 + i];
                     }
-                    let code = contra_native::collision::bg_collision(x, y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF], &data);
+                    let code = contra_native::physics::collision::bg_collision(x, y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF], &data);
                     let raw = code.to_raw_byte();
                     cpu.a = raw;
                     // Carry: set only for Floor (the real routine's own
                     // `lsr` on the collision code - bit 0 of `$01`/`$02`/
                     // `$80` is 1 only for Floor's `$01`).
-                    if code == contra_native::collision::CollisionCode::Floor {
+                    if code == contra_native::physics::collision::CollisionCode::Floor {
                         cpu.status |= contra_nes::cpu::FLAG_C;
                     } else {
                         cpu.status &= !contra_nes::cpu::FLAG_C;
@@ -1075,7 +1075,7 @@ fn main() {
                     // these stale (shared, reused zero-page addresses some
                     // *other* routine may read expecting a fresh write) is
                     // a real, separate source of drift from cycle timing.
-                    let scratch = contra_native::collision::bg_collision_scratch(x, y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF]);
+                    let scratch = contra_native::physics::collision::bg_collision_scratch(x, y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF]);
                     bus.ram[0x10] = scratch.s10;
                     bus.ram[0x11] = scratch.s11;
                     bus.ram[0x12] = scratch.s12;
@@ -1089,7 +1089,7 @@ fn main() {
                     // happened to hit - see that function's doc comment and
                     // docs/NATIVE_PORT.md for the two earlier (both
                     // measurably wrong) attempts this replaced.
-                    let real_cycles = contra_native::collision::bg_collision_cycles(x, y, bus.ram[0xFC], bus.ram[0xFD]);
+                    let real_cycles = contra_native::physics::collision::bg_collision_cycles(x, y, bus.ram[0xFC], bus.ram[0xFD]);
                     HookAction::ReturnNow(real_cycles)
                 } else {
                     HookAction::Continue
@@ -1097,7 +1097,7 @@ fn main() {
             });
         } else if verify_bg_collision {
             // VERIFY_BG_COLLISION=1: the actual verification pass for
-            // `contra_native::collision::bg_collision` (see that crate's
+            // `contra_native::physics::collision::bg_collision` (see that crate's
             // module docs for the methodology this implements). Hooks the
             // real ROM's `get_bg_collision` at its entry (`$e0bb`) to
             // capture every real call's inputs, and at its `rts`-adjacent
@@ -1108,11 +1108,11 @@ fn main() {
             // in call order via `pending`, which only works because this
             // routine doesn't call itself recursively (true for the real
             // ROM - it's a short, self-contained leaf routine).
-            let mut pending: Option<(u8, u8, u8, u8, u8, [u8; contra_native::collision::BG_COLLISION_DATA_LEN])> = None;
+            let mut pending: Option<(u8, u8, u8, u8, u8, [u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN])> = None;
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
                 if cpu.pc == 0xE0BB {
-                    let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
+                    let mut data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
                     for (i, b) in data.iter_mut().enumerate() {
                         *b = bus.ram[0x0680 + i];
                     }
@@ -1120,7 +1120,7 @@ fn main() {
                 } else if cpu.pc == 0xE12A {
                     if let Some((x, y, vs, hs, ppuctrl, data)) = pending.take() {
                         let expected = cpu.a;
-                        let actual = contra_native::collision::bg_collision(x, y, vs, hs, ppuctrl, &data).to_raw_byte();
+                        let actual = contra_native::physics::collision::bg_collision(x, y, vs, hs, ppuctrl, &data).to_raw_byte();
                         checked += 1;
                         if actual != expected {
                             eprintln!(
@@ -1168,7 +1168,7 @@ fn main() {
             // apply_gravity` still passes through `apply_gravity`'s own
             // entry, and its `rts` returns straight into `player_jumping_
             // set_y_pos`'s own entry immediately after.
-            use contra_native::player_physics::{apply_gravity, integrate_y_position, YPositionState, YVelocity};
+            use contra_native::physics::player_physics::{apply_gravity, integrate_y_position, YPositionState, YVelocity};
             let mut pending_gravity: Option<(u8, YVelocity)> = None;
             let mut pending_integrate: Option<(u8, YVelocity, YPositionState)> = None;
             let mut checked = 0u64;
@@ -1222,7 +1222,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_BULLET_VELOCITY").is_ok() {
             // VERIFY_BULLET_VELOCITY=1: verification pass for
-            // `contra_native::bullet_physics::adjust_bullet_velocity`.
+            // `contra_native::physics::bullet_physics::adjust_bullet_velocity`.
             // The real routine ($f3a5) dispatches via `run_routine_from_
             // tbl_below`'s inline-jump-table trick, so every case handler's
             // own `rts` returns straight to *this* routine's caller, not to
@@ -1239,7 +1239,7 @@ fn main() {
                     }
                     0xF345 | 0xF359 => {
                         if let Some((frac, fast, speed_code)) = pending.take() {
-                            let expected = contra_native::bullet_physics::adjust_bullet_velocity(frac, fast, speed_code);
+                            let expected = contra_native::physics::bullet_physics::adjust_bullet_velocity(frac, fast, speed_code);
                             let real = (bus.ram[0x04], bus.ram[0x05]);
                             checked += 1;
                             if expected != real {
@@ -1258,7 +1258,7 @@ fn main() {
             }
         } else if verify_calc_bullet_velocities {
             // VERIFY_CALC_BULLET_VELOCITIES=1: verification pass for
-            // `contra_native::bullet_physics::calc_bullet_velocities`.
+            // `contra_native::physics::bullet_physics::calc_bullet_velocities`.
             // Unlike `adjust_bullet_velocity`, this routine is a normal
             // `jsr`/`rts` call (not the inline-jump-table pattern) - its
             // one real call site is `set_bullet_velocities` ($f313), whose
@@ -1274,8 +1274,8 @@ fn main() {
                     }
                     0xF316 => {
                         if let Some((aim_dir, speed_code, quadrant)) = pending.take() {
-                            let expected = contra_native::bullet_physics::calc_bullet_velocities(aim_dir, speed_code, quadrant);
-                            let real = contra_native::bullet_physics::BulletVelocity {
+                            let expected = contra_native::physics::bullet_physics::calc_bullet_velocities(aim_dir, speed_code, quadrant);
+                            let real = contra_native::physics::bullet_physics::BulletVelocity {
                                 frac_y: bus.ram[0x04],
                                 fast_y: bus.ram[0x05],
                                 frac_x: bus.ram[0x0a],
@@ -1298,7 +1298,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_ENEMY_SLOT").is_ok() {
             // VERIFY_ENEMY_SLOT=1: verification pass for
-            // `contra_native::enemy_slots::find_next_enemy_slot`/`_6_to_0`.
+            // `contra_native::enemy::enemy_slots::find_next_enemy_slot`/`_6_to_0`.
             // Normal jsr/rts, but with 13 real call sites across 3 banks -
             // rather than hook every site's return address, hook the one
             // shared internal exit label both entry points funnel through
@@ -1307,7 +1307,7 @@ fn main() {
             // entry points ($edce full scan, $edca restricted-to-6 scan)
             // to snapshot ENEMY_ROUTINE ($04b8, 16 bytes) and which variant
             // was entered.
-            use contra_native::enemy_slots::{find_next_enemy_slot, find_next_enemy_slot_6_to_0, ENEMY_SLOT_COUNT};
+            use contra_native::enemy::enemy_slots::{find_next_enemy_slot, find_next_enemy_slot_6_to_0, ENEMY_SLOT_COUNT};
             let mut pending: Option<([u8; ENEMY_SLOT_COUNT], bool)> = None; // (snapshot, is_restricted_6to0)
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -1348,7 +1348,7 @@ fn main() {
             // the shared exit to read the *post* state and compare
             // against applying the matching pure Rust function to the
             // snapshot.
-            use contra_native::enemy_clear::{
+            use contra_native::enemy::enemy_clear::{
                 clear_enemy_custom_vars, clear_enemy_pt_2, clear_sprite_and_pt_3, EnemyClearFields,
             };
             #[derive(Clone, Copy, Debug)]
@@ -1396,7 +1396,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_INITIALIZE_ENEMY").is_ok() {
             // VERIFY_INITIALIZE_ENEMY=1: verification pass for
-            // `contra_native::initialize_enemy::initialize_enemy`. Normal
+            // `contra_native::enemy::initialize_enemy::initialize_enemy`. Normal
             // jsr/rts with many real call sites - hook entry ($ee47) to
             // capture ENEMY_TYPE[x] (already set by *this* routine's own
             // caller) and CURRENT_LEVEL, and hook the routine's own single
@@ -1415,8 +1415,8 @@ fn main() {
                     }
                     0xEE8C => {
                         if let Some((x, enemy_type, current_level)) = pending.take() {
-                            let expected = contra_native::initialize_enemy::initialize_enemy(&prg_rom_copy, enemy_type, current_level);
-                            let real = contra_native::initialize_enemy::InitializedEnemy {
+                            let expected = contra_native::enemy::initialize_enemy::initialize_enemy(&prg_rom_copy, enemy_type, current_level);
+                            let real = contra_native::enemy::initialize_enemy::InitializedEnemy {
                                 routine: bus.ram[0x4B8 + x],
                                 hp: bus.ram[0x578 + x],
                                 fields: read_enemy_clear_fields(bus, x),
@@ -1438,7 +1438,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_CREATE_ENEMY_BULLET").is_ok() {
             // VERIFY_CREATE_ENEMY_BULLET=1: verification pass for
-            // `contra_native::create_enemy_bullet::create_enemy_bullet`.
+            // `contra_native::enemy::create_enemy_bullet::create_enemy_bullet`.
             // Real routine has 2 real exits (success: end of
             // `set_bullet_velocities`, `$f32e`, right before the
             // `bullet_gen_exit` label; failure: end of `bullet_gen_exit`
@@ -1450,7 +1450,7 @@ fn main() {
             // taken from applying the pure Rust function to the same
             // `ENEMY_ROUTINE` snapshot captured at entry (itself already
             // independently live-verified via `VERIFY_ENEMY_SLOT`).
-            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
             let mut pending: Option<([u8; ENEMY_SLOT_COUNT], u8, u8, u8, u8, u8, u8)> = None;
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -1470,7 +1470,7 @@ fn main() {
                     }
                     0xF32E | 0xF333 => {
                         if let Some((snapshot, current_level, angle, speed, quadrant, y_pos, x_pos)) = pending.take() {
-                            let expected = contra_native::create_enemy_bullet::create_enemy_bullet(
+                            let expected = contra_native::enemy::create_enemy_bullet::create_enemy_bullet(
                                 &prg_rom_copy,
                                 &snapshot,
                                 current_level,
@@ -1516,7 +1516,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_CREATE_ENEMY_BULLET_ANGLE_A").is_ok() {
             // VERIFY_CREATE_ENEMY_BULLET_ANGLE_A=1: verification pass for
-            // `contra_native::create_enemy_bullet::create_enemy_bullet_
+            // `contra_native::enemy::create_enemy_bullet::create_enemy_bullet_
             // angle_a`. Entry ($f2bf) takes its inputs in registers a/y
             // (bullet_type_and_angle/speed), stored to $0a/$06 by the
             // routine's own first two instructions - hook *before* those
@@ -1527,7 +1527,7 @@ fn main() {
             // ($f333, end of `bullet_gen_exit`) - no need to distinguish
             // which one fired, the pure function returns `None` either
             // way for the same real inputs.
-            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
             let mut pending: Option<([u8; ENEMY_SLOT_COUNT], u8, u8, u8, u8, u8, u8)> = None;
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -1547,7 +1547,7 @@ fn main() {
                     }
                     0xF32E | 0xF333 => {
                         if let Some((snapshot, current_level, attack_flag, angle, speed, y_pos, x_pos)) = pending.take() {
-                            let expected = contra_native::create_enemy_bullet::create_enemy_bullet_angle_a(
+                            let expected = contra_native::enemy::create_enemy_bullet::create_enemy_bullet_angle_a(
                                 &prg_rom_copy,
                                 &snapshot,
                                 current_level,
@@ -1596,11 +1596,11 @@ fn main() {
             }
         } else if std::env::var("VERIFY_QUADRANT_AIM_DIR").is_ok() {
             // VERIFY_QUADRANT_AIM_DIR=1: verification pass for
-            // `contra_native::quadrant_aim_dir::get_quadrant_aim_dir`.
+            // `contra_native::enemy::quadrant_aim_dir::get_quadrant_aim_dir`.
             // Normal jsr/rts, single real exit (the `and #$0f; rts` at
             // the very end, `$f5ab`, right before the `quadrant_aim_dir_
             // lookup_ptr_tbl` label).
-            use contra_native::quadrant_aim_dir::{get_quadrant_aim_dir, QUADRANT_AIM_DIR_00, QUADRANT_AIM_DIR_01, QUADRANT_AIM_DIR_02};
+            use contra_native::enemy::quadrant_aim_dir::{get_quadrant_aim_dir, QUADRANT_AIM_DIR_00, QUADRANT_AIM_DIR_01, QUADRANT_AIM_DIR_02};
             let mut pending: Option<(u8, u8, u8, u8, u8)> = None; // (source_y, source_x, target_y, target_x, table_index)
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -1635,12 +1635,12 @@ fn main() {
             }
         } else if std::env::var("VERIFY_QUADRANT_AIM_DIR_FOR_PLAYER").is_ok() {
             // VERIFY_QUADRANT_AIM_DIR_FOR_PLAYER=1: verification pass for
-            // `contra_native::quadrant_aim_dir::get_quadrant_aim_dir_
+            // `contra_native::enemy::quadrant_aim_dir::get_quadrant_aim_dir_
             // for_player`. Entry ($f52c) takes `player_index` in `a`;
             // this routine has no `rts` of its own - it falls straight
             // into `get_quadrant_aim_dir`'s shared exit ($f5ab), same as
             // that routine's own verification pass above.
-            use contra_native::quadrant_aim_dir::{
+            use contra_native::enemy::quadrant_aim_dir::{
                 get_quadrant_aim_dir_for_player, QUADRANT_AIM_DIR_00, QUADRANT_AIM_DIR_01, QUADRANT_AIM_DIR_02,
             };
             let mut pending: Option<(u8, u8, u8, [u8; 2], [u8; 2], [u8; 2], u8, u8)> = None;
@@ -1697,12 +1697,12 @@ fn main() {
             }
         } else if std::env::var("VERIFY_AIM_AND_CREATE_ENEMY_BULLET").is_ok() {
             // VERIFY_AIM_AND_CREATE_ENEMY_BULLET=1: verification pass for
-            // `contra_native::create_enemy_bullet::aim_and_create_enemy_
+            // `contra_native::enemy::create_enemy_bullet::aim_and_create_enemy_
             // bullet`. Entry ($f29e) takes bullet_type/speed_code in a/y;
             // real exits are the same two `create_enemy_bullet` itself
             // uses ($f32e success, $f333 failure), since this routine's
             // own control flow funnels into that same shared tail.
-            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
             #[allow(clippy::type_complexity)]
             let mut pending: Option<(
                 [u8; ENEMY_SLOT_COUNT],
@@ -1761,7 +1761,7 @@ fn main() {
                             level_loc,
                         )) = pending.take()
                         {
-                            let expected = contra_native::create_enemy_bullet::aim_and_create_enemy_bullet(
+                            let expected = contra_native::enemy::create_enemy_bullet::aim_and_create_enemy_bullet(
                                 &prg_rom_copy,
                                 &snapshot,
                                 current_level,
@@ -1817,13 +1817,13 @@ fn main() {
             }
         } else if std::env::var("VERIFY_PLAYER_ENEMY_DIST").is_ok() {
             // VERIFY_PLAYER_ENEMY_DIST=1: verification pass for
-            // `contra_native::player_enemy_distance::player_enemy_x_dist`/
+            // `contra_native::enemy::player_enemy_distance::player_enemy_x_dist`/
             // `player_enemy_y_dist`. Both real routines share one exit
             // (`lda_closer_distance`'s own `rts`, $ed4b, right before the
             // `find_far_segment_for_x_pos` label) - hook both real
             // entries ($ecf5 X, $ed0e Y) to snapshot inputs and which
             // axis was requested, and that one shared exit for the result.
-            use contra_native::player_enemy_distance::{player_enemy_x_dist, player_enemy_y_dist};
+            use contra_native::enemy::player_enemy_distance::{player_enemy_x_dist, player_enemy_y_dist};
             #[derive(Clone, Copy)]
             enum Axis {
                 X,
@@ -1875,7 +1875,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_ADD_SCROLL_TO_ENEMY_POS").is_ok() {
             // VERIFY_ADD_SCROLL_TO_ENEMY_POS=1: verification pass for
-            // `contra_native::add_scroll_to_enemy_pos::add_scroll_to_
+            // `contra_native::enemy::add_scroll_to_enemy_pos::add_scroll_to_
             // enemy_pos`. Real routine has 3 real exits: vertical/no-
             // removal ($e8b8), horizontal/no-removal ($e8c6, right
             // before the dead-code `bank_7_unused_label_02`), and the
@@ -1886,7 +1886,7 @@ fn main() {
             // way, so all 3 exits can be checked the same way; which
             // exit actually fired is itself compared against this
             // port's own `should_remove` prediction.
-            use contra_native::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos;
+            use contra_native::enemy::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos;
             let mut pending: Option<(usize, u8, u8, u8, u8)> = None; // (x, scroll_type, frame_scroll, enemy_x, enemy_y)
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -1918,13 +1918,13 @@ fn main() {
             }
         } else if std::env::var("VERIFY_UPDATE_ENEMY_POS").is_ok() {
             // VERIFY_UPDATE_ENEMY_POS=1: verification pass for
-            // `contra_native::update_enemy_pos::update_enemy_pos`. Real
+            // `contra_native::enemy::update_enemy_pos::update_enemy_pos`. Real
             // routine has 2 real exits: success/no-removal
             // (`apply_vel_exit`'s own rts, $e849, shared by both the
             // horizontal and vertical branches' full-success paths), and
             // the same shared "removed" tail `add_scroll_to_enemy_pos`
             // uses ($e813).
-            use contra_native::update_enemy_pos::update_enemy_pos;
+            use contra_native::enemy::update_enemy_pos::update_enemy_pos;
             #[allow(clippy::type_complexity)]
             let mut pending: Option<(usize, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8)> = None;
             let mut checked = 0u64;
@@ -2004,7 +2004,7 @@ fn main() {
             // share one exit: `set_08_09_to_enemy_pos` ($eb2f, always
             // offset 0/0) and `add_with_enemy_pos` ($eb32, offsets in
             // a/y) both funnel into the same rts ($eb3f).
-            use contra_native::add_with_enemy_pos::{add_with_enemy_pos, set_08_09_to_enemy_pos};
+            use contra_native::enemy::add_with_enemy_pos::{add_with_enemy_pos, set_08_09_to_enemy_pos};
             let mut pending: Option<(usize, u8, u8)> = None; // (x, x_offset, y_offset)
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -2045,7 +2045,7 @@ fn main() {
             // `contra_native::enemy_collision_flags`'s 5 real entry
             // points, all funneling into one shared exit
             // (`set_enemy_state_width_to_a`'s own rts, $eb1e).
-            use contra_native::enemy_collision_flags::{
+            use contra_native::enemy::enemy_collision_flags::{
                 disable_bullet_enemy_collision, disable_enemy_collision, enable_bullet_enemy_collision,
                 enable_enemy_collision, enable_enemy_player_collision_check,
             };
@@ -2095,7 +2095,7 @@ fn main() {
         } else if std::env::var("VERIFY_INDOOR_ENEMY_SPAWN").is_ok() {
             // VERIFY_INDOOR_ENEMY_SPAWN=1 (use with JUMP_STAGE=1 or 3 to
             // reach an indoor level): verification pass for
-            // `contra_native::enemy_spawn::decompress_indoor_enemy_screen`.
+            // `contra_native::enemy::enemy_spawn::decompress_indoor_enemy_screen`.
             // The resolved screen-data pointer is already sitting in
             // $0a/$0b (bank2.asm's own `load_screen_enemy_data` prefix
             // resolves it before `load_enemy_indoor_level` is even
@@ -2138,7 +2138,7 @@ fn main() {
                     // exits get the identical real-RAM comparison.
                     0xB4AE | 0xB512 => {
                         if let Some(data) = pending.take() {
-                            let expected = contra_native::enemy_spawn::decompress_indoor_enemy_screen(&data);
+                            let expected = contra_native::enemy::enemy_spawn::decompress_indoor_enemy_screen(&data);
                             checked += 1;
                             if let Some(screen) = &expected {
                                 let real_cores = bus.ram[0x86];
@@ -2146,7 +2146,7 @@ fn main() {
                                 let mut real_spawns = Vec::new();
                                 for (i, expected_spawn) in screen.spawns.iter().enumerate() {
                                     let slot = 15 - i;
-                                    let real_spawn = contra_native::enemy_spawn::EnemySpawn {
+                                    let real_spawn = contra_native::enemy::enemy_spawn::EnemySpawn {
                                         x: bus.ram[0x33E + slot],
                                         y: bus.ram[0x324 + slot],
                                         enemy_type: bus.ram[0x528 + slot],
@@ -2177,7 +2177,7 @@ fn main() {
             // `contra_native::enemy_position_utils`'s 5 real entry
             // points, each with its own real exit (no shared tail here,
             // unlike most of this file's other verify blocks).
-            use contra_native::enemy_position_utils::{
+            use contra_native::enemy::enemy_position_utils::{
                 add_10_to_enemy_y_fract_vel, add_a_to_enemy_x_pos, add_a_to_enemy_y_fract_vel, add_a_to_enemy_y_pos,
                 reverse_enemy_x_direction,
             };
@@ -2261,7 +2261,7 @@ fn main() {
             // only set `pending` at $e78e if nothing is already pending
             // from that same fallthrough, so the delay comparison isn't
             // silently dropped.
-            use contra_native::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a};
+            use contra_native::enemy::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a};
             #[derive(Clone, Copy, Debug)]
             enum Op {
                 Advance(u8),
@@ -2326,12 +2326,12 @@ fn main() {
             }
         } else if std::env::var("VERIFY_VERT_SCROLL_Y_ADD").is_ok() {
             // VERIFY_VERT_SCROLL_Y_ADD=1: verification pass for
-            // `contra_native::enemy_position_utils::add_a_with_vert_
+            // `contra_native::enemy::enemy_position_utils::add_a_with_vert_
             // scroll_to_enemy_y_pos`/`add_4_to_enemy_y_pos`. Both real
             // entries ($eb88 preset a=4, $eb8a general) share one real
             // exit ($eba3, right before `update_nametable_tiles_set_
             // delay`).
-            use contra_native::enemy_position_utils::add_a_with_vert_scroll_to_enemy_y_pos;
+            use contra_native::enemy::enemy_position_utils::add_a_with_vert_scroll_to_enemy_y_pos;
             let mut pending: Option<(u8, u8, u8)> = None; // (a, vertical_scroll, enemy_y_pos)
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -2364,13 +2364,13 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_00").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_00=1: verification pass for
-            // `contra_native::soldier::soldier_routine_00` - this
+            // `contra_native::enemy::soldier::soldier_routine_00` - this
             // crate's first *composed* enemy AI state port. Real entry
             // $861e; real exits are the same 2 shared ones `enemy_
             // routine_transition`'s own verification pass uses ($e796
             // success, $e813 guard-rejected/removed), since this routine
             // ends with a real `jmp set_enemy_delay_adv_routine`.
-            use contra_native::soldier::soldier_routine_00;
+            use contra_native::enemy::soldier::soldier_routine_00;
             let mut pending: Option<(usize, u8, u8, u8, u8, u8, u8, u8)> = None;
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -2421,11 +2421,11 @@ fn main() {
             }
         } else if std::env::var("VERIFY_BG_COLLISION_FAR").is_ok() {
             // VERIFY_BG_COLLISION_FAR=1: verification pass for
-            // `contra_native::collision::get_bg_collision_far`. Real
+            // `contra_native::physics::collision::get_bg_collision_far`. Real
             // entry $e087; real exit is `floor_get_next_row_bg_
             // collision`'s own shared rts at $e0ba (right before
             // `get_bg_collision` begins at $e0bb).
-            use contra_native::collision::{get_bg_collision_far, BG_COLLISION_DATA_LEN};
+            use contra_native::physics::collision::{get_bg_collision_far, BG_COLLISION_DATA_LEN};
             let mut pending: Option<(u8, u8, u8, u8, u8, [u8; BG_COLLISION_DATA_LEN])> = None;
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -2459,7 +2459,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_ADD_Y_POS_BG_COLLISION").is_ok() {
             // VERIFY_ADD_Y_POS_BG_COLLISION=1: verification pass for
-            // `contra_native::collision::add_a_y_to_enemy_pos_get_bg_
+            // `contra_native::physics::collision::add_a_y_to_enemy_pos_get_bg_
             // collision`/`add_y_to_y_pos_get_bg_collision`. Two real
             // entries ($ec33 zero-x-offset, $ec35 general) and two real
             // exits: the early Y-overflow "$exit" ($ec48) and the shared
@@ -2468,7 +2468,7 @@ fn main() {
             // collision_byte`/`@set_code_exit` chain's own rts, confirmed
             // by counting instruction lengths from `$e12a` against
             // `level_screen_mem_offset_tbl_01`'s real address at `$e130`).
-            use contra_native::collision::{add_a_y_to_enemy_pos_get_bg_collision, BG_COLLISION_DATA_LEN};
+            use contra_native::physics::collision::{add_a_y_to_enemy_pos_get_bg_collision, BG_COLLISION_DATA_LEN};
             let mut pending: Option<(u8, u8, u8, u8, u8, u8, u8, [u8; BG_COLLISION_DATA_LEN])> = None;
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
@@ -2513,7 +2513,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_01").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_01=1: verification pass for
-            // `contra_native::soldier::soldier_routine_01`. Real entry
+            // `contra_native::enemy::soldier::soldier_routine_01`. Real entry
             // $8665. Real exits: `soldier_routine_exit` ($865c, the
             // NoDecrement/DelayNotYetZero outcomes), and the two shared
             // exits `soldier_routine_00`'s own verification already uses
@@ -2541,7 +2541,7 @@ fn main() {
                     // `bank_select() == 0`.
                     0x8665 if bus.mapper.bank_select() == 0 => {
                         let x = cpu.x as usize;
-                        let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
+                        let mut data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
                         for (i, b) in data.iter_mut().enumerate() {
                             *b = bus.ram[0x0680 + i];
                         }
@@ -2589,7 +2589,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_02_JUMPING").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_02_JUMPING=1: verification pass for
-            // `contra_native::soldier::soldier_routine_02_jumping` - the
+            // `contra_native::enemy::soldier::soldier_routine_02_jumping` - the
             // jumping sub-path only (see that function's doc comment for
             // why the walking sub-path isn't ported yet). Real entry
             // $86af, but only proceeds if `ENEMY_VAR_3 != 0` there (the
@@ -2615,7 +2615,7 @@ fn main() {
             // is only ever *tail*-jumped into here, never `jsr`'d, so no
             // return address pointing past $8794 can come from one of
             // our own nested calls).
-            use contra_native::collision::BG_COLLISION_DATA_LEN;
+            use contra_native::physics::collision::BG_COLLISION_DATA_LEN;
 
             let mut pending: Option<SoldierRoutine02JumpingCtx> = None;
             let mut checked = 0u64;
@@ -2687,7 +2687,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_03").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_03=1: verification pass for
-            // `contra_native::soldier::soldier_routine_03`. Real entry
+            // `contra_native::enemy::soldier::soldier_routine_03`. Real entry
             // $8803. Real exits for the Waiting/Fired outcomes (reached
             // via a pure tail-call chain all the way through `set_
             // soldier_sprite_add_scroll_01`/`add_scroll_to_enemy_pos`,
@@ -2708,7 +2708,7 @@ fn main() {
             // un-labeled body ($886a up to the next label, `soldier_
             // bullet_y_offset`, at $8882) - only a return address outside
             // that narrow range is treated as the genuine exit.
-            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
 
             let mut pending: Option<SoldierRoutine03Ctx> = None;
             let mut checked = 0u64;
@@ -2775,7 +2775,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_04").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_04=1: verification pass for
-            // `contra_native::soldier::soldier_routine_04`. Real entry
+            // `contra_native::enemy::soldier::soldier_routine_04`. Real entry
             // $88c3 (gated on bank_select()==0 - see `VERIFY_SOLDIER_
             // ROUTINE_03`'s comment for why). Real exits: the 2 shared
             // exits earlier soldier routines already use ($e796/$e813),
@@ -2827,7 +2827,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_05").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_05=1: verification pass for
-            // `contra_native::soldier::soldier_routine_05`. Real entry
+            // `contra_native::enemy::soldier::soldier_routine_05`. Real entry
             // $8900 (gated on bank_select()==0). Real exits: `$8939`
             // (`soldier_routine_05_exit`, the `StillWaiting` outcome's
             // plain `rts`), and the 2 shared exits ($e796/$e813, reached
@@ -2889,7 +2889,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_09").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_09=1: verification pass for
-            // `contra_native::soldier::soldier_routine_09`. Real entry
+            // `contra_native::enemy::soldier::soldier_routine_09`. Real entry
             // $888c (gated on bank_select()==0). This routine's own port
             // exists specifically to test a surprising real-ASM reading:
             // it calls `set_soldier_sprite`/`add_scroll_to_enemy_pos`
@@ -2941,7 +2941,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_SOLDIER_ROUTINE_0A").is_ok() {
             // VERIFY_SOLDIER_ROUTINE_0A=1: verification pass for
-            // `contra_native::soldier::soldier_routine_0a`. Real entry
+            // `contra_native::enemy::soldier::soldier_routine_0a`. Real entry
             // $88a1 (gated on bank_select()==0). Real exits: `$e8b8`/
             // `$e8c6` (`add_scroll_to_enemy_pos`'s own success exits,
             // reached via a real tail-call chain the whole way for both
@@ -2984,7 +2984,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_ENEMY_ROUTINE_REMOVE_ENEMY").is_ok() {
             // VERIFY_ENEMY_ROUTINE_REMOVE_ENEMY=1: verification pass for
-            // `contra_native::update_enemy_pos::enemy_routine_remove_
+            // `contra_native::enemy::update_enemy_pos::enemy_routine_remove_
             // enemy`. Real entry $e806 (fixed bank, always mapped - no
             // bank_select() gate needed, unlike the soldier_routine_0N
             // hooks). Real (single) exit: `remove_enemy`'s own rts,
@@ -3035,7 +3035,7 @@ fn main() {
             }
         } else if std::env::var("VERIFY_ENEMY_ROUTINE_INIT_EXPLOSION").is_ok() {
             // VERIFY_ENEMY_ROUTINE_INIT_EXPLOSION=1: verification pass
-            // for `contra_native::enemy_explosion::enemy_routine_init_
+            // for `contra_native::enemy::enemy_explosion::enemy_routine_init_
             // explosion`. Real entry $e74b (fixed bank, no bank gate
             // needed). While `pending` is armed, also watches `play_
             // sound`'s own real entry ($c16b) to capture whether (and

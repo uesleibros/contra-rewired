@@ -1,5 +1,5 @@
 //! Debug-only verification tool (not part of the library or any shipped
-//! binary) for `contra_native::sound_engine::MusicSlot`: same methodology
+//! binary) for `contra_native::audio::sound_engine::MusicSlot`: same methodology
 //! as `verify_sound_engine.rs`, but for slots #$00-#$03 (music/high
 //! format + percussion) instead of the two sound-effect slots. Runs real
 //! gameplay through `contra-nes`, and on every fresh trigger spins up a
@@ -21,8 +21,8 @@
 
 use contra_nes::controller::*;
 use contra_nes::{Mirroring, Nes};
-use contra_native::sound_code::Slot;
-use contra_native::sound_engine::MusicSlot;
+use contra_native::audio::sound_code::Slot;
+use contra_native::audio::sound_engine::MusicSlot;
 
 const SOUND_CODE: u16 = 0x106;
 const SOUND_CMD_LENGTH: u16 = 0x100;

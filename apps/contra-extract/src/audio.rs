@@ -12,11 +12,11 @@ const SAMPLE_ENTRY_NAMES: [(usize, &str); 2] = [(0, "dpcm_sample_00"), (1, "dpcm
 pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usize> {
     std::fs::create_dir_all(out_dir)?;
     for (index, name) in SAMPLE_ENTRY_NAMES {
-        let entry = contra_native::audio::dpcm_table_entry(prg_rom, index);
+        let entry = contra_native::audio::audio::dpcm_table_entry(prg_rom, index);
         let raw = prg_rom.get(entry.prg_offset..entry.prg_offset + entry.length).ok_or_else(|| {
             anyhow::anyhow!("{name}: PRG range {:#06x}..{:#06x} is past the end of this ROM's PRG-ROM ({} bytes)", entry.prg_offset, entry.prg_offset + entry.length, prg_rom.len())
         })?;
-        let samples = contra_native::audio::decode_dpcm(raw, entry.initial_level);
+        let samples = contra_native::audio::audio::decode_dpcm(raw, entry.initial_level);
         // The DMC's real DAC output is a 7-bit level (0-127); standard
         // 8-bit PCM WAV is unsigned with silence at the *center* (128).
         // Scale by 2 (0-127 -> 0-254) so it fills the WAV format's range
@@ -25,7 +25,7 @@ pub fn dump_all(prg_rom: &[u8], out_dir: &std::path::Path) -> anyhow::Result<usi
         // change to the decoded DAC levels themselves.
         let wav_samples: Vec<u8> = samples.iter().map(|&level| level * 2).collect();
         let path = out_dir.join(format!("{name}.wav"));
-        write_wav_u8(&path, &wav_samples, contra_native::audio::DPCM_SAMPLE_RATE_HZ)?;
+        write_wav_u8(&path, &wav_samples, contra_native::audio::audio::DPCM_SAMPLE_RATE_HZ)?;
         log::info!("{name}: {} raw bytes -> {} PCM samples, initial level {:#04x}", raw.len(), samples.len(), entry.initial_level);
     }
     Ok(SAMPLE_ENTRY_NAMES.len())

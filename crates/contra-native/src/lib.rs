@@ -45,47 +45,40 @@
 //! ## Two kinds of port live here
 //!
 //! Most of this crate replaces 6502 *game logic* live, one routine at a
-//! time, via `contra-nes`'s `HookAction::ReturnNow` (see `collision` and
-//! `player_physics`). `graphics` is a different kind: a one-time *asset
-//! extractor*, ported from `write_graphic_data_to_ppu` so it can decode
-//! Contra's RLE-compressed CHR data straight from PRG-ROM into plain
-//! image files, offline, with the ROM touched exactly once - see
-//! docs/NATIVE_PORT.md's "The actual end state" section for why that's a
-//! separate, equally necessary piece of the same project.
+//! time, via `contra-nes`'s `HookAction::ReturnNow` (see [`physics::
+//! collision`] and [`physics::player_physics`]). [`world::graphics`] is a
+//! different kind: a one-time *asset extractor*, ported from `write_
+//! graphic_data_to_ppu` so it can decode Contra's RLE-compressed CHR data
+//! straight from PRG-ROM into plain image files, offline, with the ROM
+//! touched exactly once - see docs/NATIVE_PORT.md's "The actual end
+//! state" section for why that's a separate, equally necessary piece of
+//! the same project.
+//!
+//! ## Module layout
+//!
+//! - [`enemy`] - enemy AI/state, spawning, and shared enemy-lifecycle
+//!   logic (the plain soldier's full routine table lives at [`enemy::
+//!   soldier`]).
+//! - [`physics`] - background collision and player/bullet velocity
+//!   integration.
+//! - [`audio`] - DPCM samples, the sound-code bytecode format, and its
+//!   playback engine.
+//! - [`world`] - graphics decompression, palettes, super-tiles, and
+//!   level headers.
 //!
 //! ## Current status
 //!
-//! Just started - see docs/NATIVE_PORT.md for the up-to-date list.
-//! `collision::bg_collision` and `player_physics` are ported and verified
-//! so far (logic side); `graphics` can decompress the documented RLE
-//! format and is unit-tested against the format's own worked example, but
-//! not yet cross-checked against real ROM output (asset side). Everything
-//! else in the game (realistically hundreds more logic routines, plus
-//! audio/level-data extraction) is not started.
+//! See docs/NATIVE_PORT.md for the up-to-date, routine-by-routine list -
+//! logic-side, over 40 routines are ported and live-verified against real
+//! gameplay so far, most still not yet wired into a running game via
+//! `HookAction::ReturnNow` (see that doc's "Integration strategy"
+//! section). Asset-side, graphics, palettes, all 8 levels' layout,
+//! outdoor enemy spawns, DPCM samples, and the full sound-code audio
+//! bytecode all decode straight from PRG-ROM and are verified
+//! byte-identical against `contra-nes`'s live state. Realistically
+//! hundreds more logic routines remain.
 
 pub mod audio;
-pub mod add_scroll_to_enemy_pos;
-pub mod add_with_enemy_pos;
-pub mod bullet_physics;
-pub mod collision;
-pub mod create_enemy_bullet;
-pub mod enemy_clear;
-pub mod enemy_collision_flags;
-pub mod enemy_explosion;
-pub mod enemy_position_utils;
-pub mod enemy_routine_transition;
-pub mod enemy_slots;
-pub mod enemy_spawn;
-pub mod find_far_segment;
-pub mod graphics;
-pub mod initialize_enemy;
-pub mod level;
-pub mod palette;
-pub mod player_enemy_distance;
-pub mod player_physics;
-pub mod quadrant_aim_dir;
-pub mod soldier;
-pub mod sound_code;
-pub mod sound_engine;
-pub mod supertile;
-pub mod update_enemy_pos;
+pub mod enemy;
+pub mod physics;
+pub mod world;

@@ -11,7 +11,7 @@
 //! `LEVEL_LOCATION_TYPE`'s ($40, offset 0) - both agree for every field
 //! used here.
 
-use crate::palette::{LEVEL_HEADERS_PRG_OFFSET, LEVEL_HEADER_LEN};
+use crate::world::palette::{LEVEL_HEADERS_PRG_OFFSET, LEVEL_HEADER_LEN};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollingType {

@@ -2,8 +2,8 @@
 //! (`src/bank7.asm`, CPU `$eb2f`-`$eb3f`) - adds an offset to an enemy's
 //! position without modifying the enemy itself, writing the result to
 //! the `$08`/`$09` scratch pair most of this crate's other aiming/
-//! bullet-creation ports (e.g. [`crate::create_enemy_bullet`],
-//! [`crate::quadrant_aim_dir`]) take as plain `source_y`/`source_x`
+//! bullet-creation ports (e.g. [`crate::enemy::create_enemy_bullet`],
+//! [`crate::enemy::quadrant_aim_dir`]) take as plain `source_y`/`source_x`
 //! parameters. `set_08_09_to_enemy_pos` is the zero-offset special case
 //! (real ASM: `lda #$00; tay` before falling straight into
 //! `add_with_enemy_pos`) - together the two are called **29 real

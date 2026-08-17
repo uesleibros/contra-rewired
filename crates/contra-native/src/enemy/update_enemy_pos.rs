@@ -83,7 +83,7 @@ pub fn remove_enemy() -> RemovedEnemy {
 /// The result of one [`enemy_routine_remove_enemy`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnemyRoutineRemoveEnemyResult {
-    pub scroll: crate::add_scroll_to_enemy_pos::ScrolledEnemyPos,
+    pub scroll: crate::enemy::add_scroll_to_enemy_pos::ScrolledEnemyPos,
     pub removed: RemovedEnemy,
 }
 
@@ -101,7 +101,7 @@ pub fn enemy_routine_remove_enemy(
     enemy_x_pos: u8,
     enemy_y_pos: u8,
 ) -> EnemyRoutineRemoveEnemyResult {
-    let scroll = crate::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+    let scroll = crate::enemy::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
     let removed = remove_enemy();
     EnemyRoutineRemoveEnemyResult { scroll, removed }
 }
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn enemy_routine_remove_enemy_scrolls_then_removes() {
-        use crate::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos;
+        use crate::enemy::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos;
         let r = enemy_routine_remove_enemy(0, 0x02, 0x50, 0x60);
         assert_eq!(r.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x50, 0x60));
         assert_eq!(r.removed, remove_enemy());
