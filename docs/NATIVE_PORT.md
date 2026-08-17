@@ -844,15 +844,15 @@ replacement for its real 6502 code, cycle for cycle.
       arithmetic beyond that. Unit-tested (every real branch: floor
       upgrades to solid, floor stays floor, non-floor codes pass through
       untouched, and the nametable-high-bit-preserving wraparound at the
-      `BG_COLLISION_DATA` offset's edges). **Live verification attempted
-      but had 0 real hits** across a 20000-frame session - this
-      routine's real callers are all enemy-specific "about to walk into
-      a wall" checks, and no soldier happened to reach one within this
-      session's scripted play - noted honestly in the module's own doc
-      comment rather than claimed as live-verified; confidence instead
-      rests on `bg_collision` itself already being cycle-exact live-
-      verified extensively, plus this composition's own thorough unit
-      tests. Not yet integrated live, same status as every routine
+      `BG_COLLISION_DATA` offset's edges). **Live-verified indirectly**:
+      this routine's real callers are all enemy-specific "about to walk
+      into a wall" checks, none reachable by a direct hook of their own
+      within this project's scripted level-1 playthrough - but `soldier_
+      routine_02_jumping`'s own live-verification pass (see below)
+      exercises this exact floor-lookahead logic through `check_enemy_
+      collision_solid_bg` (confirmed identical to this function), giving
+      it 96 real zero-mismatch calls by the time that routine's port
+      landed. Not yet integrated live, same status as every routine
       above.
 - [x] **`collision::add_a_y_to_enemy_pos_get_bg_collision` / `add_y_to_y_pos_get_bg_collision`**
       (same module) - ported from `add_a_y_to_enemy_pos_get_bg_collision`/
@@ -919,32 +919,69 @@ replacement for its real 6502 code, cycle for cycle.
       `$e849` `apply_vel_exit`, plus the 2 shared exits earlier soldier
       routines already use, disambiguated from the water-landing case's
       own nested `jsr set_enemy_routine_to_a` return the same way `soldier_
-      routine_01`'s hook disambiguates its shared exit): **96 of 97 real
-      calls matched exactly across a 25000-frame session**. The one
-      mismatch is an **open, unresolved discrepancy**, documented
-      honestly rather than hidden: at a specific large-`VERTICAL_SCROLL`
-      input (`$e0`, triggering the vertical-scroll overflow-adjustment
-      path), real hardware's final state (`ENEMY_SPRITES=$00`, X/Y
-      position bit-for-bit unchanged from entry) matches what would
-      happen if `check_enemy_collision_solid_bg` had returned `Solid`
-      *at the soldier's own position*, triggering the early bailout to
-      `soldier_routine_09` with a guard-rejected `ENEMY_ROUTINE` (already
-      `0` at entry, itself unexplained - the real dispatch loop,
-      `exe_enemy_routine_loop` in `bank7.asm`, only ever calls a routine
-      when `ENEMY_ROUTINE != 0`, so this specific case's captured entry
-      state doesn't fit that invariant either) - but this port's own
-      `check_enemy_collision_solid_bg`/`get_bg_collision_far` computation
-      for the same captured inputs returns `Floor` (no solid upgrade; the
-      row-below byte decodes to `Water`, not `Solid`). The full formula
-      (`bg_collision_scratch`'s vertical/horizontal-scroll math, the
-      `floor_get_next_row_bg_collision` offset-plus-4/high-bits-preserved
-      computation) was re-derived line-by-line against the real ASM
-      during this investigation and found to match exactly, so the root
-      cause remains genuinely unidentified - flagged here for future
-      investigation rather than either buried or endlessly chased at the
-      cost of everything else in this session. Not yet integrated live,
-      same status as every routine above.
-- [ ] Everything else, logic side. Thirty-two routines out of what's
+      routine_01`'s hook disambiguates its shared exit): **96 real calls
+      across a 25000-frame session, zero mismatches** - including the
+      water-landing case's own routine switch and the full ground-check/
+      collision-enable/velocity-set advance tail, both matching real
+      hardware exactly. (An earlier pass of this same hook briefly showed
+      96/97 with one unexplained mismatch; that turned out to be a bug in
+      the *verification harness itself*, not this port - see the "$8000-
+      $bfff is a switchable bank window" note under `VERIFY_SOLDIER_
+      ROUTINE_03` below for the root cause and fix, which applies equally
+      here.) Not yet integrated live, same status as every routine above.
+- [x] **`soldier::soldier_routine_03` / `bullet_generation` / `set_soldier_sprite_add_scroll_01`**
+      (`crates/contra-native/src/soldier.rs`) - ported from `soldier_
+      routine_03` (`bank0.asm`, `$8803`-`$8863`): the soldier's "try and
+      fire a bullet" state - crouches or stands based on `ENEMY_ATTRIBUTES`
+      bit 3, waits out `ENEMY_ATTACK_DELAY`, then either fires one of
+      `ENEMY_VAR_3` remaining bullets (computing its spawn position from a
+      per-direction/per-stance offset table and bailing without even
+      attempting a spawn if that position is off-screen) or, once all
+      bullets are spent, resets state and returns to `soldier_routine_02`.
+      Composes `create_enemy_bullet_angle_a` (already ported and unit-
+      tested, from an earlier session) through the one-instruction real
+      caller-side transform `bullet_generation` (`$f2be`, a bare `asl`).
+      **No `RANDOM_NUM`/inherited-carry dependency anywhere in this
+      routine** (unlike `soldier_routine_02`'s still-unported walking
+      sub-path) - every branch is a plain, deterministic bit test or
+      unsigned comparison, verified by re-reading the full real ASM
+      instruction-by-instruction rather than assumed. Caught one real bug
+      during that re-reading, before it ever reached a test: the gun
+      recoil timer (`ENEMY_VAR_1`) is stored *immediately before* falling
+      into the shared `set_soldier_sprite_add_scroll_01` tail, so `set_
+      soldier_sprite` (which reads and decrements `ENEMY_VAR_1` as part of
+      its own logic) sees the *freshly-set* `$06` on the same call a
+      bullet fires, not whatever `ENEMY_VAR_1` was on entry - an early
+      draft threaded the original input straight through instead.
+      Unit-tested (14 new tests: crouch vs. standing frame/collision-box
+      selection, the waiting path, all-bullets-fired reset, both off-
+      screen-abort directions via the real unsigned-overflow arithmetic,
+      a successful spawn with correct slot/position/recoil threading, and
+      the no-free-slot decline case).
+      **Live-verification uncovered a real bug in the verification
+      harness itself, not this port**: `bank0.asm` (where every `soldier_
+      routine_0N` lives) occupies the switchable `$8000-$bfff` UxROM
+      window, only actually mapped there when the mapper's `bank_select()
+      == 0` - the hook was originally missing that gate, so it also
+      "verified" 212 calls firing at `$8803` while a *different* bank
+      was mapped (confirmed by reading the real bytes there: `85 ea a5`
+      - a plain `sta $ea`, not this routine's actual `bd a8 05` - `lda
+      ENEMY_ATTRIBUTES,x` - with the enemy slot register `x` holding
+      garbage values as large as `32`, past the real 16-slot range).
+      Fixed by gating all four `soldier_routine_0N` entry hooks
+      (`$861e`/`$8665`/`$86af`/`$8803`) on `bank_select() == 0`; this
+      also retroactively explained `soldier_routine_02_jumping`'s one
+      previously-unexplained mismatch (see above) - it vanished
+      completely once the same gate was added. With the gate in place,
+      `soldier_routine_03` itself had **0 real hits** across a
+      45000-frame session - this scripted level-1 playthrough's soldiers
+      never happen to get an unobstructed, on-screen shot at the player
+      within the captured window - noted honestly rather than claimed as
+      live-verified; confidence rests on the unit tests above and on
+      every building block this composes already being independently
+      live-verified in its own right. Not yet integrated live, same
+      status as every routine above.
+- [ ] Everything else, logic side. Thirty-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

@@ -332,6 +332,111 @@ fn verify_soldier_routine_02_jumping(
     }
 }
 
+/// Captured inputs for one real `soldier_routine_03` call (`$8803`). See
+/// `VERIFY_SOLDIER_ROUTINE_03`'s comment in `main` for the real exits and
+/// the nested-return disambiguation the `AllFired` path needs.
+#[derive(Clone)]
+struct SoldierRoutine03Ctx {
+    x: usize,
+    current_level: u8,
+    attack_flag: u8,
+    attributes: u8,
+    attack_delay: u8,
+    var_3: u8,
+    var_2: u8,
+    x_pos: u8,
+    y_pos: u8,
+    var_1: u8,
+    scroll_type: u8,
+    frame_scroll: u8,
+    routine: u8,
+    enemy_routine: [u8; contra_native::enemy_slots::ENEMY_SLOT_COUNT],
+}
+
+fn verify_soldier_routine_03(
+    ctx: SoldierRoutine03Ctx,
+    prg_rom: &[u8],
+    cpu: &contra_nes::cpu::Cpu,
+    bus: &contra_nes::bus::NesBus,
+    frame: u32,
+    checked: &mut u64,
+) {
+    use contra_native::soldier::{soldier_routine_03, SoldierRoutine03Outcome};
+
+    let x = ctx.x;
+    let expected = soldier_routine_03(
+        prg_rom, &ctx.enemy_routine, ctx.current_level, ctx.attack_flag, ctx.attributes, ctx.attack_delay, ctx.var_3,
+        ctx.var_2, ctx.x_pos, ctx.y_pos, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine,
+    );
+    *checked += 1;
+
+    let real_score_collision = bus.ram[0x588 + x];
+    let real_frame = bus.ram[0x568 + x];
+    let real_attack_delay = bus.ram[0x558 + x];
+    let real_var_3 = bus.ram[0x5D8 + x];
+    let real_var_1 = bus.ram[0x5B8 + x];
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_sprite_attr = bus.ram[0x358 + x];
+    let real_routine = bus.ram[0x4B8 + x];
+
+    let mismatch = match expected {
+        SoldierRoutine03Outcome::Waiting(w) => {
+            let score_ok = w.score_collision.map(|v| real_score_collision == v).unwrap_or(true);
+            let removed = w.tail.scroll.should_remove;
+            let expected_sprites = if removed { 0 } else { w.tail.sprite.sprite };
+            let expected_routine = if removed { 0 } else { ctx.routine };
+            !score_ok
+                || real_frame != w.enemy_frame
+                || real_attack_delay != w.attack_delay
+                || real_x_pos != w.tail.scroll.x_pos
+                || real_y_pos != w.tail.scroll.y_pos
+                || real_sprites != expected_sprites
+                || real_sprite_attr != w.tail.sprite.sprite_attr
+                || real_var_1 != w.tail.sprite.var_1
+                || real_routine != expected_routine
+        }
+        SoldierRoutine03Outcome::Fired(f) => {
+            let score_ok = f.score_collision.map(|v| real_score_collision == v).unwrap_or(true);
+            let removed = f.tail.scroll.should_remove;
+            let expected_sprites = if removed { 0 } else { f.tail.sprite.sprite };
+            let expected_routine = if removed { 0 } else { ctx.routine };
+            !score_ok
+                || real_frame != f.enemy_frame
+                || real_attack_delay != f.attack_delay
+                || real_var_3 != f.var_3
+                || real_x_pos != f.tail.scroll.x_pos
+                || real_y_pos != f.tail.scroll.y_pos
+                || real_sprites != expected_sprites
+                || real_sprite_attr != f.tail.sprite.sprite_attr
+                || real_var_1 != f.tail.sprite.var_1
+                || real_routine != expected_routine
+        }
+        SoldierRoutine03Outcome::AllFired(a) => {
+            let removed = a.tail.scroll.should_remove;
+            let expected_sprites = if removed { 0 } else { a.tail.sprite.sprite };
+            let expected_routine = if removed { 0 } else { a.routine_update.routine };
+            real_score_collision != 0x10
+                || real_frame != 0x00
+                || real_var_3 != 0x00
+                || real_x_pos != a.tail.scroll.x_pos
+                || real_y_pos != a.tail.scroll.y_pos
+                || real_sprites != expected_sprites
+                || real_sprite_attr != a.tail.sprite.sprite_attr
+                || real_var_1 != a.tail.sprite.var_1
+                || real_routine != expected_routine
+        }
+    };
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(soldier_routine_03) frame={frame} pc={:04X} in=(attack_flag={:02X} attrs={:02X} attack_delay={:02X} var_3={:02X} var_2={:02X} x={:02X} y={:02X} var_1={:02X} scroll_type={:02X} frame_scroll={:02X} routine={:02X}): expected {:?}, got score_collision={real_score_collision:02X} frame={real_frame:02X} attack_delay={real_attack_delay:02X} var_3={real_var_3:02X} var_1={real_var_1:02X} x={real_x_pos:02X} y={real_y_pos:02X} sprites={real_sprites:02X} sprite_attr={real_sprite_attr:02X} routine={real_routine:02X}",
+            cpu.pc, ctx.attack_flag, ctx.attributes, ctx.attack_delay, ctx.var_3, ctx.var_2, ctx.x_pos, ctx.y_pos, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine, expected
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -1900,7 +2005,12 @@ fn main() {
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
                 match cpu.pc {
-                    0x861E => {
+                    // See `VERIFY_SOLDIER_ROUTINE_03`'s comment below for
+                    // why this bank gate matters: $8000-$bfff is a
+                    // switchable window, and `bank0.asm` (this routine's
+                    // real home) is only actually mapped there when
+                    // `bank_select() == 0`.
+                    0x861E if bus.mapper.bank_select() == 0 => {
                         let x = cpu.x as usize;
                         pending = Some((
                             x,
@@ -2054,7 +2164,12 @@ fn main() {
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
                 match cpu.pc {
-                    0x8665 => {
+                    // See `VERIFY_SOLDIER_ROUTINE_03`'s comment below for
+                    // why this bank gate matters: $8000-$bfff is a
+                    // switchable window, and `bank0.asm` (this routine's
+                    // real home) is only actually mapped there when
+                    // `bank_select() == 0`.
+                    0x8665 if bus.mapper.bank_select() == 0 => {
                         let x = cpu.x as usize;
                         let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
                         for (i, b) in data.iter_mut().enumerate() {
@@ -2136,7 +2251,12 @@ fn main() {
             let mut checked = 0u64;
             nes.run_frame_with_hook(&mut |cpu, bus| {
                 match cpu.pc {
-                    0x86AF => {
+                    // See `VERIFY_SOLDIER_ROUTINE_03`'s comment below for
+                    // why this bank gate matters: $8000-$bfff is a
+                    // switchable window, and `bank0.asm` (this routine's
+                    // real home) is only actually mapped there when
+                    // `bank_select() == 0`.
+                    0x86AF if bus.mapper.bank_select() == 0 => {
                         let x = cpu.x as usize;
                         let var_3 = bus.ram[0x5D8 + x];
                         if var_3 != 0 {
@@ -2194,6 +2314,94 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} soldier-routine-02-jumping calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SOLDIER_ROUTINE_03").is_ok() {
+            // VERIFY_SOLDIER_ROUTINE_03=1: verification pass for
+            // `contra_native::soldier::soldier_routine_03`. Real entry
+            // $8803. Real exits for the Waiting/Fired outcomes (reached
+            // via a pure tail-call chain all the way through `set_
+            // soldier_sprite_add_scroll_01`/`add_scroll_to_enemy_pos`,
+            // no nested returns): `$e8b8` (`scroll_enemy_pos_exit`,
+            // vertical level, no removal), `$e8c6` (`add_horizontal_
+            // scroll`'s own rts, horizontal level, no removal), and the
+            // shared `remove_enemy` exit `$e813`.
+            //
+            // The `AllFired` outcome (`soldier_fired_all_bullets`) is
+            // different: it `jsr`s (not tail-jumps) both `set_soldier_
+            // sprite` and `add_scroll_to_enemy_pos`, then makes its own
+            // final `set_enemy_routine_to_a` call - so `$e796`/`$e813`
+            // can *also* fire as an intermediate nested return (if `add_
+            // scroll_to_enemy_pos`'s own removal check happens to trip)
+            // before the genuine final exit. Disambiguated the same way
+            // as `soldier_routine_01`/`02`'s hooks: a nested return here
+            // always lands back inside `soldier_fired_all_bullets`'s own
+            // un-labeled body ($886a up to the next label, `soldier_
+            // bullet_y_offset`, at $8882) - only a return address outside
+            // that narrow range is treated as the genuine exit.
+            use contra_native::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<SoldierRoutine03Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    // $8000-$bfff is the switchable bank window - `bank0.asm`
+                    // (where `soldier_routine_03` and everything it calls
+                    // lives) is only actually mapped there when `bank_select()
+                    // == 0`; any other bank number reuses these same numeric
+                    // addresses for completely unrelated code (confirmed by
+                    // capturing raw bytes at $8803 without this gate: real
+                    // bytes were `85 ea a5` - `sta $ea`, not `soldier_routine_
+                    // 03`'s real `bd a8 05` - `lda ENEMY_ATTRIBUTES,x` - every
+                    // one of 212 "matches" from an earlier, ungated version of
+                    // this hook was a false positive against unrelated code).
+                    0x8803 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(SoldierRoutine03Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attack_flag: bus.ram[0x8E],
+                            attributes: bus.ram[0x5A8 + x],
+                            attack_delay: bus.ram[0x558 + x],
+                            var_3: bus.ram[0x5D8 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0xE8B8 | 0xE8C6 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_03(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0x886A..0x8882).contains(&ret) {
+                            // Nested return from `soldier_fired_all_
+                            // bullets`'s own `jsr set_soldier_sprite`/
+                            // `jsr add_scroll_to_enemy_pos` - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_03(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} soldier-routine-03 calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();

@@ -1,11 +1,14 @@
-//! Native port of the plain soldier enemy's first two AI states
-//! (`src/bank0.asm`): `soldier_routine_00` (CPU `$861e`-`$8633`), run once
-//! right after `initialize_enemy` spawns it - nudges its position slightly
-//! down so it visually stands on the ground, and sets a per-attribute
-//! initial animation delay before advancing to `soldier_routine_01`
-//! (`$8665`), which waits out that delay, checks for ground beneath the
-//! soldier, and either removes it (no valid footing - e.g. a destroyed
-//! bridge) or plants it and sets it walking. This crate's first
+//! Native port of the plain soldier enemy's AI states (`src/bank0.asm`):
+//! `soldier_routine_00` (CPU `$861e`-`$8633`), run once right after
+//! `initialize_enemy` spawns it - nudges its position slightly down so it
+//! visually stands on the ground, and sets a per-attribute initial
+//! animation delay before advancing to `soldier_routine_01` (`$8665`),
+//! which waits out that delay, checks for ground beneath the soldier, and
+//! either removes it (no valid footing - e.g. a destroyed bridge) or
+//! plants it and sets it walking (`soldier_routine_02`, jumping sub-path
+//! only so far - see [`soldier_routine_02_jumping`]); `soldier_routine_03`
+//! (`$8803`) is the "try and fire a bullet" state reached from the
+//! walking sub-path once it's not yet ported. This crate's first
 //! **composed enemy AI states** - every step is a call into an already
 //! independently-verified building block
 //! ([`crate::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos`],
@@ -22,9 +25,11 @@
 
 use crate::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
 use crate::collision::{add_y_to_y_pos_get_bg_collision, check_enemy_collision_solid_bg, get_bg_collision_far, CollisionCode, BG_COLLISION_DATA_LEN};
+use crate::create_enemy_bullet::{create_enemy_bullet_angle_a, CreatedBullet};
 use crate::enemy_collision_flags::enable_enemy_collision;
 use crate::enemy_position_utils::{add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos};
 use crate::enemy_routine_transition::{set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate};
+use crate::enemy_slots::ENEMY_SLOT_COUNT;
 use crate::update_enemy_pos::{remove_enemy, set_enemy_y_velocity_to_0, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos, ZeroedVelocity};
 
 /// `soldier_initial_anim_delay_tbl` (`$8634`, 4 bytes) - indexed by the
@@ -318,14 +323,8 @@ pub enum SoldierApplyVelOutcome {
 /// object, then updates its sprite and applies velocity/scroll to its
 /// position.
 ///
-/// Live-verified indirectly via [`soldier_routine_02_jumping`]: 96 of 97
-/// real calls matched exactly. The one open mismatch (see docs/
-/// NATIVE_PORT.md) looks, from the real hardware's final RAM state, like
-/// it involves *this* function's own `SolidAtOwnPosition` early exit
-/// firing when this port's [`check_enemy_collision_solid_bg`] computed
-/// `Floor` instead - root cause not yet identified despite re-deriving
-/// the full formula line-by-line against the real ASM and finding no
-/// discrepancy.
+/// Live-verified indirectly via [`soldier_routine_02_jumping`]: 96 real
+/// calls, zero mismatches.
 #[allow(clippy::too_many_arguments)]
 pub fn soldier_apply_vel_check_solid_collision(
     enemy_x_pos: u8,
@@ -544,6 +543,199 @@ pub fn soldier_routine_02_jumping(
         landing: SoldierRoutine02Landing::NotLanded { water_routine_switch, y_velocity },
         tail,
     }
+}
+
+/// `soldier_bullet_y_offset` (`$8882`, 4 bytes) - Y offset from the
+/// soldier's own position for a spawned bullet, indexed the same way as
+/// `soldier_bullet_x_offset`: `[standing-left, standing-right, crouch-
+/// left, crouch-right]`.
+const SOLDIER_BULLET_Y_OFFSET: [u8; 4] = [0xF7, 0xF7, 0x0A, 0x0A];
+/// `soldier_bullet_x_offset` (`$8886`, 4 bytes) - same indexing as
+/// [`SOLDIER_BULLET_Y_OFFSET`].
+const SOLDIER_BULLET_X_OFFSET: [u8; 4] = [0xF0, 0x10, 0xF0, 0x10];
+/// `soldier_bullet_type_tbl` (`$888a`, 2 bytes) - indexed by `ENEMY_VAR_2`
+/// (running direction); fed through [`bullet_generation`]'s `asl` before
+/// reaching [`create_enemy_bullet_angle_a`].
+const SOLDIER_BULLET_TYPE_TBL: [u8; 2] = [0x06, 0x00];
+
+/// Native port of `bullet_generation` (`$f2be`) - real ASM is a single
+/// `asl` immediately falling through into `create_enemy_bullet_angle_a`;
+/// this crate already has that routine ported
+/// ([`crate::create_enemy_bullet::create_enemy_bullet_angle_a`]), so this
+/// is just the one-instruction caller-side transform feeding into it.
+pub fn bullet_generation(bullet_type_and_angle_pre_shift: u8) -> u8 {
+    bullet_type_and_angle_pre_shift << 1
+}
+
+/// The result of one [`set_soldier_sprite_add_scroll_01`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierSpriteScrollResult {
+    pub sprite: SoldierSpriteResult,
+    pub scroll: ScrolledEnemyPos,
+}
+
+/// Native port of `set_soldier_sprite_add_scroll_01` (`$8864`) - the tail
+/// `soldier_routine_03`/`soldier_fired_all_bullets` share: updates the
+/// sprite, then applies camera scroll to the position (unlike `soldier_
+/// routine_01`/`02`'s own tail, `set_soldier_sprite_update_pos`, this one
+/// does *not* apply velocity - firing doesn't move the soldier).
+#[allow(clippy::too_many_arguments)]
+pub fn set_soldier_sprite_add_scroll_01(
+    enemy_frame: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+) -> SoldierSpriteScrollResult {
+    let sprite = set_soldier_sprite(enemy_frame, enemy_var_2, enemy_var_1);
+    let scroll = add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+    SoldierSpriteScrollResult { sprite, scroll }
+}
+
+/// [`soldier_routine_03`]'s result when `ENEMY_ATTACK_DELAY` hadn't
+/// elapsed yet this call - nothing beyond the sprite/scroll tail runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine03Waiting {
+    /// `Some($1b)` only if crouching to fire this call (real ASM sets
+    /// this unconditionally whenever the crouch branch is taken, even
+    /// though the delay hasn't elapsed - it's a per-attribute constant,
+    /// not tied to when firing actually happens).
+    pub score_collision: Option<u8>,
+    pub enemy_frame: u8,
+    pub attack_delay: u8,
+    pub tail: SoldierSpriteScrollResult,
+}
+
+/// [`soldier_routine_03`]'s result when the delay elapsed and a bullet
+/// was (or wasn't) fired this call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine03Fired {
+    pub score_collision: Option<u8>,
+    pub enemy_frame: u8,
+    /// Always `$10` (real ASM resets the delay unconditionally on this
+    /// path, whether or not the bullet itself actually spawns).
+    pub attack_delay: u8,
+    pub var_3: u8,
+    /// `None` covers *both* "computed spawn position was off-screen" (no
+    /// creation even attempted) and "on-screen, but `create_enemy_
+    /// bullet_angle_a` itself declined" (attack flag off, or no free
+    /// enemy slot) - both leave identical real RAM state beyond this
+    /// composition's own earlier steps, so collapsing them loses no
+    /// verifiable fidelity.
+    pub bullet: Option<CreatedBullet>,
+    /// `Some($06)` only if `bullet` is `Some` - the gun recoil timer real
+    /// ASM sets right after a successful spawn.
+    pub gun_recoil_timer: Option<u8>,
+    pub tail: SoldierSpriteScrollResult,
+}
+
+/// [`soldier_routine_03`]'s result when the soldier just fired its last
+/// bullet this call - real ASM resets crouch/frame/bullet-count and
+/// advances back to `soldier_routine_02`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine03AllFired {
+    pub routine_update: EnemyRoutineUpdate,
+    pub tail: SoldierSpriteScrollResult,
+}
+
+/// The real, branchy result of one [`soldier_routine_03`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoldierRoutine03Outcome {
+    Waiting(SoldierRoutine03Waiting),
+    Fired(SoldierRoutine03Fired),
+    AllFired(SoldierRoutine03AllFired),
+}
+
+/// Native port of `soldier_routine_03` (`$8803`) - the soldier's "try and
+/// fire a bullet" state: crouches or stands depending on `ENEMY_
+/// ATTRIBUTES` bit 3, waits out `ENEMY_ATTACK_DELAY`, then either fires
+/// one of `ENEMY_VAR_3` remaining bullets (computing its spawn position
+/// from a per-direction/per-stance offset table and bailing without even
+/// attempting a spawn if that position is off-screen) or, once all
+/// bullets are spent, resets state and returns to `soldier_routine_02`.
+/// No `RANDOM_NUM`/inherited-carry dependency anywhere in this routine
+/// (unlike `soldier_routine_02`'s still-unported walking sub-path) - every
+/// branch here is a plain, deterministic bit test or unsigned comparison.
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_03(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    enemy_attack_flag: u8,
+    enemy_attributes: u8,
+    enemy_attack_delay: u8,
+    enemy_var_3: u8,
+    enemy_var_2: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_1: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+) -> SoldierRoutine03Outcome {
+    // Real ASM: `and #$0c; cmp #$05` - masks to bits 2-3 (values
+    // 0/4/8/12), then an unsigned compare against 5; only 8 and 12 (bit 3
+    // set) satisfy `>= 5`, so this is exactly a bit-3 test, computed the
+    // literal way the real comparison does it rather than simplified.
+    let crouching = (enemy_attributes & 0x0C) >= 0x05;
+    let (score_collision, enemy_frame) = if crouching { (Some(0x1B), 0x07) } else { (None, 0x06) };
+
+    let attack_delay = enemy_attack_delay.wrapping_sub(1);
+    if attack_delay != 0 {
+        let tail =
+            set_soldier_sprite_add_scroll_01(enemy_frame, enemy_var_2, enemy_var_1, level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+        return SoldierRoutine03Outcome::Waiting(SoldierRoutine03Waiting { score_collision, enemy_frame, attack_delay, tail });
+    }
+
+    let var_3 = enemy_var_3.wrapping_sub(1);
+    if (var_3 as i8) < 0 {
+        let tail = set_soldier_sprite_add_scroll_01(0x00, enemy_var_2, enemy_var_1, level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+        let routine_update = set_enemy_routine_to_a(current_routine, 0x03);
+        return SoldierRoutine03Outcome::AllFired(SoldierRoutine03AllFired { routine_update, tail });
+    }
+
+    let attack_delay = 0x10;
+    let offset_index = (if crouching { 2 } else { 0 }) + (if enemy_var_2 != 0 { 1 } else { 0 });
+    let bullet_y_pos = enemy_y_pos.wrapping_add(SOLDIER_BULLET_Y_OFFSET[offset_index]);
+    let x_offset = SOLDIER_BULLET_X_OFFSET[offset_index];
+
+    let bullet_x_pos = if (x_offset as i8) < 0 {
+        let (bx, carry) = x_offset.overflowing_add(enemy_x_pos);
+        if !carry || bx < 0x08 {
+            None
+        } else {
+            Some(bx)
+        }
+    } else {
+        let (bx, carry) = x_offset.overflowing_add(enemy_x_pos);
+        if carry {
+            None
+        } else {
+            Some(bx)
+        }
+    };
+
+    let (bullet, gun_recoil_timer) = if let Some(bullet_x_pos) = bullet_x_pos {
+        let bullet_type_and_angle = bullet_generation(SOLDIER_BULLET_TYPE_TBL[enemy_var_2 as usize]);
+        let created =
+            create_enemy_bullet_angle_a(prg_rom, enemy_routine, current_level, enemy_attack_flag, bullet_type_and_angle, 0x06, bullet_y_pos, bullet_x_pos);
+        let recoil = if created.is_some() { Some(0x06) } else { None };
+        (created, recoil)
+    } else {
+        (None, None)
+    };
+
+    // The gun recoil timer, if just set, is stored *before* falling into
+    // the shared tail - `set_soldier_sprite` itself reads (and
+    // decrements) `ENEMY_VAR_1` as part of its own logic, so a bullet
+    // fired this exact call already sees the fresh `$06`, not the
+    // original input.
+    let tail_var_1 = gun_recoil_timer.unwrap_or(enemy_var_1);
+    let tail =
+        set_soldier_sprite_add_scroll_01(enemy_frame, enemy_var_2, tail_var_1, level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+    SoldierRoutine03Outcome::Fired(SoldierRoutine03Fired { score_collision, enemy_frame, attack_delay, var_3, bullet, gun_recoil_timer, tail })
 }
 
 #[cfg(test)]
@@ -865,6 +1057,147 @@ mod tests {
                 assert_eq!(y_velocity, add_10_to_enemy_y_fract_vel(0x00, 0x10));
             }
             other => panic!("expected NotLanded, got {other:?}"),
+        }
+    }
+
+    fn synthetic_prg_rom() -> Vec<u8> {
+        // Same shape as `create_enemy_bullet`'s own synthetic-ROM test
+        // fixture: a shared property-table pointer with a recognizable
+        // record at enemy_type=1's (bullets') offset.
+        let mut rom = vec![0u8; 8 * 0x4000];
+        let ptr_tbl_off = 7 * 0x4000 + (0xEE8D_usize - 0xC000);
+        let shared_table_addr: u16 = 0xEF00;
+        rom[ptr_tbl_off + 0x10..ptr_tbl_off + 0x12].copy_from_slice(&shared_table_addr.to_le_bytes());
+        let record_off = 7 * 0x4000 + (shared_table_addr as usize - 0xC000) + 4;
+        rom[record_off..record_off + 4].copy_from_slice(&[0x80, 0x00, 0x01, 0x00]);
+        rom
+    }
+
+    #[test]
+    fn bullet_generation_shifts_left_by_one() {
+        assert_eq!(bullet_generation(0x06), 0x0C);
+        assert_eq!(bullet_generation(0x00), 0x00);
+    }
+
+    #[test]
+    fn set_soldier_sprite_add_scroll_01_composes_sprite_and_scroll() {
+        let r = set_soldier_sprite_add_scroll_01(0x06, 1, 0, 0, 0x03, 0x50, 0x60);
+        assert_eq!(r.sprite, set_soldier_sprite(0x06, 1, 0));
+        assert_eq!(r.scroll, add_scroll_to_enemy_pos(0, 0x03, 0x50, 0x60));
+    }
+
+    #[test]
+    fn routine_03_waits_when_attack_delay_has_not_elapsed() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x00, 0x05, 0x02, 0, 0x50, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::Waiting(w) => {
+                assert_eq!(w.attack_delay, 0x04);
+                assert_eq!(w.score_collision, None);
+                assert_eq!(w.enemy_frame, 0x06);
+            }
+            other => panic!("expected Waiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_03_crouching_sets_score_collision_and_crouch_frame() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x08, 0x05, 0x02, 0, 0x50, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::Waiting(w) => {
+                assert_eq!(w.score_collision, Some(0x1B));
+                assert_eq!(w.enemy_frame, 0x07);
+            }
+            other => panic!("expected Waiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_03_all_bullets_fired_resets_and_advances_to_routine_02() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        // var_3=0x00 -> wrapping_sub(1) = 0xFF, negative as i8 -> all fired.
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x00, 0x01, 0x00, 0, 0x50, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::AllFired(a) => {
+                assert_eq!(a.routine_update, set_enemy_routine_to_a(3, 0x03));
+                assert_eq!(a.tail.sprite, set_soldier_sprite(0x00, 0, 0));
+            }
+            other => panic!("expected AllFired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_03_off_screen_left_aborts_without_attempting_a_bullet() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        // running left (var_2=0): x_offset=0xF0 (-16). enemy_x_pos=0x05
+        // -> 0xF0+0x05=0xF5, carry=false -> off-screen (no carry-out).
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x00, 0x01, 0x02, 0, 0x05, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::Fired(f) => {
+                assert_eq!(f.bullet, None);
+                assert_eq!(f.gun_recoil_timer, None);
+                assert_eq!(f.attack_delay, 0x10);
+                assert_eq!(f.var_3, 0x01);
+            }
+            other => panic!("expected Fired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_03_off_screen_right_aborts_without_attempting_a_bullet() {
+        let rom = synthetic_prg_rom();
+        let routine = [0u8; ENEMY_SLOT_COUNT];
+        // running right (var_2=1): x_offset=0x10. enemy_x_pos=0xF5 ->
+        // 0x10+0xF5=0x05 with carry=true -> off-screen (overflow).
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x00, 0x01, 0x02, 1, 0xF5, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::Fired(f) => assert_eq!(f.bullet, None),
+            other => panic!("expected Fired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_03_on_screen_left_creates_a_bullet_and_sets_recoil() {
+        let rom = synthetic_prg_rom();
+        let mut routine = [1u8; ENEMY_SLOT_COUNT];
+        routine[5] = 0; // only slot 5 free
+        // running left, well on-screen: 0xF0+0x50=0x40, carry=true, 0x40>=0x08 -> fires.
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x00, 0x01, 0x02, 0, 0x50, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::Fired(f) => {
+                let bullet = f.bullet.expect("expected a bullet to be created");
+                assert_eq!(bullet.slot, 5);
+                assert_eq!(f.gun_recoil_timer, Some(0x06));
+                // bullet Y = enemy_y_pos(0x60) + soldier_bullet_y_offset[0](0xF7) = 0x57
+                assert_eq!(bullet.fields.y_pos, 0x60u8.wrapping_add(0xF7));
+                assert_eq!(bullet.fields.x_pos, 0x40);
+                // `set_soldier_sprite` runs *after* the recoil timer is
+                // stored, so it sees (and decrements) the fresh $06, not
+                // whatever `enemy_var_1` was on entry.
+                assert_eq!(f.tail.sprite, set_soldier_sprite(0x06, 0, 0x06));
+                assert_eq!(f.tail.sprite.var_1, 0x05);
+            }
+            other => panic!("expected Fired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_03_declined_creation_when_no_free_slot_still_updates_state_but_no_recoil() {
+        let rom = synthetic_prg_rom();
+        let routine = [1u8; ENEMY_SLOT_COUNT]; // no free slots
+        let r = soldier_routine_03(&rom, &routine, 0, 1, 0x00, 0x01, 0x02, 0, 0x50, 0x60, 0, 0, 0x00, 3);
+        match r {
+            SoldierRoutine03Outcome::Fired(f) => {
+                assert_eq!(f.bullet, None);
+                assert_eq!(f.gun_recoil_timer, None);
+                assert_eq!(f.var_3, 0x01);
+            }
+            other => panic!("expected Fired, got {other:?}"),
         }
     }
 }
