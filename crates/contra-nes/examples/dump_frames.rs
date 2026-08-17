@@ -130,6 +130,96 @@ fn measure_bg_collision_cycles(nes: &mut Nes, x: u8, y: u8, vertical_scroll: u8,
     panic!("get_bg_collision never returned within 500 instructions for x={x} y={y} vs={vertical_scroll} hs={horizontal_scroll} ppuctrl={ppuctrl_settings:02X} - real routine or harness is broken");
 }
 
+/// Captured inputs for one real `soldier_routine_01` call (`$8665`),
+/// snapshotted at entry - see `VERIFY_SOLDIER_ROUTINE_01`'s comment in
+/// `main` for the real exits and the nested-`rts` disambiguation this
+/// needs.
+#[derive(Clone, Copy)]
+struct SoldierRoutine01Ctx {
+    x: usize,
+    scroll_type: u8,
+    frame_scroll: u8,
+    frame_counter: u8,
+    attrs: u8,
+    delay: u8,
+    x_pos: u8,
+    y_pos: u8,
+    state_width: u8,
+    vscroll: u8,
+    hscroll: u8,
+    ppuctrl: u8,
+    data: [u8; contra_native::collision::BG_COLLISION_DATA_LEN],
+    routine: u8,
+}
+
+fn verify_soldier_routine_01(
+    ctx: SoldierRoutine01Ctx,
+    cpu: &contra_nes::cpu::Cpu,
+    bus: &contra_nes::bus::NesBus,
+    frame: u32,
+    checked: &mut u64,
+) {
+    use contra_native::soldier::{soldier_routine_01, SoldierRoutine01Outcome};
+
+    let x = ctx.x;
+    let expected = soldier_routine_01(
+        ctx.scroll_type, ctx.frame_scroll, ctx.frame_counter, ctx.attrs, ctx.delay, ctx.x_pos, ctx.y_pos,
+        ctx.state_width, ctx.vscroll, ctx.hscroll, ctx.ppuctrl, &ctx.data, ctx.routine,
+    );
+    *checked += 1;
+
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_delay = bus.ram[0x538 + x];
+    let real_routine = bus.ram[0x4B8 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_state_width = bus.ram[0x598 + x];
+    let real_var_2 = bus.ram[0x5C8 + x];
+    let real_x_fract = bus.ram[0x518 + x];
+    let real_x_fast = bus.ram[0x508 + x];
+    let real_y_fract = bus.ram[0x4F8 + x];
+    let real_y_fast = bus.ram[0x4E8 + x];
+
+    let expected_x_pos_before_advance = expected.scrolled.map(|s| s.x_pos).unwrap_or(ctx.x_pos);
+    let expected_y_pos = expected.scrolled.map(|s| s.y_pos).unwrap_or(ctx.y_pos);
+
+    let mismatch = match expected.outcome {
+        SoldierRoutine01Outcome::NoDecrement => {
+            real_x_pos != expected_x_pos_before_advance
+                || real_y_pos != expected_y_pos
+                || real_delay != ctx.delay
+                || real_routine != ctx.routine
+        }
+        SoldierRoutine01Outcome::DelayNotYetZero { animation_delay, .. } => {
+            real_x_pos != expected_x_pos_before_advance
+                || real_y_pos != expected_y_pos
+                || real_delay != animation_delay
+                || real_routine != ctx.routine
+        }
+        SoldierRoutine01Outcome::Removed(_) => real_routine != 0 || real_sprites != 0,
+        SoldierRoutine01Outcome::Advanced(a) => {
+            real_x_pos != a.enemy_x_pos
+                || real_y_pos != expected_y_pos
+                || real_delay != a.delayed_routine.animation_delay
+                || real_routine != a.delayed_routine.routine_update.routine
+                || a.delayed_routine.routine_update.sprites.map(|s| s != real_sprites).unwrap_or(false)
+                || real_state_width != a.state_width
+                || real_var_2 != a.enemy_var_2
+                || real_x_fract != a.velocity.x_velocity.0
+                || real_x_fast != a.velocity.x_velocity.1
+                || real_y_fract != a.velocity.y_velocity.vel_fract
+                || real_y_fast != a.velocity.y_velocity.vel_fast
+        }
+    };
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(soldier_routine_01) frame={frame} pc={:04X} in=(scroll_type={:02X} frame_scroll={:02X} frame_counter={:02X} attrs={:02X} delay={:02X} x={:02X} y={:02X} state_width={:02X} routine={:02X}): expected {:?}, got x={real_x_pos:02X} y={real_y_pos:02X} delay={real_delay:02X} routine={real_routine:02X} sprites={real_sprites:02X} state_width={real_state_width:02X} var_2={real_var_2:02X} xvel=({real_x_fract:02X},{real_x_fast:02X}) yvel=({real_y_fract:02X},{real_y_fast:02X})",
+            cpu.pc, ctx.scroll_type, ctx.frame_scroll, ctx.frame_counter, ctx.attrs, ctx.delay, ctx.x_pos, ctx.y_pos, ctx.state_width, ctx.routine, expected
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -1828,6 +1918,77 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} add-y-pos-bg-collision calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SOLDIER_ROUTINE_01").is_ok() {
+            // VERIFY_SOLDIER_ROUTINE_01=1: verification pass for
+            // `contra_native::soldier::soldier_routine_01`. Real entry
+            // $8665. Real exits: `soldier_routine_exit` ($865c, the
+            // NoDecrement/DelayNotYetZero outcomes), and the two shared
+            // exits `soldier_routine_00`'s own verification already uses
+            // ($e796 normal advance, $e813 guard-rejected advance *and*
+            // `remove_enemy`, since `remove_enemy` shares that tail).
+            //
+            // Subtlety: $865c is *also* hit mid-flight on the Advanced
+            // path - it's the address of `soldier_set_x_velocity`'s own
+            // `rts`, reached via a real nested `jsr soldier_set_x_velocity`
+            // inside `soldier_stop_y_set_x_velocity` ($8638). That inner
+            // return isn't our exit; disambiguated by peeking the return
+            // address on the 6502 stack ($0100+sp+1/+2) - the inner call's
+            // return address is always $863a (last byte of the `jsr` at
+            // $8638), which a genuine soldier_routine_01 exit via branch
+            // can't coincidentally match (it returns to whatever called
+            // soldier_routine_01 itself).
+            let mut pending: Option<SoldierRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8665 => {
+                        let x = cpu.x as usize;
+                        let mut data = [0u8; contra_native::collision::BG_COLLISION_DATA_LEN];
+                        for (i, b) in data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some(SoldierRoutine01Ctx {
+                            x,
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            frame_counter: bus.ram[0x1A],
+                            attrs: bus.ram[0x5A8 + x],
+                            delay: bus.ram[0x538 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            state_width: bus.ram[0x598 + x],
+                            vscroll: bus.ram[0xFC],
+                            hscroll: bus.ram[0xFD],
+                            ppuctrl: bus.ram[0xFF],
+                            data,
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x865C => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if ret == 0x863A {
+                            // Nested return from `soldier_set_x_velocity`
+                            // inside `soldier_stop_y_set_x_velocity` - not
+                            // our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} soldier-routine-01 calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();

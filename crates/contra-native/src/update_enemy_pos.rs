@@ -6,7 +6,9 @@
 //! adds camera scroll to whichever axis matches `LEVEL_SCROLLING_TYPE`
 //! (`update_enemy_x_pos_with_scroll`/`update_enemy_y_pos_with_scroll`),
 //! and removes the enemy ([`remove_enemy`], `$e809`) if either axis ends
-//! up off-screen.
+//! up off-screen. Also carries [`set_enemy_y_velocity_to_0`] (`$e8d0`),
+//! a small neighboring routine in the same address range reused by
+//! `soldier_stop_y_set_x_velocity` (see `soldier.rs`).
 //!
 //! ## Real control flow: both axes update, but a removal short-circuits
 //! the second
@@ -73,6 +75,19 @@ pub struct RemovedEnemy {
 
 pub fn remove_enemy() -> RemovedEnemy {
     RemovedEnemy::default()
+}
+
+/// Native port of `set_enemy_y_velocity_to_0` (`$e8d0`) - real ASM:
+/// two constant stores, `ENEMY_Y_VELOCITY_FRACT,x = 0` and
+/// `ENEMY_Y_VELOCITY_FAST,x = 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ZeroedVelocity {
+    pub vel_fract: u8,
+    pub vel_fast: u8,
+}
+
+pub fn set_enemy_y_velocity_to_0() -> ZeroedVelocity {
+    ZeroedVelocity::default()
 }
 
 /// The full result of one frame's `update_enemy_pos` call.
@@ -185,5 +200,10 @@ mod tests {
     #[test]
     fn remove_enemy_zeroes_both_fields() {
         assert_eq!(remove_enemy(), RemovedEnemy { routine: 0, sprites: 0 });
+    }
+
+    #[test]
+    fn set_enemy_y_velocity_to_0_zeroes_both_fields() {
+        assert_eq!(set_enemy_y_velocity_to_0(), ZeroedVelocity { vel_fract: 0, vel_fast: 0 });
     }
 }

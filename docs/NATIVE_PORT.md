@@ -791,6 +791,47 @@ replacement for its real 6502 code, cycle for cycle.
       state confirmed correct end-to-end against real gameplay, not just
       its individual pieces in isolation. Not yet integrated live, same
       status as every routine above.
+- [x] **`soldier::soldier_routine_01` / `soldier_set_x_velocity` / `soldier_stop_y_set_x_velocity` / `update_enemy_pos::set_enemy_y_velocity_to_0`**
+      (`crates/contra-native/src/soldier.rs` and `update_enemy_pos.rs`) -
+      ported from `soldier_routine_01` (`bank0.asm`, `$8665`-`$86a3`) and
+      its 3 real sub-dependencies (`soldier_set_x_velocity` `$863e`,
+      `soldier_stop_y_set_x_velocity` `$8638`, `set_enemy_y_velocity_to_0`
+      `$e8d0`): the soldier's "standing, about to start walking" state -
+      waits out `ENEMY_ANIMATION_DELAY`, checks for ground beneath it
+      (`add_y_to_y_pos_get_bg_collision`, already live-verified above),
+      and either removes itself (no valid footing, e.g. a destroyed
+      bridge) or plants its X position, re-enables collision, sets its
+      walking velocity from `soldier_x_vel_tbl`, and advances to the next
+      routine. **Faithfully reproduces a real, easy-to-miss quirk**: on
+      the "running left, screen scrolled this frame" path, the real ASM's
+      `@continue` label decrements `ENEMY_ANIMATION_DELAY` once, and only
+      if that *doesn't* reach zero falls through into a *second*
+      decrement of the same counter in the same call - every other path
+      (vertical levels, horizontal with no scroll this frame, running
+      right on an odd frame) decrements once, and running right on an
+      even frame doesn't decrement at all. Ported as `SoldierRoutine01Outcome::DelayNotYetZero`'s
+      `decremented_twice` flag rather than silently normalizing to a
+      single decrement. Unit-tested (all 4 decrement-path shapes, the
+      table lookup in `soldier_set_x_velocity` against all 4 real
+      `soldier_x_vel_tbl` entries, the no-floor removal, and both running-
+      directions' advance tail, including the running-right `ENEMY_X_POS`
+      snap to `$0a`). **Live-verified** (`VERIFY_SOLDIER_ROUTINE_01=1`,
+      hooking real entry `$8665` and 3 real exits - `soldier_routine_exit`
+      `$865c`, and the 2 shared exits `soldier_routine_00`'s own pass
+      uses, `$e796`/`$e813`): 31 real calls across a 25000-frame session,
+      zero mismatches - critically, this sample included the tricky
+      double-decrement path firing repeatedly (`decremented_twice: true`,
+      confirmed via temporary debug instrumentation, since removed) as
+      well as the full ground-check/collision-enable/velocity-set advance
+      tail, both matching real hardware exactly. One real subtlety
+      required disambiguating two different meanings of the same PC:
+      `$865c` (`soldier_routine_exit`) is *also* the address of `soldier_
+      set_x_velocity`'s own `rts`, hit mid-flight on the advance path via
+      a real nested `jsr` inside `soldier_stop_y_set_x_velocity` - the
+      verification hook tells the two apart by peeking the 6502 return
+      address on the stack (the nested call's return address is always
+      `$863a`, which a genuine routine exit can't coincidentally match).
+      Not yet integrated live, same status as every routine above.
 - [x] **`collision::get_bg_collision_far` / `floor_get_next_row_bg_collision` / `read_bg_collision_byte_unsafe`**
       (`crates/contra-native/src/collision.rs`, extends the module
       `bg_collision` already lives in) - ported from `get_bg_collision_
@@ -840,7 +881,7 @@ replacement for its real 6502 code, cycle for cycle.
       a 9000-frame session - the third-largest live sample in this
       crate** - zero mismatches. Not yet integrated live, same status as
       every routine above.
-- [ ] Everything else, logic side. Twenty-three routines out of what's
+- [ ] Everything else, logic side. Twenty-seven routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
