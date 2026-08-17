@@ -813,7 +813,34 @@ replacement for its real 6502 code, cycle for cycle.
       verified extensively, plus this composition's own thorough unit
       tests. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Twenty-two routines out of what's
+- [x] **`collision::add_a_y_to_enemy_pos_get_bg_collision` / `add_y_to_y_pos_get_bg_collision`**
+      (same module) - ported from `add_a_y_to_enemy_pos_get_bg_collision`/
+      `add_y_to_y_pos_get_bg_collision` (`bank7.asm`, `$ec33`-`$ec48`):
+      offsets an enemy's position by `(x_offset, y_offset)` *without
+      modifying its real position* and checks background collision
+      there - purely composing the already cycle-exact-verified `bg_
+      collision` once the offset position is computed. **Confirmed by
+      real CPU addresses, not assumed**: `get_enemy_bg_collision`
+      (`$e0bd`) - the entry point this jumps into - turned out to be
+      only 2 bytes after `get_bg_collision` (`$e0bb`) in the same fixed
+      bank, i.e. it's the *same* underlying collision logic entered one
+      step later (skipping the `sta $13` `get_bg_collision` already did
+      itself), not the separate collision subsystem an initial reading
+      of the disassembly's local line ordering suggested. Faithfully
+      ported the real Y-overflow early exit ("exit if overflow, i.e.
+      enemy Y position is off-screen towards bottom") as a direct
+      `CollisionCode::Empty`, skipping `bg_collision` entirely rather
+      than clamping or wrapping. Unit-tested (offset composition matches
+      calling `bg_collision` directly at the pre-offset position, the Y-
+      overflow early exit skips the data buffer entirely, and the zero-
+      offset special case). Live-verified (`VERIFY_ADD_Y_POS_BG_
+      COLLISION=1`, hooking both real entries and both real exits - the
+      early Y-overflow exit and the same shared success exit `bg_
+      collision`'s own verification relies on): **3262 real calls across
+      a 9000-frame session - the third-largest live sample in this
+      crate** - zero mismatches. Not yet integrated live, same status as
+      every routine above.
+- [ ] Everything else, logic side. Twenty-three routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

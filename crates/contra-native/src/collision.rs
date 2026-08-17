@@ -331,6 +331,56 @@ pub fn get_bg_collision_far(
     floor_get_next_row_bg_collision(code, scratch.s13, scratch.s12, bg_collision_data)
 }
 
+/// Native port of `add_a_y_to_enemy_pos_get_bg_collision` (`$ec35`-
+/// `$ec44`) - offsets an enemy's position by `(x_offset, y_offset)`
+/// *without modifying its real position* and checks background
+/// collision there, purely by composing [`bg_collision`] once the
+/// offset position is computed (real ASM: `get_enemy_bg_collision`, the
+/// entry point this jumps into, shares the exact same underlying
+/// collision logic as `bg_collision` itself - confirmed by their real
+/// CPU addresses being 2 bytes apart in the same fixed bank, `get_bg_
+/// collision` at `$e0bb` falling straight through into `get_enemy_bg_
+/// collision` at `$e0bd` after its own `sta $13`, the one extra step
+/// this composition already does itself before calling in). The real Y
+/// addition's overflow is a real early-exit, not an edge case to trim:
+/// "exit if overflow, i.e. enemy Y position is off-screen towards
+/// bottom" (real ASM comment) - returns [`CollisionCode::Empty`]
+/// directly, skipping `bg_collision` entirely.
+#[allow(clippy::too_many_arguments)]
+pub fn add_a_y_to_enemy_pos_get_bg_collision(
+    x_offset: u8,
+    y_offset: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+) -> CollisionCode {
+    let x_computed = x_offset.wrapping_add(enemy_x_pos);
+    let (y_computed, overflowed) = y_offset.overflowing_add(enemy_y_pos);
+    if overflowed {
+        return CollisionCode::Empty;
+    }
+    bg_collision(x_computed, y_computed, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data)
+}
+
+/// Native port of `add_y_to_y_pos_get_bg_collision` (`$ec33`) - the
+/// real ASM's own `lda #$00` immediately falling into `add_a_y_to_
+/// enemy_pos_get_bg_collision` (zero X offset).
+#[allow(clippy::too_many_arguments)]
+pub fn add_y_to_y_pos_get_bg_collision(
+    y_offset: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+) -> CollisionCode {
+    add_a_y_to_enemy_pos_get_bg_collision(0, y_offset, enemy_x_pos, enemy_y_pos, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +556,50 @@ mod tests {
         // now put Solid (raw code 3) in column 1 (bits 4-5) at the row below:
         data[0x08] = 0b0011_0000;
         assert_eq!(get_bg_collision_far(0x10, 0x10, 0, 0, 0, &data), CollisionCode::Solid);
+    }
+
+    #[test]
+    fn add_a_y_to_enemy_pos_get_bg_collision_offsets_before_checking() {
+        // enemy at (0x00, 0x00), offset (0x10, 0x10) -> checks the same
+        // position/column as the worked example above.
+        let data = data_with(0x04, 0b0010_0000); // column 1 -> Water
+        assert_eq!(add_a_y_to_enemy_pos_get_bg_collision(0x10, 0x10, 0x00, 0x00, 0, 0, 0, &data), CollisionCode::Water);
+        // matches calling bg_collision directly at the already-offset position
+        assert_eq!(
+            add_a_y_to_enemy_pos_get_bg_collision(0x10, 0x10, 0x00, 0x00, 0, 0, 0, &data),
+            bg_collision(0x10, 0x10, 0, 0, 0, &data)
+        );
+    }
+
+    #[test]
+    fn add_a_y_to_enemy_pos_get_bg_collision_real_position_is_never_modified() {
+        // Real ASM comment: "ENEMY_X_POS and ENEMY_Y_POS are unaffected" -
+        // this port takes them by value and returns only a collision
+        // code, so there's nothing to mutate; this test just documents
+        // the guarantee by confirming two calls with the same inputs
+        // (as if made "twice in a row") give identical results.
+        let data = data_with(0x04, 0b0010_0000);
+        let first = add_a_y_to_enemy_pos_get_bg_collision(0x10, 0x10, 0x00, 0x00, 0, 0, 0, &data);
+        let second = add_a_y_to_enemy_pos_get_bg_collision(0x10, 0x10, 0x00, 0x00, 0, 0, 0, &data);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn add_a_y_to_enemy_pos_get_bg_collision_y_overflow_is_empty_without_checking() {
+        // y_offset + enemy_y_pos overflows a byte -> real ASM exits
+        // immediately with Empty, never calling into bg_collision at all
+        // (confirmed by using a data buffer that would report Solid
+        // everywhere if it were actually read).
+        let data = [0xFFu8; BG_COLLISION_DATA_LEN];
+        assert_eq!(add_a_y_to_enemy_pos_get_bg_collision(0x00, 0xFF, 0x00, 0x02, 0, 0, 0, &data), CollisionCode::Empty);
+    }
+
+    #[test]
+    fn add_y_to_y_pos_get_bg_collision_is_the_zero_x_offset_case() {
+        let data = data_with(0x04, 0b0010_0000);
+        assert_eq!(
+            add_y_to_y_pos_get_bg_collision(0x10, 0x10, 0x00, 0, 0, 0, &data),
+            add_a_y_to_enemy_pos_get_bg_collision(0, 0x10, 0x10, 0x00, 0, 0, 0, &data)
+        );
     }
 }

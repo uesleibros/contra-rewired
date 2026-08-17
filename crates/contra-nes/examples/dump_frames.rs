@@ -1775,6 +1775,60 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} bg-collision-far calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ADD_Y_POS_BG_COLLISION").is_ok() {
+            // VERIFY_ADD_Y_POS_BG_COLLISION=1: verification pass for
+            // `contra_native::collision::add_a_y_to_enemy_pos_get_bg_
+            // collision`/`add_y_to_y_pos_get_bg_collision`. Two real
+            // entries ($ec33 zero-x-offset, $ec35 general) and two real
+            // exits: the early Y-overflow "$exit" ($ec48) and the shared
+            // success exit `get_bg_collision`/`bg_collision`'s own
+            // verification already relies on ($e12f, the `read_bg_
+            // collision_byte`/`@set_code_exit` chain's own rts, confirmed
+            // by counting instruction lengths from `$e12a` against
+            // `level_screen_mem_offset_tbl_01`'s real address at `$e130`).
+            use contra_native::collision::{add_a_y_to_enemy_pos_get_bg_collision, BG_COLLISION_DATA_LEN};
+            let mut pending: Option<(u8, u8, u8, u8, u8, u8, u8, [u8; BG_COLLISION_DATA_LEN])> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                let x = cpu.x as usize;
+                match cpu.pc {
+                    0xEC33 | 0xEC35 => {
+                        let x_offset = if cpu.pc == 0xEC33 { 0 } else { cpu.a };
+                        let mut data = [0u8; BG_COLLISION_DATA_LEN];
+                        for (i, b) in data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some((
+                            x_offset,
+                            cpu.y,
+                            bus.ram[0x33E + x],
+                            bus.ram[0x324 + x],
+                            bus.ram[0xFC],
+                            bus.ram[0xFD],
+                            bus.ram[0xFF],
+                            data,
+                        ));
+                    }
+                    0xEC48 | 0xE12F => {
+                        if let Some((x_offset, y_offset, ex, ey, vscroll, hscroll, ppuctrl, data)) = pending.take() {
+                            let expected = add_a_y_to_enemy_pos_get_bg_collision(x_offset, y_offset, ex, ey, vscroll, hscroll, ppuctrl, &data);
+                            let real_raw = cpu.a;
+                            checked += 1;
+                            if expected.to_raw_byte() != real_raw {
+                                eprintln!(
+                                    "MISMATCH(add_y_pos_bg_collision) frame={frame} x_off={x_offset:02X} y_off={y_offset:02X} ex={ex:02X} ey={ey:02X}: expected {expected:?} ({:02X}), got {real_raw:02X}",
+                                    expected.to_raw_byte()
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} add-y-pos-bg-collision calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
