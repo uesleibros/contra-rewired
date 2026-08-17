@@ -1737,6 +1737,44 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} soldier-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_BG_COLLISION_FAR").is_ok() {
+            // VERIFY_BG_COLLISION_FAR=1: verification pass for
+            // `contra_native::collision::get_bg_collision_far`. Real
+            // entry $e087; real exit is `floor_get_next_row_bg_
+            // collision`'s own shared rts at $e0ba (right before
+            // `get_bg_collision` begins at $e0bb).
+            use contra_native::collision::{get_bg_collision_far, BG_COLLISION_DATA_LEN};
+            let mut pending: Option<(u8, u8, u8, u8, u8, [u8; BG_COLLISION_DATA_LEN])> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE087 => {
+                        let mut data = [0u8; BG_COLLISION_DATA_LEN];
+                        for (i, b) in data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some((cpu.a, cpu.y, bus.ram[0xFC], bus.ram[0xFD], bus.ram[0xFF], data));
+                    }
+                    0xE0BA => {
+                        if let Some((x, y, vscroll, hscroll, ppuctrl, data)) = pending.take() {
+                            let expected = get_bg_collision_far(x, y, vscroll, hscroll, ppuctrl, &data);
+                            let real_raw = cpu.a;
+                            checked += 1;
+                            if expected.to_raw_byte() != real_raw {
+                                eprintln!(
+                                    "MISMATCH(get_bg_collision_far) frame={frame} x={x:02X} y={y:02X} vscroll={vscroll:02X} hscroll={hscroll:02X}: expected {expected:?} ({:02X}), got {real_raw:02X}",
+                                    expected.to_raw_byte()
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} bg-collision-far calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

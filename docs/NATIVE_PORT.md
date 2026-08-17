@@ -791,7 +791,29 @@ replacement for its real 6502 code, cycle for cycle.
       state confirmed correct end-to-end against real gameplay, not just
       its individual pieces in isolation. Not yet integrated live, same
       status as every routine above.
-- [ ] Everything else, logic side. Twenty-one routines out of what's
+- [x] **`collision::get_bg_collision_far` / `floor_get_next_row_bg_collision` / `read_bg_collision_byte_unsafe`**
+      (`crates/contra-native/src/collision.rs`, extends the module
+      `bg_collision` already lives in) - ported from `get_bg_collision_
+      far`/`floor_get_next_row_bg_collision`/`read_bg_collision_byte_
+      unsafe` (`bank7.asm`, `$e087`-`$e0ba`): a "look one supertile
+      half-row further down" floor upgrade on top of the already cycle-
+      exact-verified `bg_collision` - purely composing it with `bg_
+      collision_scratch` (which already exposed exactly the `$12`/`$13`
+      scratch this needed) and one small new byte-decode helper, no new
+      arithmetic beyond that. Unit-tested (every real branch: floor
+      upgrades to solid, floor stays floor, non-floor codes pass through
+      untouched, and the nametable-high-bit-preserving wraparound at the
+      `BG_COLLISION_DATA` offset's edges). **Live verification attempted
+      but had 0 real hits** across a 20000-frame session - this
+      routine's real callers are all enemy-specific "about to walk into
+      a wall" checks, and no soldier happened to reach one within this
+      session's scripted play - noted honestly in the module's own doc
+      comment rather than claimed as live-verified; confidence instead
+      rests on `bg_collision` itself already being cycle-exact live-
+      verified extensively, plus this composition's own thorough unit
+      tests. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Twenty-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

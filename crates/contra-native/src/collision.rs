@@ -249,6 +249,88 @@ pub fn bg_collision_cycles(x: u8, y: u8, vertical_scroll: u8, horizontal_scroll:
     (base + vy_delta + hx_delta) as u64
 }
 
+/// Native port of `read_bg_collision_byte_unsafe` (`$e0b5`) - the same
+/// byte-lookup-and-shift `bg_collision` itself does internally, but
+/// without the row guard (real ASM: `$15 = 0` before jumping into the
+/// shared `read_bg_collision_byte` tail, so `y >= 0xe0`'s early-exit
+/// never triggers). "Unsafe" per the real ASM's own comment: `offset`
+/// must already be a valid, correctly-computed `BG_COLLISION_DATA`
+/// index - example real use is checking one row *below* ground the
+/// player/enemy is already standing on, where the offset is known good.
+pub fn read_bg_collision_byte_unsafe(bg_collision_data: &[u8; BG_COLLISION_DATA_LEN], offset: u8, column: u8) -> CollisionCode {
+    let byte = bg_collision_data[offset as usize];
+    let shift = match column & 0x03 {
+        0 => 6,
+        1 => 4,
+        2 => 2,
+        _ => 0,
+    };
+    CollisionCode::from_raw((byte >> shift) & 0x03)
+}
+
+/// Native port of `floor_get_next_row_bg_collision` (`$e08a`-`$e0ba`) -
+/// if `original` (the collision code already found at some position)
+/// isn't [`CollisionCode::Floor`], returns it unchanged; otherwise looks
+/// one supertile half-row further down (`offset + 4`, wrapping within
+/// the same nametable half via `& 0x3f` then re-merging the preserved
+/// `offset & 0xc0` nametable-selection bits) and upgrades the result to
+/// [`CollisionCode::Solid`] if *that* row is solid - real use case (per
+/// the real ASM's own comment on the routine this composes into,
+/// `get_bg_collision_far`): checking one point ahead of a fast-moving
+/// object so it doesn't visually clip into solid ground for a frame
+/// before its own collision response catches up.
+pub fn floor_get_next_row_bg_collision(
+    original: CollisionCode,
+    offset: u8,
+    column: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+) -> CollisionCode {
+    if original != CollisionCode::Floor {
+        return original;
+    }
+    let preserved_high_bits = offset & 0xC0;
+    let next_row_offset = (offset.wrapping_add(4) & 0x3F) | preserved_high_bits;
+    let below = read_bg_collision_byte_unsafe(bg_collision_data, next_row_offset, column);
+    if below == CollisionCode::Solid {
+        CollisionCode::Solid
+    } else {
+        original
+    }
+}
+
+/// Native port of `get_bg_collision_far` (`$e087`-`$e089`) - `bg_
+/// collision` plus a "look one row further down" floor upgrade, purely
+/// by composing [`bg_collision`], [`bg_collision_scratch`] (for the
+/// real `$12`/`$13` scratch `floor_get_next_row_bg_collision` needs),
+/// and [`floor_get_next_row_bg_collision`] itself - no new arithmetic of
+/// its own, matching the real ASM's own `jsr get_bg_collision` falling
+/// straight through into `floor_get_next_row_bg_collision`.
+///
+/// Live-verification attempted (`VERIFY_BG_COLLISION_FAR=1` in `crates/
+/// contra-nes/examples/dump_frames.rs`) but had 0 real hits across a
+/// 20000-frame session - this routine's real callers are all enemy-
+/// specific "am I about to walk into a wall" checks (e.g. soldier's own
+/// walking AI turning around at an obstacle), and no soldier happened to
+/// reach one within this session's scripted play - noted honestly rather
+/// than claimed as live-verified. Confidence instead rests on: `bg_
+/// collision` itself already being cycle-exact live-verified many times
+/// over (see that function's own history), and this composition's own
+/// unit tests exercising every real branch (floor-upgrades-to-solid,
+/// floor-stays-floor, non-floor-passthrough, and the nametable-high-bit-
+/// preserving wraparound) with hand-traced bit math.
+pub fn get_bg_collision_far(
+    x: u8,
+    y: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+) -> CollisionCode {
+    let code = bg_collision(x, y, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data);
+    let scratch = bg_collision_scratch(x, y, vertical_scroll, horizontal_scroll, ppuctrl_settings);
+    floor_get_next_row_bg_collision(code, scratch.s13, scratch.s12, bg_collision_data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +438,73 @@ mod tests {
                 "x={x:#04x} y={y:#04x} vs={vs:#04x} hs={hs:#04x}"
             );
         }
+    }
+
+    #[test]
+    fn read_bg_collision_byte_unsafe_matches_bg_collisions_own_column_shift() {
+        // Same worked example as `no_scroll_no_overflow_reads_the_expected_offset_and_column`
+        let data = data_with(0x04, 0b0010_0000);
+        assert_eq!(read_bg_collision_byte_unsafe(&data, 0x04, 1), CollisionCode::Water);
+    }
+
+    #[test]
+    fn read_bg_collision_byte_unsafe_ignores_the_row_guard() {
+        // Real "unsafe" distinction: bg_collision would return Empty for
+        // y>=0xe0 regardless of data, but this reads real data at any
+        // offset the caller supplies. Raw 2-bit code 3 (Solid) at column
+        // 0 (bits 6-7): 0b11 << 6 = 0xc0.
+        let data = data_with(0x10, 0b1100_0000);
+        assert_eq!(read_bg_collision_byte_unsafe(&data, 0x10, 0), CollisionCode::Solid);
+    }
+
+    #[test]
+    fn floor_get_next_row_passes_through_non_floor_codes_unchanged() {
+        let data = [0xFFu8; BG_COLLISION_DATA_LEN]; // would be Solid everywhere if read
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Empty, 0x00, 0, &data), CollisionCode::Empty);
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Water, 0x00, 0, &data), CollisionCode::Water);
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Solid, 0x00, 0, &data), CollisionCode::Solid);
+    }
+
+    #[test]
+    fn floor_get_next_row_upgrades_to_solid_when_the_row_below_is_solid() {
+        // offset=0x00, +4 -> 0x04, column 0 -> bits 6-7, raw code 3 (Solid).
+        let data = data_with(0x04, 0b1100_0000);
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Floor, 0x00, 0, &data), CollisionCode::Solid);
+    }
+
+    #[test]
+    fn floor_get_next_row_stays_floor_when_the_row_below_is_not_solid() {
+        let data = data_with(0x04, 0b0100_0000); // column 0 -> bits 6-7 -> Floor, not Solid
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Floor, 0x00, 0, &data), CollisionCode::Floor);
+    }
+
+    #[test]
+    fn floor_get_next_row_preserves_the_nametable_high_bits_when_wrapping() {
+        // offset=0x7e (nametable-select bits 6-7 = 0x40, low bits=0x3e):
+        // 0x3e+4=0x42, &0x3f=0x02, |0x40=0x42. Not a wrap in this case,
+        // but confirms the high bits survive the round trip when the low
+        // bits *don't* overflow past 0x3f.
+        let data = data_with(0x42, 0b1100_0000);
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Floor, 0x7E, 0, &data), CollisionCode::Solid);
+        // Now force an actual low-bit wrap: offset=0x7f (low=0x3f, high=0x40):
+        // 0x3f+4=0x43, &0x3f=0x03, |0x40=0x43 - still within the same
+        // nametable half, high bits preserved, not bled into the other one.
+        let data2 = data_with(0x43, 0b1100_0000);
+        assert_eq!(floor_get_next_row_bg_collision(CollisionCode::Floor, 0x7F, 0, &data2), CollisionCode::Solid);
+    }
+
+    #[test]
+    fn get_bg_collision_far_composes_bg_collision_and_the_floor_lookahead() {
+        // Same offset/column worked example: x=0x10,y=0x10 -> offset=0x04,
+        // column=1 (shift 4). Put Floor there, and Solid one row below
+        // (offset 0x08, same column).
+        let mut data = [0u8; BG_COLLISION_DATA_LEN];
+        data[0x04] = 0b0001_0000; // column 1 (bits 4-5), raw code 1 = Floor
+        // offset 0x08 (0x04+4) left at all-zero: column 1 there is raw
+        // code 0 (Empty), not Solid - confirm no upgrade happens yet.
+        assert_eq!(get_bg_collision_far(0x10, 0x10, 0, 0, 0, &data), CollisionCode::Floor);
+        // now put Solid (raw code 3) in column 1 (bits 4-5) at the row below:
+        data[0x08] = 0b0011_0000;
+        assert_eq!(get_bg_collision_far(0x10, 0x10, 0, 0, 0, &data), CollisionCode::Solid);
     }
 }
