@@ -381,6 +381,27 @@ pub fn add_y_to_y_pos_get_bg_collision(
     add_a_y_to_enemy_pos_get_bg_collision(0, y_offset, enemy_x_pos, enemy_y_pos, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data)
 }
 
+/// Native port of `check_enemy_collision_solid_bg` (`$ec27`) - real ASM:
+/// `ldy #$00; lda #$00; jsr add_a_y_to_enemy_pos_get_bg_collision; jmp
+/// floor_get_next_row_bg_collision`, i.e. a zero-offset `add_a_y_to_
+/// enemy_pos_get_bg_collision` immediately fed into the same floor-
+/// lookahead upgrade [`get_bg_collision_far`] already does - with a
+/// zero offset, the "offset" position *is* `(enemy_x_pos, enemy_y_pos)`,
+/// so this is mathematically identical to calling `get_bg_collision_far`
+/// directly at the enemy's own position (verified this way rather than
+/// duplicated, since it's provably the same computation on the same
+/// inputs, not just a coincidence of test data).
+pub fn check_enemy_collision_solid_bg(
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+) -> CollisionCode {
+    get_bg_collision_far(enemy_x_pos, enemy_y_pos, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +622,17 @@ mod tests {
             add_y_to_y_pos_get_bg_collision(0x10, 0x10, 0x00, 0, 0, 0, &data),
             add_a_y_to_enemy_pos_get_bg_collision(0, 0x10, 0x10, 0x00, 0, 0, 0, &data)
         );
+    }
+
+    #[test]
+    fn check_enemy_collision_solid_bg_matches_get_bg_collision_far_at_the_enemy_s_own_position() {
+        let mut data = [0u8; BG_COLLISION_DATA_LEN];
+        data[0x04] = 0b0001_0000; // Floor, column 1
+        data[0x08] = 0b0011_0000; // Solid directly below - triggers the floor-lookahead upgrade
+        assert_eq!(
+            check_enemy_collision_solid_bg(0x10, 0x10, 0, 0, 0, &data),
+            get_bg_collision_far(0x10, 0x10, 0, 0, 0, &data)
+        );
+        assert_eq!(check_enemy_collision_solid_bg(0x10, 0x10, 0, 0, 0, &data), CollisionCode::Solid);
     }
 }

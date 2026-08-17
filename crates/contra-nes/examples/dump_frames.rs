@@ -220,6 +220,118 @@ fn verify_soldier_routine_01(
     }
 }
 
+/// Captured inputs for one real `soldier_routine_02` call whose
+/// `ENEMY_VAR_3` was nonzero at entry (`$86af`) - the jumping sub-path
+/// this crate ports (`soldier_routine_02_jumping`). See
+/// `VERIFY_SOLDIER_ROUTINE_02_JUMPING`'s comment in `main` for the real
+/// exits and the nested-`jsr`-return disambiguation this needs.
+#[derive(Clone, Copy)]
+struct SoldierRoutine02JumpingCtx {
+    x: usize,
+    var_3: u8,
+    y_vel_fast: u8,
+    x_pos: u8,
+    y_pos: u8,
+    var_4: u8,
+    var_2: u8,
+    var_1: u8,
+    vscroll: u8,
+    hscroll: u8,
+    ppuctrl: u8,
+    data: [u8; contra_native::collision::BG_COLLISION_DATA_LEN],
+    scroll_type: u8,
+    frame_scroll: u8,
+    x_accum: u8,
+    x_fract: u8,
+    x_fast: u8,
+    y_accum: u8,
+    y_fract: u8,
+    y_fast: u8,
+    routine: u8,
+}
+
+fn verify_soldier_routine_02_jumping(
+    ctx: SoldierRoutine02JumpingCtx,
+    cpu: &contra_nes::cpu::Cpu,
+    bus: &contra_nes::bus::NesBus,
+    frame: u32,
+    checked: &mut u64,
+) {
+    use contra_native::soldier::{soldier_routine_02_jumping, SoldierApplyVelOutcome, SoldierRoutine02Landing};
+
+    let x = ctx.x;
+    let expected = soldier_routine_02_jumping(
+        ctx.var_3, ctx.y_vel_fast, ctx.x_pos, ctx.y_pos, ctx.var_4, ctx.var_2, ctx.var_1, ctx.vscroll, ctx.hscroll,
+        ctx.ppuctrl, &ctx.data, ctx.scroll_type, ctx.frame_scroll, ctx.x_accum, ctx.x_fract, ctx.x_fast, ctx.y_accum,
+        ctx.y_fract, ctx.y_fast, ctx.routine,
+    );
+    *checked += 1;
+
+    let real_var_3 = bus.ram[0x5D8 + x];
+    let real_frame = bus.ram[0x568 + x];
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_var_2 = bus.ram[0x5C8 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_sprite_attr = bus.ram[0x358 + x];
+    let real_var_1 = bus.ram[0x5B8 + x];
+    let real_x_fract = bus.ram[0x518 + x];
+    let real_x_fast = bus.ram[0x508 + x];
+    let real_routine = bus.ram[0x4B8 + x];
+
+    let mut mismatch = real_var_3 != expected.enemy_var_3 || real_frame != expected.enemy_frame;
+
+    // The water-landing case's own `jsr set_enemy_routine_to_a` already
+    // committed a routine switch before the tail runs - fold that into
+    // "effective routine" the same way `soldier_routine_02_jumping`
+    // itself does internally, so the tail's own guard check (relevant
+    // only for `SolidAtOwnPosition`) lines up with what real hardware
+    // actually saw.
+    let water_switch = match expected.landing {
+        SoldierRoutine02Landing::NotLanded { water_routine_switch, .. } => water_routine_switch,
+        SoldierRoutine02Landing::Landed { .. } => None,
+    };
+
+    match expected.tail {
+        SoldierApplyVelOutcome::SolidAtOwnPosition(routine_update) => {
+            mismatch |= real_routine != routine_update.routine;
+            if let Some(s) = routine_update.sprites {
+                mismatch |= real_sprites != s;
+            }
+        }
+        SoldierApplyVelOutcome::Continued(result) => {
+            let (expected_var_2, expected_x_fract, expected_x_fast) = match result.direction_change {
+                Some(d) => (d.var_2, d.x_velocity.0, d.x_velocity.1),
+                None => (ctx.var_2, ctx.x_fract, ctx.x_fast),
+            };
+            let removed = result.position.removed.is_some();
+            let expected_routine = if removed {
+                0
+            } else {
+                water_switch.map(|u| u.routine).unwrap_or(ctx.routine)
+            };
+            let expected_sprites = if removed { 0 } else { result.sprite.sprite };
+
+            mismatch |= real_x_pos != result.position.x.pos
+                || real_y_pos != result.position.y.pos
+                || real_var_2 != expected_var_2
+                || real_x_fract != expected_x_fract
+                || real_x_fast != expected_x_fast
+                || real_sprite_attr != result.sprite.sprite_attr
+                || real_var_1 != result.sprite.var_1
+                || real_sprites != expected_sprites
+                || real_routine != expected_routine;
+        }
+    }
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(soldier_routine_02_jumping) frame={frame} pc={:04X} in=(var_3={:02X} y_vel_fast={:02X} x={:02X} y={:02X} var_4={:02X} var_2={:02X} var_1={:02X} scroll_type={:02X} frame_scroll={:02X} routine={:02X}): expected {:?}, got x={real_x_pos:02X} y={real_y_pos:02X} var_3={real_var_3:02X} frame={real_frame:02X} var_2={real_var_2:02X} var_1={real_var_1:02X} sprites={real_sprites:02X} sprite_attr={real_sprite_attr:02X} xvel=({real_x_fract:02X},{real_x_fast:02X}) routine={real_routine:02X}",
+            cpu.pc, ctx.var_3, ctx.y_vel_fast, ctx.x_pos, ctx.y_pos, ctx.var_4, ctx.var_2, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine, expected
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -1989,6 +2101,99 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} soldier-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SOLDIER_ROUTINE_02_JUMPING").is_ok() {
+            // VERIFY_SOLDIER_ROUTINE_02_JUMPING=1: verification pass for
+            // `contra_native::soldier::soldier_routine_02_jumping` - the
+            // jumping sub-path only (see that function's doc comment for
+            // why the walking sub-path isn't ported yet). Real entry
+            // $86af, but only proceeds if `ENEMY_VAR_3 != 0` there (the
+            // walking sub-path shares the same entry).
+            //
+            // Real exits: $e849 (`apply_vel_exit`, `update_enemy_pos`'s
+            // own success rts) and the 2 shared exits `soldier_routine_
+            // 00`/`01` already use ($e796/$e813 - reached here either via
+            // `soldier_apply_vel_check_solid_collision`'s own solid-ahead
+            // early exit, or via `update_enemy_pos`'s off-screen removal
+            // path, both real `jmp`s into the same `set_enemy_routine_to_
+            // a`/`remove_enemy` machinery).
+            //
+            // Subtlety, the same shape as `soldier_routine_01`'s: the
+            // water-landing case's own `jsr set_enemy_routine_to_a` (a
+            // real nested call, not a tail jump) also returns through
+            // $e796/$e813 mid-flight, before this routine's genuine
+            // exit. Disambiguated by peeking the stack's return address -
+            // that nested call's return address always lands back inside
+            // `soldier_routine_02`'s own un-labeled body (province of
+            // this composition: strictly below `soldier_apply_vel_check_
+            // solid_collision`'s own address, $8794, since that routine
+            // is only ever *tail*-jumped into here, never `jsr`'d, so no
+            // return address pointing past $8794 can come from one of
+            // our own nested calls).
+            use contra_native::collision::BG_COLLISION_DATA_LEN;
+
+            let mut pending: Option<SoldierRoutine02JumpingCtx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x86AF => {
+                        let x = cpu.x as usize;
+                        let var_3 = bus.ram[0x5D8 + x];
+                        if var_3 != 0 {
+                            let mut data = [0u8; BG_COLLISION_DATA_LEN];
+                            for (i, b) in data.iter_mut().enumerate() {
+                                *b = bus.ram[0x0680 + i];
+                            }
+                            pending = Some(SoldierRoutine02JumpingCtx {
+                                x,
+                                var_3,
+                                y_vel_fast: bus.ram[0x4E8 + x],
+                                x_pos: bus.ram[0x33E + x],
+                                y_pos: bus.ram[0x324 + x],
+                                var_4: bus.ram[0x5E8 + x],
+                                var_2: bus.ram[0x5C8 + x],
+                                var_1: bus.ram[0x5B8 + x],
+                                vscroll: bus.ram[0xFC],
+                                hscroll: bus.ram[0xFD],
+                                ppuctrl: bus.ram[0xFF],
+                                data,
+                                scroll_type: bus.ram[0x41],
+                                frame_scroll: bus.ram[0x68],
+                                x_accum: bus.ram[0x4D8 + x],
+                                x_fract: bus.ram[0x518 + x],
+                                x_fast: bus.ram[0x508 + x],
+                                y_accum: bus.ram[0x4C8 + x],
+                                y_fract: bus.ram[0x4F8 + x],
+                                y_fast: bus.ram[0x4E8 + x],
+                                routine: bus.ram[0x4B8 + x],
+                            });
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if ret < 0x8794 {
+                            // Nested return from the water-landing case's
+                            // own `jsr set_enemy_routine_to_a`, still
+                            // inside `soldier_routine_02`'s own body -
+                            // not our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_02_jumping(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE849 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_02_jumping(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} soldier-routine-02-jumping calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();

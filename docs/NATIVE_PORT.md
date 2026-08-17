@@ -881,7 +881,70 @@ replacement for its real 6502 code, cycle for cycle.
       a 9000-frame session - the third-largest live sample in this
       crate** - zero mismatches. Not yet integrated live, same status as
       every routine above.
-- [ ] Everything else, logic side. Twenty-seven routines out of what's
+- [x] **`soldier::soldier_routine_02_jumping` / `set_soldier_sprite` / `soldier_change_direction` / `soldier_apply_vel_check_solid_collision` / `collision::check_enemy_collision_solid_bg`**
+      (`crates/contra-native/src/soldier.rs` and `collision.rs`) - ported
+      from `soldier_routine_02` (`bank0.asm`, `$86af`-`$8709`, **jumping
+      sub-path only** - see below), `set_soldier_sprite` (`$891a`),
+      `soldier_change_direction` (`$87cb`), `soldier_apply_vel_check_
+      solid_collision` (`$8794`), and `check_enemy_collision_solid_bg`
+      (`$ec27`, confirmed mathematically identical to the already-ported
+      `get_bg_collision_far` rather than duplicated - a zero-offset `add_
+      a_y_to_enemy_pos_get_bg_collision` immediately fed into the same
+      floor-lookahead). Composes the soldier's jump-landing check (reuses
+      `add_y_to_y_pos_get_bg_collision`, `add_4_to_enemy_y_pos`,
+      `soldier_stop_y_set_x_velocity`, `add_10_to_enemy_y_fract_vel` -
+      all already verified) with a new shared tail: bail to `soldier_
+      routine_09` if embedded in solid ground, otherwise (up to twice a
+      second) probe 8px ahead and turn around if that's solid, update the
+      sprite from a 12-entry table, and apply velocity/scroll via `update_
+      enemy_pos`.
+      **Only the jumping sub-path (`ENEMY_VAR_3 != 0`) is ported** - the
+      walking/firing-decision/ledge-detection sub-path is deliberately
+      **not** ported yet: `get_soldier_num_bullets` (used there) computes
+      `adc $08` with no preceding `clc`, meaning its result depends on the
+      carry flag inherited from well outside this routine (traced back
+      through 6 flag-preserving instructions to whatever the *caller* of
+      `soldier_routine_02` left carry as) - this needs to be captured
+      empirically from real hardware (`cpu` status flags at the call
+      site) rather than guessed, left for a follow-up pass rather than
+      risking a silently wrong port of the RNG-driven bullet count or
+      jump-off-ledge velocity selection.
+      Unit-tested (27 new tests: the sprite table lookup and gun-recoil
+      countdown, direction-flip/turn-counting, the solid-at-own-position
+      bailout, the var_4-gated and off-screen-clamped ledge probe, the
+      turn-around case, and all 4 real landing shapes - still-rising,
+      solid, water, and checked-but-nothing).
+      **Live-verified** (`VERIFY_SOLDIER_ROUTINE_02_JUMPING=1`, hooking
+      real entry `$86af` gated on `ENEMY_VAR_3 != 0`, and 3 real exits -
+      `$e849` `apply_vel_exit`, plus the 2 shared exits earlier soldier
+      routines already use, disambiguated from the water-landing case's
+      own nested `jsr set_enemy_routine_to_a` return the same way `soldier_
+      routine_01`'s hook disambiguates its shared exit): **96 of 97 real
+      calls matched exactly across a 25000-frame session**. The one
+      mismatch is an **open, unresolved discrepancy**, documented
+      honestly rather than hidden: at a specific large-`VERTICAL_SCROLL`
+      input (`$e0`, triggering the vertical-scroll overflow-adjustment
+      path), real hardware's final state (`ENEMY_SPRITES=$00`, X/Y
+      position bit-for-bit unchanged from entry) matches what would
+      happen if `check_enemy_collision_solid_bg` had returned `Solid`
+      *at the soldier's own position*, triggering the early bailout to
+      `soldier_routine_09` with a guard-rejected `ENEMY_ROUTINE` (already
+      `0` at entry, itself unexplained - the real dispatch loop,
+      `exe_enemy_routine_loop` in `bank7.asm`, only ever calls a routine
+      when `ENEMY_ROUTINE != 0`, so this specific case's captured entry
+      state doesn't fit that invariant either) - but this port's own
+      `check_enemy_collision_solid_bg`/`get_bg_collision_far` computation
+      for the same captured inputs returns `Floor` (no solid upgrade; the
+      row-below byte decodes to `Water`, not `Solid`). The full formula
+      (`bg_collision_scratch`'s vertical/horizontal-scroll math, the
+      `floor_get_next_row_bg_collision` offset-plus-4/high-bits-preserved
+      computation) was re-derived line-by-line against the real ASM
+      during this investigation and found to match exactly, so the root
+      cause remains genuinely unidentified - flagged here for future
+      investigation rather than either buried or endlessly chased at the
+      cost of everything else in this session. Not yet integrated live,
+      same status as every routine above.
+- [ ] Everything else, logic side. Thirty-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

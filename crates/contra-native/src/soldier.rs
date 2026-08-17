@@ -21,11 +21,11 @@
 //! `ENEMY_ANIMATION_DELAY` twice in a single call.
 
 use crate::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
-use crate::collision::{add_y_to_y_pos_get_bg_collision, CollisionCode, BG_COLLISION_DATA_LEN};
+use crate::collision::{add_y_to_y_pos_get_bg_collision, check_enemy_collision_solid_bg, get_bg_collision_far, CollisionCode, BG_COLLISION_DATA_LEN};
 use crate::enemy_collision_flags::enable_enemy_collision;
-use crate::enemy_position_utils::add_4_to_enemy_y_pos;
-use crate::enemy_routine_transition::{set_enemy_delay_adv_routine, DelayedRoutineUpdate};
-use crate::update_enemy_pos::{remove_enemy, set_enemy_y_velocity_to_0, RemovedEnemy, ZeroedVelocity};
+use crate::enemy_position_utils::{add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos};
+use crate::enemy_routine_transition::{set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate};
+use crate::update_enemy_pos::{remove_enemy, set_enemy_y_velocity_to_0, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos, ZeroedVelocity};
 
 /// `soldier_initial_anim_delay_tbl` (`$8634`, 4 bytes) - indexed by the
 /// soldier type's `ENEMY_ATTRIBUTES` high nibble (bits 4-5).
@@ -238,6 +238,314 @@ pub fn soldier_routine_01(
     SoldierRoutine01Result { scrolled, outcome }
 }
 
+/// `soldier_sprite_codes` (`$8735`, 12 bytes) - raw sprite-tile codes for
+/// each `ENEMY_FRAME` value the plain soldier's animation states use.
+const SOLDIER_SPRITE_CODES: [u8; 12] = [0x3B, 0x3C, 0x3D, 0x3F, 0x3C, 0x3E, 0x40, 0x26, 0x73, 0x18, 0x28, 0x27];
+
+/// The result of one [`set_soldier_sprite`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierSpriteResult {
+    pub sprite: u8,
+    pub sprite_attr: u8,
+    /// `ENEMY_VAR_1` (gun recoil timer) after this call - decremented by
+    /// one if it was nonzero, unchanged (already `0`) otherwise.
+    pub var_1: u8,
+}
+
+/// Native port of `set_soldier_sprite` (`$891a`) - looks up the sprite
+/// code for the current animation frame, sets the horizontal-flip bit
+/// from the running direction, and (this real routine's one side effect
+/// beyond a pure lookup) counts down a gun-recoil timer that, while
+/// active, ORs an extra attribute bit into the sprite.
+pub fn set_soldier_sprite(enemy_frame: u8, enemy_var_2: u8, enemy_var_1: u8) -> SoldierSpriteResult {
+    let sprite = SOLDIER_SPRITE_CODES[enemy_frame as usize];
+    let facing_attr = if enemy_var_2 == 0 { 0x40 } else { 0x00 };
+    let (var_1, sprite_attr) =
+        if enemy_var_1 != 0 { (enemy_var_1 - 1, facing_attr | 0x08) } else { (enemy_var_1, facing_attr) };
+    SoldierSpriteResult { sprite, sprite_attr, var_1 }
+}
+
+/// The result of one [`soldier_change_direction`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierDirectionChange {
+    /// `ENEMY_VAR_4` (turn counter) after this call, always `+1`.
+    pub var_4: u8,
+    /// `ENEMY_VAR_2` (running direction) after this call - the opposite
+    /// of whatever it was.
+    pub var_2: u8,
+    pub x_velocity: (u8, u8),
+}
+
+/// Native port of `soldier_change_direction` (`$87cb`) - flips the
+/// running direction, counts the turn, and re-derives X velocity for the
+/// new direction via [`soldier_set_x_velocity`].
+pub fn soldier_change_direction(enemy_var_2: u8, enemy_var_4: u8, level_scrolling_type: u8) -> SoldierDirectionChange {
+    let var_4 = enemy_var_4.wrapping_add(1);
+    let var_2 = enemy_var_2 ^ 0x01;
+    let x_velocity = soldier_set_x_velocity(var_2, level_scrolling_type);
+    SoldierDirectionChange { var_4, var_2, x_velocity }
+}
+
+/// The full result of one [`soldier_apply_vel_check_solid_collision`]
+/// call that got past the solid-ahead check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierApplyVelResult {
+    /// `Some` only if the soldier was about to walk into a solid object
+    /// up to 8 pixels ahead and turned around.
+    pub direction_change: Option<SoldierDirectionChange>,
+    pub sprite: SoldierSpriteResult,
+    pub position: UpdatedEnemyPos,
+}
+
+/// The real, branchy result of one [`soldier_apply_vel_check_solid_collision`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoldierApplyVelOutcome {
+    /// Solid collision directly at the soldier's own (unmoved) position:
+    /// switches to `soldier_routine_09` (`ENEMY_ROUTINE = $07`
+    /// pre-guard), nothing else in this routine runs.
+    SolidAtOwnPosition(EnemyRoutineUpdate),
+    /// Not solid at the soldier's own position: ran the full ledge-turn-
+    /// around-check, sprite, and position-update tail.
+    Continued(SoldierApplyVelResult),
+}
+
+/// Native port of `soldier_apply_vel_check_solid_collision` (`$8794`) -
+/// the shared tail nearly every `soldier_routine_02`/`03`/`04`/`05` path
+/// eventually reaches: bails out to `soldier_routine_09` if the soldier
+/// is somehow embedded in solid ground, otherwise (up to twice a second,
+/// gated by `ENEMY_VAR_4 < 2`) probes 8 pixels ahead in the direction
+/// it's facing and turns around if that would walk it into a solid
+/// object, then updates its sprite and applies velocity/scroll to its
+/// position.
+///
+/// Live-verified indirectly via [`soldier_routine_02_jumping`]: 96 of 97
+/// real calls matched exactly. The one open mismatch (see docs/
+/// NATIVE_PORT.md) looks, from the real hardware's final RAM state, like
+/// it involves *this* function's own `SolidAtOwnPosition` early exit
+/// firing when this port's [`check_enemy_collision_solid_bg`] computed
+/// `Floor` instead - root cause not yet identified despite re-deriving
+/// the full formula line-by-line against the real ASM and finding no
+/// discrepancy.
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_apply_vel_check_solid_collision(
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_4: u8,
+    enemy_var_2: u8,
+    enemy_frame: u8,
+    enemy_var_1: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    x_vel_accum: u8,
+    x_vel_fract: u8,
+    x_vel_fast: u8,
+    y_vel_accum: u8,
+    y_vel_fract: u8,
+    y_vel_fast: u8,
+    current_routine: u8,
+) -> SoldierApplyVelOutcome {
+    let at_own_pos =
+        check_enemy_collision_solid_bg(enemy_x_pos, enemy_y_pos, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data);
+    if at_own_pos == CollisionCode::Solid {
+        return SoldierApplyVelOutcome::SolidAtOwnPosition(set_enemy_routine_to_a(current_routine, 0x07));
+    }
+
+    let mut direction_change = None;
+    let (final_x_fract, final_x_fast, final_var_2) = if enemy_var_4 >= 0x02 {
+        (x_vel_fract, x_vel_fast, enemy_var_2)
+    } else {
+        let probe_x = enemy_x_pos.wrapping_add(if enemy_var_2 == 0 { 0xF8 } else { 0x08 });
+        if !(0x10..0xF0).contains(&probe_x) {
+            (x_vel_fract, x_vel_fast, enemy_var_2)
+        } else {
+            let ahead = get_bg_collision_far(probe_x, enemy_y_pos, vertical_scroll, horizontal_scroll, ppuctrl_settings, bg_collision_data);
+            if ahead == CollisionCode::Solid {
+                let change = soldier_change_direction(enemy_var_2, enemy_var_4, level_scrolling_type);
+                let result = (change.x_velocity.0, change.x_velocity.1, change.var_2);
+                direction_change = Some(change);
+                result
+            } else {
+                (x_vel_fract, x_vel_fast, enemy_var_2)
+            }
+        }
+    };
+
+    let sprite = set_soldier_sprite(enemy_frame, final_var_2, enemy_var_1);
+    let position = update_enemy_pos(
+        level_scrolling_type,
+        frame_scroll,
+        enemy_x_pos,
+        x_vel_accum,
+        final_x_fract,
+        final_x_fast,
+        enemy_y_pos,
+        y_vel_accum,
+        y_vel_fract,
+        y_vel_fast,
+    );
+    SoldierApplyVelOutcome::Continued(SoldierApplyVelResult { direction_change, sprite, position })
+}
+
+/// The two shapes [`soldier_routine_02_jumping`] can end in - see that
+/// function's doc comment for why the real ASM only has these two
+/// distinct outcomes despite reading as three branches (`bmi
+/// @no_landing`, "checked and got empty/floor", and "checked and got
+/// water" all converge on the exact same `@no_landing` code).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoldierRoutine02Landing {
+    /// Landed on solid ground this call: jumping flag and frame cleared,
+    /// position nudged down 4px, velocity zeroed and re-set from the
+    /// walking table.
+    Landed { y_pos: u8, velocity: SoldierStoppedYVelocity },
+    /// Did not land this call (still rising, checked-and-not-solid, or
+    /// checked-and-water) - Y fractional velocity bumped `+$10`.
+    /// `water_routine_switch` is `Some` only for the water case, and (a
+    /// real, faithfully-reproduced detail) is applied *before* the
+    /// shared tail runs, so if that tail also decides to switch routines
+    /// it does so guarded against this already-updated value, not the
+    /// original.
+    NotLanded { water_routine_switch: Option<EnemyRoutineUpdate>, y_velocity: (u8, u8) },
+}
+
+/// The full result of one [`soldier_routine_02_jumping`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine02JumpingResult {
+    pub enemy_var_3: u8,
+    pub enemy_frame: u8,
+    pub landing: SoldierRoutine02Landing,
+    pub tail: SoldierApplyVelOutcome,
+}
+
+/// Native port of `soldier_routine_02`'s **jumping sub-path only**
+/// (`$86af`-`$8709`, the `ENEMY_VAR_3 != 0` branch through `@no_landing`/
+/// `@floor_solid_landing`) - the walking/firing-decision/ledge-detection
+/// sub-path (`@continue` onward, `$870a`-`$8793`) is **not yet ported**:
+/// it depends on a real, deliberate 6502 quirk (`get_soldier_num_bullets`'s
+/// `adc $08` with no preceding `clc`, meaning its result depends on the
+/// carry flag inherited from well outside this routine) that needs to be
+/// captured empirically from real hardware rather than guessed - left for
+/// a follow-up pass rather than risking a silently wrong port of the
+/// RNG-driven bullet count or jump-off-ledge velocity selection.
+///
+/// Real control flow: `ENEMY_FRAME` is set to `$0a` (jumping animation)
+/// unconditionally the instant this branch is entered, *before* checking
+/// anything else - only the solid-landing case later overwrites it back
+/// to `$00`. If `ENEMY_Y_VELOCITY_FAST` is still negative (rising), the
+/// landing check itself is skipped entirely (`bmi @no_landing` jumps
+/// straight past it) - which lands on the *exact same* `@no_landing`
+/// code a checked-but-not-solid result falls through to, so "still
+/// rising" and "checked, not solid" are indistinguishable in their
+/// effect and are merged into one [`SoldierRoutine02Landing::NotLanded`]
+/// variant here.
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_02_jumping(
+    enemy_var_3: u8,
+    enemy_y_velocity_fast: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_4: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    x_vel_accum: u8,
+    x_vel_fract: u8,
+    x_vel_fast: u8,
+    y_vel_accum: u8,
+    y_vel_fract: u8,
+    y_vel_fast: u8,
+    current_routine: u8,
+) -> SoldierRoutine02JumpingResult {
+    debug_assert!(enemy_var_3 != 0, "soldier_routine_02_jumping is only reached when ENEMY_VAR_3 != 0");
+
+    let still_rising = (enemy_y_velocity_fast as i8) < 0;
+    let checked_code = if still_rising {
+        None
+    } else {
+        Some(add_y_to_y_pos_get_bg_collision(
+            0x10,
+            enemy_x_pos,
+            enemy_y_pos,
+            vertical_scroll,
+            horizontal_scroll,
+            ppuctrl_settings,
+            bg_collision_data,
+        ))
+    };
+
+    if checked_code == Some(CollisionCode::Solid) {
+        let y_pos = add_4_to_enemy_y_pos(vertical_scroll, enemy_y_pos);
+        let velocity = soldier_stop_y_set_x_velocity(enemy_var_2, level_scrolling_type);
+        let tail = soldier_apply_vel_check_solid_collision(
+            enemy_x_pos,
+            y_pos,
+            enemy_var_4,
+            enemy_var_2,
+            0x00,
+            enemy_var_1,
+            vertical_scroll,
+            horizontal_scroll,
+            ppuctrl_settings,
+            bg_collision_data,
+            level_scrolling_type,
+            frame_scroll,
+            x_vel_accum,
+            velocity.x_velocity.0,
+            velocity.x_velocity.1,
+            y_vel_accum,
+            velocity.y_velocity.vel_fract,
+            velocity.y_velocity.vel_fast,
+            current_routine,
+        );
+        return SoldierRoutine02JumpingResult {
+            enemy_var_3: 0,
+            enemy_frame: 0x00,
+            landing: SoldierRoutine02Landing::Landed { y_pos, velocity },
+            tail,
+        };
+    }
+
+    let water_routine_switch =
+        if checked_code == Some(CollisionCode::Water) { Some(set_enemy_routine_to_a(current_routine, 0x0A)) } else { None };
+    let effective_routine = water_routine_switch.map(|u| u.routine).unwrap_or(current_routine);
+    let y_velocity = add_10_to_enemy_y_fract_vel(y_vel_fract, y_vel_fast);
+    let tail = soldier_apply_vel_check_solid_collision(
+        enemy_x_pos,
+        enemy_y_pos,
+        enemy_var_4,
+        enemy_var_2,
+        0x0A,
+        enemy_var_1,
+        vertical_scroll,
+        horizontal_scroll,
+        ppuctrl_settings,
+        bg_collision_data,
+        level_scrolling_type,
+        frame_scroll,
+        x_vel_accum,
+        x_vel_fract,
+        x_vel_fast,
+        y_vel_accum,
+        y_velocity.0,
+        y_velocity.1,
+        effective_routine,
+    );
+    SoldierRoutine02JumpingResult {
+        enemy_var_3,
+        enemy_frame: 0x0A,
+        landing: SoldierRoutine02Landing::NotLanded { water_routine_switch, y_velocity },
+        tail,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +684,187 @@ mod tests {
                 assert_eq!(a.velocity.x_velocity, soldier_set_x_velocity(1, 0));
             }
             other => panic!("expected Advanced, got {other:?}"),
+        }
+    }
+
+    fn table_code(code: CollisionCode) -> u8 {
+        match code {
+            CollisionCode::Empty => 0,
+            CollisionCode::Floor => 1,
+            CollisionCode::Water => 2,
+            CollisionCode::Solid => 3,
+        }
+    }
+
+    /// Test-only helper: sets the `BG_COLLISION_DATA` bits governing
+    /// `(x, y)` to `code`, using [`crate::collision::bg_collision_scratch`]
+    /// to find the right byte/column rather than hand-deriving the
+    /// offset formula again.
+    fn set_collision_at(data: &mut [u8; BG_COLLISION_DATA_LEN], x: u8, y: u8, code: CollisionCode) {
+        let scratch = crate::collision::bg_collision_scratch(x, y, 0, 0, 0);
+        let shift = match scratch.s12 & 0x03 {
+            0 => 6,
+            1 => 4,
+            2 => 2,
+            _ => 0,
+        };
+        let mask = 0b11u8 << shift;
+        data[scratch.s13 as usize] = (data[scratch.s13 as usize] & !mask) | (table_code(code) << shift);
+    }
+
+    #[test]
+    fn set_soldier_sprite_looks_up_the_table_and_flips_for_direction() {
+        let r = set_soldier_sprite(0x02, 0, 0); // running left
+        assert_eq!(r.sprite, SOLDIER_SPRITE_CODES[2]);
+        assert_eq!(r.sprite_attr, 0x40);
+        assert_eq!(r.var_1, 0);
+
+        let r = set_soldier_sprite(0x02, 1, 0); // running right
+        assert_eq!(r.sprite_attr, 0x00);
+    }
+
+    #[test]
+    fn set_soldier_sprite_counts_down_gun_recoil_and_sets_the_recoil_bit() {
+        let r = set_soldier_sprite(0x06, 0, 0x03);
+        assert_eq!(r.var_1, 0x02);
+        assert_eq!(r.sprite_attr, 0x40 | 0x08);
+
+        let r = set_soldier_sprite(0x06, 0, 0x00);
+        assert_eq!(r.var_1, 0x00);
+        assert_eq!(r.sprite_attr, 0x40);
+    }
+
+    #[test]
+    fn soldier_change_direction_flips_var_2_counts_var_4_and_rederives_x_velocity() {
+        let r = soldier_change_direction(0, 5, 0); // was left, horizontal level
+        assert_eq!(r.var_2, 1);
+        assert_eq!(r.var_4, 6);
+        assert_eq!(r.x_velocity, soldier_set_x_velocity(1, 0));
+    }
+
+    #[test]
+    fn apply_vel_solid_at_own_position_switches_to_soldier_routine_09() {
+        let r = soldier_apply_vel_check_solid_collision(
+            0x50, 0x60, 0, 0, 0x00, 0, 0, 0, 0, &SOLID_COLLISION_DATA, 0, 0x00, 0, 0, 0, 0, 0, 0, 3,
+        );
+        assert_eq!(r, SoldierApplyVelOutcome::SolidAtOwnPosition(set_enemy_routine_to_a(3, 0x07)));
+    }
+
+    #[test]
+    fn apply_vel_var_4_at_or_above_2_skips_the_ledge_probe_entirely() {
+        let mut data = NO_COLLISION_DATA;
+        // solid directly ahead (different 16px collision column than the
+        // enemy's own position, 0x4C - see `set_collision_at`'s helper
+        // doc), but var_4=2 should mean it's never even checked.
+        set_collision_at(&mut data, 0x54, 0x60, CollisionCode::Solid);
+        let r = soldier_apply_vel_check_solid_collision(0x4C, 0x60, 2, 1, 0x00, 0, 0, 0, 0, &data, 0, 0x00, 0, 0, 0, 0, 0, 0, 3);
+        match r {
+            SoldierApplyVelOutcome::Continued(a) => assert_eq!(a.direction_change, None),
+            other => panic!("expected Continued, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_vel_off_screen_probe_position_skips_the_ledge_check() {
+        // running left from x=0x05: probe = 0x05 - 8 (wrapping) = 0xFD,
+        // which is neither < 0x10 nor... wait it *is* >= 0xF0, so this
+        // is the off-screen-right guard path (wrapped a small X down
+        // past zero) - confirms the raw wrapping-u8 probe matches the
+        // real ASM's unsigned `adc`/`cmp` sequence, not a signed check.
+        let r = soldier_apply_vel_check_solid_collision(0x05, 0x60, 0, 0, 0x00, 0, 0, 0, 0, &NO_COLLISION_DATA, 0, 0x00, 0, 0, 0, 0, 0, 0, 3);
+        match r {
+            SoldierApplyVelOutcome::Continued(a) => assert_eq!(a.direction_change, None),
+            other => panic!("expected Continued, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_vel_turns_around_when_solid_ahead_and_updates_sprite_and_velocity() {
+        let mut data = NO_COLLISION_DATA;
+        // 0x4C and 0x4C+8=0x54 fall in different 16px collision columns
+        // ((x>>4)&3 differs: 4 vs 5), so this genuinely tests "solid one
+        // column ahead, not at the enemy's own position" rather than
+        // accidentally marking the enemy's own column solid too.
+        set_collision_at(&mut data, 0x54, 0x60, CollisionCode::Solid); // 8px ahead while running right (0x4C+8)
+        let r = soldier_apply_vel_check_solid_collision(0x4C, 0x60, 0, 1, 0x00, 0, 0, 0, 0, &data, 0, 0x00, 0, 0, 0, 0, 0, 0, 3);
+        match r {
+            SoldierApplyVelOutcome::Continued(a) => {
+                let change = a.direction_change.expect("expected a direction change");
+                assert_eq!(change, soldier_change_direction(1, 0, 0));
+                assert_eq!(a.sprite, set_soldier_sprite(0x00, change.var_2, 0));
+            }
+            other => panic!("expected Continued, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_vel_no_direction_change_when_nothing_solid_ahead() {
+        let r = soldier_apply_vel_check_solid_collision(0x50, 0x60, 0, 1, 0x00, 0, 0, 0, 0, &NO_COLLISION_DATA, 0, 0x00, 0, 0, 0, 0, 0, 0, 3);
+        match r {
+            SoldierApplyVelOutcome::Continued(a) => assert_eq!(a.direction_change, None),
+            other => panic!("expected Continued, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_02_jumping_still_rising_skips_the_landing_check_and_bumps_y_fract_vel() {
+        let r = soldier_routine_02_jumping(
+            1, 0xFF, // ENEMY_VAR_3 nonzero, Y_VELOCITY_FAST negative (rising)
+            0x50, 0x60, 0, 0, 0, 0, 0, 0, &NO_COLLISION_DATA, 0, 0x00, 0, 0, 0, 0, 0x00, 0x10, 3,
+        );
+        assert_eq!(r.enemy_var_3, 1);
+        assert_eq!(r.enemy_frame, 0x0A);
+        match r.landing {
+            SoldierRoutine02Landing::NotLanded { water_routine_switch, y_velocity } => {
+                assert_eq!(water_routine_switch, None);
+                assert_eq!(y_velocity, add_10_to_enemy_y_fract_vel(0x00, 0x10));
+            }
+            other => panic!("expected NotLanded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_02_jumping_lands_on_solid_clears_var_3_and_frame() {
+        let r = soldier_routine_02_jumping(
+            1, 0x01, // falling
+            0x50, 0x60, 0, 0, 0, 0, 0, 0, &SOLID_COLLISION_DATA, 0, 0x00, 0, 0, 0, 0, 0x00, 0x10, 3,
+        );
+        assert_eq!(r.enemy_var_3, 0);
+        assert_eq!(r.enemy_frame, 0x00);
+        match r.landing {
+            SoldierRoutine02Landing::Landed { y_pos, velocity } => {
+                assert_eq!(y_pos, add_4_to_enemy_y_pos(0, 0x60));
+                assert_eq!(velocity, soldier_stop_y_set_x_velocity(0, 0));
+            }
+            other => panic!("expected Landed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_02_jumping_water_landing_switches_routine_before_the_tail_runs() {
+        let mut data = NO_COLLISION_DATA;
+        // the check is 0x10 below the enemy's Y position; put Water
+        // there specifically (not at the enemy's own Y).
+        set_collision_at(&mut data, 0x50, 0x70, CollisionCode::Water);
+        let r = soldier_routine_02_jumping(1, 0x01, 0x50, 0x60, 0, 0, 0, 0, 0, 0, &data, 0, 0x00, 0, 0, 0, 0, 0x00, 0x10, 3);
+        assert_eq!(r.enemy_frame, 0x0A);
+        match r.landing {
+            SoldierRoutine02Landing::NotLanded { water_routine_switch, .. } => {
+                assert_eq!(water_routine_switch, Some(set_enemy_routine_to_a(3, 0x0A)));
+            }
+            other => panic!("expected NotLanded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_02_jumping_checked_not_solid_not_water_still_bumps_y_fract_vel() {
+        let r = soldier_routine_02_jumping(1, 0x01, 0x50, 0x60, 0, 0, 0, 0, 0, 0, &NO_COLLISION_DATA, 0, 0x00, 0, 0, 0, 0, 0x00, 0x10, 3);
+        match r.landing {
+            SoldierRoutine02Landing::NotLanded { water_routine_switch, y_velocity } => {
+                assert_eq!(water_routine_switch, None);
+                assert_eq!(y_velocity, add_10_to_enemy_y_fract_vel(0x00, 0x10));
+            }
+            other => panic!("expected NotLanded, got {other:?}"),
         }
     }
 }
