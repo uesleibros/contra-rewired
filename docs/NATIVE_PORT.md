@@ -981,7 +981,44 @@ replacement for its real 6502 code, cycle for cycle.
       every building block this composes already being independently
       live-verified in its own right. Not yet integrated live, same
       status as every routine above.
-- [ ] Everything else, logic side. Thirty-five routines out of what's
+- [x] **`soldier::soldier_routine_04` / `soldier_routine_05` / `update_enemy_pos::set_enemy_x_velocity_to_0`**
+      (`crates/contra-native/src/soldier.rs` and `update_enemy_pos.rs`) -
+      ported from `soldier_routine_04` (`bank0.asm`, `$88c3`-`$88ff`,
+      "soldier hit, begin destroying soldier") and `soldier_routine_05`
+      (`$8900`-`$8939`, "soldier hit, apply negative gravity") plus the
+      one small new real dependency, `set_enemy_x_velocity_to_0` (`$e8d9`,
+      the X-axis sibling of the already-ported `set_enemy_y_velocity_to_0`).
+      `soldier_routine_04` launches the destroyed soldier upward with a
+      fixed velocity, zeroing the X component instead if it's near either
+      screen edge (real ASM checks *both* `< $10` and `>= $f0` into the
+      same zeroing step) and reversing it if the soldier was facing right
+      (the fixed velocity is authored assuming left-facing, the same
+      convention `soldier_x_vel_tbl` uses). `soldier_routine_05` applies
+      gravity every call and either advances immediately if the soldier
+      drifted off the top of the screen (skipping `update_enemy_pos`
+      entirely - a real, faithfully-reproduced short-circuit) or updates
+      its position and advances once its animation delay elapses. Both
+      compose entirely already-verified building blocks (`disable_enemy_
+      collision`, `reverse_enemy_x_direction`, `add_scroll_to_enemy_pos`,
+      `set_enemy_delay_adv_routine`, `add_a_to_enemy_y_fract_vel`,
+      `update_enemy_pos`, `advance_enemy_routine`, `set_soldier_sprite`) -
+      no new arithmetic beyond the edge-zeroing bit test and the off-
+      screen check. Unit-tested (10 new tests: mid-screen/both-edge X
+      velocity handling, the right-facing reversal composing correctly
+      with edge-zeroing down to zero, and all 3 real `soldier_routine_05`
+      outcomes).
+      **Live verification attempted but had 0 real hits for either
+      routine** across a 25000-frame session - both are only reached once
+      a soldier is actually shot and killed, and this project's current
+      scripted level-1 playthrough (a walk-forward capture) never happens
+      to do that within the captured window, even though soldiers
+      themselves are confirmed present and active (`soldier_routine_02_
+      jumping`'s own 96 real calls prove that) - noted honestly rather
+      than claimed as live-verified; confidence rests on the unit tests
+      above and on every composed building block already being
+      independently live-verified in its own right. Not yet integrated
+      live, same status as every routine above.
+- [ ] Everything else, logic side. Thirty-eight routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

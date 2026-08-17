@@ -90,6 +90,13 @@ pub fn set_enemy_y_velocity_to_0() -> ZeroedVelocity {
     ZeroedVelocity::default()
 }
 
+/// Native port of `set_enemy_x_velocity_to_0` (`$e8d9`) - real ASM:
+/// two constant stores, `ENEMY_X_VELOCITY_FRACT,x = 0` and
+/// `ENEMY_X_VELOCITY_FAST,x = 0`.
+pub fn set_enemy_x_velocity_to_0() -> ZeroedVelocity {
+    ZeroedVelocity::default()
+}
+
 /// The full result of one frame's `update_enemy_pos` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpdatedEnemyPos {
@@ -205,5 +212,10 @@ mod tests {
     #[test]
     fn set_enemy_y_velocity_to_0_zeroes_both_fields() {
         assert_eq!(set_enemy_y_velocity_to_0(), ZeroedVelocity { vel_fract: 0, vel_fast: 0 });
+    }
+
+    #[test]
+    fn set_enemy_x_velocity_to_0_zeroes_both_fields() {
+        assert_eq!(set_enemy_x_velocity_to_0(), ZeroedVelocity { vel_fract: 0, vel_fast: 0 });
     }
 }

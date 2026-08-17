@@ -26,11 +26,15 @@
 use crate::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
 use crate::collision::{add_y_to_y_pos_get_bg_collision, check_enemy_collision_solid_bg, get_bg_collision_far, CollisionCode, BG_COLLISION_DATA_LEN};
 use crate::create_enemy_bullet::{create_enemy_bullet_angle_a, CreatedBullet};
-use crate::enemy_collision_flags::enable_enemy_collision;
-use crate::enemy_position_utils::{add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos};
-use crate::enemy_routine_transition::{set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate};
+use crate::enemy_collision_flags::{disable_enemy_collision, enable_enemy_collision};
+use crate::enemy_position_utils::{add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos, add_a_to_enemy_y_fract_vel, reverse_enemy_x_direction};
+use crate::enemy_routine_transition::{
+    advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate,
+};
 use crate::enemy_slots::ENEMY_SLOT_COUNT;
-use crate::update_enemy_pos::{remove_enemy, set_enemy_y_velocity_to_0, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos, ZeroedVelocity};
+use crate::update_enemy_pos::{
+    remove_enemy, set_enemy_x_velocity_to_0, set_enemy_y_velocity_to_0, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos, ZeroedVelocity,
+};
 
 /// `soldier_initial_anim_delay_tbl` (`$8634`, 4 bytes) - indexed by the
 /// soldier type's `ENEMY_ATTRIBUTES` high nibble (bits 4-5).
@@ -738,6 +742,136 @@ pub fn soldier_routine_03(
     SoldierRoutine03Outcome::Fired(SoldierRoutine03Fired { score_collision, enemy_frame, attack_delay, var_3, bullet, gun_recoil_timer, tail })
 }
 
+/// The full result of one [`soldier_routine_04`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine04Result {
+    pub sprite: SoldierSpriteResult,
+    /// `ENEMY_STATE_WIDTH` after [`disable_enemy_collision`] runs.
+    pub state_width: u8,
+    /// Always `($80, $fc)` - the soldier's fixed "fly up when hit"
+    /// initial Y velocity.
+    pub y_velocity: (u8, u8),
+    pub x_velocity: (u8, u8),
+    pub scroll: ScrolledEnemyPos,
+    pub delayed_routine: DelayedRoutineUpdate,
+}
+
+/// Native port of `soldier_routine_04` (`$88c3`) - "soldier hit, begin
+/// destroying soldier": sets the destroyed-soldier sprite frame, disables
+/// further collision, and launches it upward with a fixed initial
+/// velocity - X velocity is zeroed instead if the soldier is near either
+/// screen edge (real ASM checks *both* edges, `< $10` or `>= $f0`, into
+/// the *same* zeroing step), then reversed if it was facing right (the
+/// fixed X velocity is authored assuming a left-facing soldier, the same
+/// convention `soldier_x_vel_tbl` uses).
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_04(
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    enemy_state_width: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+) -> SoldierRoutine04Result {
+    let sprite = set_soldier_sprite(0x0B, enemy_var_2, enemy_var_1);
+    let state_width = disable_enemy_collision(enemy_state_width);
+    let y_velocity = (0x80, 0xFC);
+
+    let mut x_velocity = (0x60u8, 0x00u8);
+    if enemy_x_pos < 0x10 || enemy_x_pos >= 0xF0 {
+        let z = set_enemy_x_velocity_to_0();
+        x_velocity = (z.vel_fract, z.vel_fast);
+    }
+    if enemy_var_2 != 0 {
+        x_velocity = reverse_enemy_x_direction(x_velocity.0, x_velocity.1);
+    }
+
+    let scroll = add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+    let delayed_routine = set_enemy_delay_adv_routine(0x10, current_routine);
+
+    SoldierRoutine04Result { sprite, state_width, y_velocity, x_velocity, scroll, delayed_routine }
+}
+
+/// The real, branchy result of one [`soldier_routine_05`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoldierRoutine05Outcome {
+    /// The soldier's (unmodified-this-call) Y position was already above
+    /// the top of the screen: advances immediately, `update_enemy_pos`
+    /// never runs at all (position/velocity-accumulator fields untouched
+    /// beyond the Y-velocity gravity add every path gets).
+    OffTopAdvance(EnemyRoutineUpdate),
+    /// Position updated; `ENEMY_ANIMATION_DELAY` hadn't reached zero yet.
+    StillWaiting { position: UpdatedEnemyPos, animation_delay: u8 },
+    /// Position updated and the delay reached zero: advances to the next
+    /// routine.
+    Advanced { position: UpdatedEnemyPos, animation_delay: u8, routine_update: EnemyRoutineUpdate },
+}
+
+/// The full result of one [`soldier_routine_05`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine05Result {
+    pub sprite: SoldierSpriteResult,
+    /// Y velocity after this call's fixed gravity add (`+$30` fractional,
+    /// every call, regardless of outcome).
+    pub y_velocity: (u8, u8),
+    pub outcome: SoldierRoutine05Outcome,
+}
+
+/// Native port of `soldier_routine_05` (`$8900`) - "soldier hit, apply
+/// negative gravity": the destroyed soldier launched by `soldier_
+/// routine_04` keeps flying up, decelerating under a fixed gravity
+/// constant, until either it drifts off the top of the screen or its
+/// animation delay elapses, either of which advances to the next
+/// routine (real explosion/removal handling, not yet ported).
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_05(
+    enemy_frame: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    y_vel_fract: u8,
+    y_vel_fast: u8,
+    x_vel_accum: u8,
+    x_vel_fract: u8,
+    x_vel_fast: u8,
+    y_vel_accum: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    enemy_animation_delay: u8,
+    current_routine: u8,
+) -> SoldierRoutine05Result {
+    let sprite = set_soldier_sprite(enemy_frame, enemy_var_2, enemy_var_1);
+    let y_velocity = add_a_to_enemy_y_fract_vel(0x30, y_vel_fract, y_vel_fast);
+
+    if enemy_y_pos < 0x08 {
+        let routine_update = advance_enemy_routine(current_routine);
+        return SoldierRoutine05Result { sprite, y_velocity, outcome: SoldierRoutine05Outcome::OffTopAdvance(routine_update) };
+    }
+
+    let position = update_enemy_pos(
+        level_scrolling_type,
+        frame_scroll,
+        enemy_x_pos,
+        x_vel_accum,
+        x_vel_fract,
+        x_vel_fast,
+        enemy_y_pos,
+        y_vel_accum,
+        y_velocity.0,
+        y_velocity.1,
+    );
+    let animation_delay = enemy_animation_delay.wrapping_sub(1);
+    let outcome = if animation_delay == 0 {
+        SoldierRoutine05Outcome::Advanced { position, animation_delay, routine_update: advance_enemy_routine(current_routine) }
+    } else {
+        SoldierRoutine05Outcome::StillWaiting { position, animation_delay }
+    };
+    SoldierRoutine05Result { sprite, y_velocity, outcome }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,6 +1332,71 @@ mod tests {
                 assert_eq!(f.var_3, 0x01);
             }
             other => panic!("expected Fired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_04_mid_screen_keeps_the_fixed_x_velocity_facing_left() {
+        let r = soldier_routine_04(0x50, 0x60, 0, 0, 0x00, 0, 0x02, 3);
+        assert_eq!(r.sprite, set_soldier_sprite(0x0B, 0, 0));
+        assert_eq!(r.state_width, disable_enemy_collision(0x00));
+        assert_eq!(r.y_velocity, (0x80, 0xFC));
+        assert_eq!(r.x_velocity, (0x60, 0x00));
+        assert_eq!(r.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x50, 0x60));
+        assert_eq!(r.delayed_routine, set_enemy_delay_adv_routine(0x10, 3));
+    }
+
+    #[test]
+    fn routine_04_running_right_reverses_the_fixed_x_velocity() {
+        let r = soldier_routine_04(0x50, 0x60, 1, 0, 0x00, 0, 0x02, 3);
+        assert_eq!(r.x_velocity, reverse_enemy_x_direction(0x60, 0x00));
+    }
+
+    #[test]
+    fn routine_04_near_left_edge_zeroes_x_velocity() {
+        let r = soldier_routine_04(0x0F, 0x60, 0, 0, 0x00, 0, 0x02, 3);
+        assert_eq!(r.x_velocity, (0x00, 0x00));
+    }
+
+    #[test]
+    fn routine_04_near_right_edge_zeroes_x_velocity_too() {
+        let r = soldier_routine_04(0xF0, 0x60, 0, 0, 0x00, 0, 0x02, 3);
+        assert_eq!(r.x_velocity, (0x00, 0x00));
+    }
+
+    #[test]
+    fn routine_04_edge_zero_still_reverses_to_zero_when_running_right() {
+        // Zeroing then reversing must stay zero (negating zero is zero).
+        let r = soldier_routine_04(0x0F, 0x60, 1, 0, 0x00, 0, 0x02, 3);
+        assert_eq!(r.x_velocity, (0x00, 0x00));
+    }
+
+    #[test]
+    fn routine_05_off_top_of_screen_advances_immediately_without_updating_position() {
+        let r = soldier_routine_05(0x0B, 0, 0, 0x50, 0x05, 0x00, 0x00, 0, 0, 0, 0, 0, 0x00, 0x10, 3);
+        assert_eq!(r.sprite, set_soldier_sprite(0x0B, 0, 0));
+        assert_eq!(r.y_velocity, add_a_to_enemy_y_fract_vel(0x30, 0x00, 0x00));
+        assert_eq!(r.outcome, SoldierRoutine05Outcome::OffTopAdvance(advance_enemy_routine(3)));
+    }
+
+    #[test]
+    fn routine_05_on_screen_updates_position_and_waits_when_delay_not_elapsed() {
+        let r = soldier_routine_05(0x0B, 0, 0, 0x50, 0x60, 0x00, 0x00, 0, 0, 0, 0, 0, 0x00, 0x05, 3);
+        match r.outcome {
+            SoldierRoutine05Outcome::StillWaiting { animation_delay, .. } => assert_eq!(animation_delay, 0x04),
+            other => panic!("expected StillWaiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_05_delay_reaching_zero_advances_to_the_next_routine() {
+        let r = soldier_routine_05(0x0B, 0, 0, 0x50, 0x60, 0x00, 0x00, 0, 0, 0, 0, 0, 0x00, 0x01, 3);
+        match r.outcome {
+            SoldierRoutine05Outcome::Advanced { animation_delay, routine_update, .. } => {
+                assert_eq!(animation_delay, 0x00);
+                assert_eq!(routine_update, advance_enemy_routine(3));
+            }
+            other => panic!("expected Advanced, got {other:?}"),
         }
     }
 }
