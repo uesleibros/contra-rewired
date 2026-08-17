@@ -1362,7 +1362,50 @@ replacement for its real 6502 code, cycle for cycle.
       across 1800-frame sessions - same as every other routine in this
       family, indoor/base levels aren't reachable from the current
       scripted outdoor level-1 playthrough.
-- [ ] Everything else, logic side. Sixty-seven routines out of what's
+- [x] **`jumping_soldier::jumping_soldier_routine_00` / `jumping_soldier_routine_01`**
+      (`crates/contra-native/src/enemy/jumping_soldier.rs`, new module) -
+      the jumping soldier's (`$16`) own `_00`/`_01` table entries; the
+      other 5 entries of its `jumping_soldier_routine_ptr_tbl` are the
+      same shared routines every indoor-family type reuses, already
+      ported. `jumping_soldier_routine_00` (`$9380`, "see if red soldier,
+      if so mark flag, advance routine") gates `ENEMY_ATTRIBUTES` bit 1
+      (the level's one special "red" jumping soldier, which will drop a
+      weapon item on death once `jumping_soldier_routine_04` is ported):
+      only the first eligible candidate *after* `INDOOR_ENEMY_ATTACK_
+      COUNT` has advanced past round 0 actually keeps the bit - round 0
+      or a red one already claimed this screen silently demotes it via
+      `INDOOR_RED_SOLDIER_CREATED`. Composes the already-ported
+      `init_indoor_enemy_pos_and_vel` (logical index `1` - real ASM's
+      `ldy #$02` is a raw byte offset into the table's 2-byte entries,
+      `2/2=1`) and `advance_enemy_routine`.
+      `jumping_soldier_routine_01` (`$93a5`, "set sprite, and perform
+      jump animation") always computes the run/jump sprite (3-way cadence
+      off `ENEMY_ANIMATION_DELAY`) and the direction-flipped, red-or-
+      default-palette sprite attribute, then branches: `ENEMY_ANIMATION_
+      DELAY == 0` applies this frame's offset from `jumping_soldier_y_
+      vel_tbl` (a 20-entry signed jump arc, `ENEMY_VAR_1`-indexed,
+      wrapping back to a `$10`-frame pause once finished) via the
+      already-ported `apply_enemy_velocity_set_bg_priority`; otherwise it
+      decrements the delay and, unless this is a red soldier (which never
+      fires - real ASM gives no reason, ported as-is) and the decremented
+      delay lands exactly on `$08`, fires at the closer player via the
+      already-ported `player_enemy_x_dist` + `aim_and_create_enemy_
+      bullet` (fixed `bullet_type=$60`, `speed_code=4`).
+      `jumping_soldier_routine_04` ("soldier destroyed, if red soldier
+      play explosion and create weapon item") is **not yet ported** -
+      needs `play_explosion_sound`, which itself composes `create_two_
+      explosion_89` and a weapon-item-creation chain, none of which exist
+      in this crate yet.
+      Unit-tested (13 new tests: every red-soldier-claiming branch of
+      `_00` including attribute-bit preservation, `_01`'s full sprite
+      cadence and palette/flip logic, the red-soldier no-fire exception,
+      firing on the exact delay frame, and both jump-arc sub-cases
+      including the wraparound reset).
+      **Live verification attempted but had 0 real hits for both**
+      across 1800-frame sessions - same as the rest of the indoor family,
+      not reachable from the current scripted outdoor level-1
+      playthrough.
+- [ ] Everything else, logic side. Sixty-nine routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

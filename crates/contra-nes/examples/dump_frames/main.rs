@@ -2980,6 +2980,99 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} shared-enemy-routine-03 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_JUMPING_SOLDIER_ROUTINE_00").is_ok() {
+            // VERIFY_JUMPING_SOLDIER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::jumping_soldier::jumping_soldier_
+            // routine_00`. Real entry $9380 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // advance_enemy_routine` - the nested `jsr init_indoor_
+            // enemy_pos_and_vel` (and its own nested `jsr reverse_enemy_
+            // x_direction`, `$e91e`, fixed bank) never revisits either
+            // address, so no disambiguation is needed.
+            let mut pending: Option<JumpingSoldierRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9380 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(JumpingSoldierRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            indoor_red_soldier_created: bus.ram[0x89],
+                            indoor_enemy_attack_count: bus.ram[0x88],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_jumping_soldier_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} jumping-soldier-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_JUMPING_SOLDIER_ROUTINE_01").is_ok() {
+            // VERIFY_JUMPING_SOLDIER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::jumping_soldier::jumping_soldier_
+            // routine_01`. Real entry $93a5 (switchable bank, gated).
+            // Real exits: this routine's own local `@exit` ($9422, the
+            // `Waiting` outcome and both `Jumping` sub-cases), plus the
+            // shared bullet-chain exit `bullet_gen_exit` ($f32f, the
+            // `Fired` outcome, same shared tail `red_soldier_routine_02`
+            // already reaches the same way).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<JumpingSoldierRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x93A5 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(JumpingSoldierRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attack_flag: bus.ram[0x8E],
+                            animation_delay: bus.ram[0x538 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            sprite_y_pos: [bus.ram[0x31A], bus.ram[0x31B]],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            level_location_type: bus.ram[0x40],
+                            enemy_routine,
+                        });
+                    }
+                    0x9422 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_jumping_soldier_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xF32F => {
+                        if let Some(ctx) = pending.take() {
+                            verify_jumping_soldier_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} jumping-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
