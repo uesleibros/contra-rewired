@@ -3169,6 +3169,141 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} grenade-launcher-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_FOUR_SOLDIERS_ROUTINE_00").is_ok() {
+            // VERIFY_FOUR_SOLDIERS_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::four_soldiers::four_soldiers_
+            // routine_00`. Real entry $9541 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // advance_enemy_routine` - the nested `jsr init_indoor_
+            // enemy_pos_and_vel`/`jsr four_soldiers_set_firing_delay`
+            // never revisit either address, so no disambiguation is
+            // needed.
+            let mut pending: Option<FourSoldiersRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9541 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FourSoldiersRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            soldier_index: bus.ram[0x5B8 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_four_soldiers_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} four-soldiers-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FOUR_SOLDIERS_ROUTINE_01").is_ok() {
+            // VERIFY_FOUR_SOLDIERS_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::four_soldiers::four_soldiers_
+            // routine_01`. Real entry $954c (switchable bank, gated).
+            // Real exits (all switchable, all gated): `four_soldiers_
+            // exit` ($9575, the `Waiting` outcome), `create_indoor_
+            // bullet`'s own `@exit` ($97c3, the `Fired` outcome, same
+            // shared tail `indoor_soldier_routine_01`'s own bullet
+            // branch reaches), and the 2 shared exits ($e796/$e813, the
+            // `Advanced` outcome via `jmp advance_enemy_routine`).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<FourSoldiersRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x954C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(FourSoldiersRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attack_flag: bus.ram[0x8E],
+                            animation_delay: bus.ram[0x538 + x],
+                            soldier_index: bus.ram[0x5B8 + x],
+                            times_fired: bus.ram[0x5C8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0x9575 | 0x97C3 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_four_soldiers_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_four_soldiers_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} four-soldiers-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FOUR_SOLDIERS_ROUTINE_02").is_ok() {
+            // VERIFY_FOUR_SOLDIERS_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::four_soldiers::four_soldiers_
+            // routine_02`. Real entry $9582 (switchable bank, gated).
+            // Real exits: `four_soldiers_exit` ($9575, switchable,
+            // gated, the `StillMoving` outcome - same shared address
+            // `four_soldiers_routine_01`'s own `Waiting` outcome
+            // reaches), plus the 2 shared exits ($e796/$e813, the
+            // `Fired` outcome via `jmp set_enemy_routine_to_a`).
+            let mut pending: Option<FourSoldiersRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9582 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FourSoldiersRoutine02Ctx {
+                            x,
+                            frame_counter: bus.ram[0x1A],
+                            enemy_frame: bus.ram[0x568 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            soldier_index: bus.ram[0x5B8 + x],
+                            times_fired: bus.ram[0x5C8 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x9575 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_four_soldiers_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_four_soldiers_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} four-soldiers-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

@@ -1455,7 +1455,36 @@ replacement for its real 6502 code, cycle for cycle.
       and `_01`** across 1800-frame sessions - same as the rest of the
       indoor family, not reachable from the current scripted outdoor
       level-1 playthrough.
-- [ ] Everything else, logic side. Seventy-five routines out of what's
+- [x] **`four_soldiers::four_soldiers_routine_00` / `_01` / `_02` /
+      `four_soldiers_get_delay_offset` / `four_soldiers_set_firing_delay`**
+      (`crates/contra-native/src/enemy/four_soldiers.rs`, new module) -
+      the "group of four soldiers" enemy type's ($18) own table entries,
+      completing every indoor-family enemy type's own `_00`/`_01`(/`_02`)
+      logic except `jumping_soldier_routine_04` (still deferred - needs
+      the unported weapon-item-creation subsystem). A 3-state cycle:
+      `_00` initializes one soldier of the group and its first firing
+      delay, then advances to `_01`; `_01` walks until its running delay
+      elapses (firing a bullet on the exact frame the delay counts down
+      to `$4` along the way - real ASM gives no reason for that specific
+      value), decides whether to reverse direction (only soldiers `2`/`3`,
+      and only after their first shot - "split soldiers so some go left,
+      some go right"), then jumps straight to `_02`; `_02` applies
+      velocity/sprite while standing still, and once its own delay
+      elapses, sets the firing sprite, counts the shot, and jumps back to
+      `_01` directly (`set_enemy_routine_to_a`, not a linear advance).
+      `four_soldiers_get_delay_offset`/`four_soldiers_set_firing_delay`
+      are shared by all 3 entries to index two 12-byte `(times fired,
+      soldier index)` tables (running distance and firing delay).
+      Unit-tested (10 new tests: the shared offset/table-lookup helpers,
+      `_00`'s composition, `_01`'s waiting/firing/direction-reversal
+      branches - including confirming soldiers 0/1 never reverse while
+      2/3 do, but only after their first shot - and `_02`'s still-moving
+      vs. fired-and-looped-back branches).
+      **Live verification attempted but had 0 real hits for all 3**
+      across 1800-frame sessions - same as the rest of the indoor family,
+      not reachable from the current scripted outdoor level-1
+      playthrough.
+- [ ] Everything else, logic side. Eighty routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
