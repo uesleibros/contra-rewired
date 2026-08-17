@@ -8,7 +8,10 @@
 //! and removes the enemy ([`remove_enemy`], `$e809`) if either axis ends
 //! up off-screen. Also carries [`set_enemy_y_velocity_to_0`] (`$e8d0`),
 //! a small neighboring routine in the same address range reused by
-//! `soldier_stop_y_set_x_velocity` (see `soldier.rs`).
+//! `soldier_stop_y_set_x_velocity` (see `soldier.rs`), and [`enemy_
+//! routine_remove_enemy`] (`$e806`) - a real, shared enemy-routine-table
+//! entry (used by dozens of enemy types, not just the soldier) that
+//! unconditionally scrolls-then-removes an enemy.
 //!
 //! ## Real control flow: both axes update, but a removal short-circuits
 //! the second
@@ -75,6 +78,32 @@ pub struct RemovedEnemy {
 
 pub fn remove_enemy() -> RemovedEnemy {
     RemovedEnemy::default()
+}
+
+/// The result of one [`enemy_routine_remove_enemy`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnemyRoutineRemoveEnemyResult {
+    pub scroll: crate::add_scroll_to_enemy_pos::ScrolledEnemyPos,
+    pub removed: RemovedEnemy,
+}
+
+/// Native port of `enemy_routine_remove_enemy` (`$e806`) - a real, shared
+/// enemy-routine-table entry: `jsr add_scroll_to_enemy_pos` (real ASM
+/// keeps its position-writing side effect even though the *result* is
+/// about to be discarded - `add_scroll_to_enemy_pos` may itself already
+/// trigger a nested removal if its own scroll pushes the enemy off-
+/// screen, harmlessly redundant with the unconditional [`remove_enemy`]
+/// call right after it either way), then falls straight into [`remove_
+/// enemy`] unconditionally.
+pub fn enemy_routine_remove_enemy(
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+) -> EnemyRoutineRemoveEnemyResult {
+    let scroll = crate::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+    let removed = remove_enemy();
+    EnemyRoutineRemoveEnemyResult { scroll, removed }
 }
 
 /// Native port of `set_enemy_y_velocity_to_0` (`$e8d0`) - real ASM:
@@ -217,5 +246,22 @@ mod tests {
     #[test]
     fn set_enemy_x_velocity_to_0_zeroes_both_fields() {
         assert_eq!(set_enemy_x_velocity_to_0(), ZeroedVelocity { vel_fract: 0, vel_fast: 0 });
+    }
+
+    #[test]
+    fn enemy_routine_remove_enemy_scrolls_then_removes() {
+        use crate::add_scroll_to_enemy_pos::add_scroll_to_enemy_pos;
+        let r = enemy_routine_remove_enemy(0, 0x02, 0x50, 0x60);
+        assert_eq!(r.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x50, 0x60));
+        assert_eq!(r.removed, remove_enemy());
+    }
+
+    #[test]
+    fn enemy_routine_remove_enemy_keeps_the_scrolled_position_even_when_that_scroll_itself_would_remove() {
+        // x_pos=0x0A, frame_scroll=0x05 -> 0x0A-0x05=0x05, < 0x08: add_scroll_to_enemy_pos's
+        // own removal condition, but the position write still happened.
+        let r = enemy_routine_remove_enemy(0, 0x05, 0x0A, 0x60);
+        assert!(r.scroll.should_remove);
+        assert_eq!(r.scroll.x_pos, 0x05);
     }
 }

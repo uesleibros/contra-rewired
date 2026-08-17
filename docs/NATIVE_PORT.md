@@ -1051,7 +1051,33 @@ replacement for its real 6502 code, cycle for cycle.
       quirk, matched exactly). `soldier_routine_0a` - 16 real calls, zero
       mismatches. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Forty-one routines out of what's
+- [x] **`update_enemy_pos::enemy_routine_remove_enemy`**
+      (`crates/contra-native/src/update_enemy_pos.rs`) - ported from
+      `enemy_routine_remove_enemy` (`bank7.asm`, `$e806`-`$e808`): a real,
+      *shared* enemy-routine-table entry - not soldier-specific, used by
+      dozens of enemy types across the ROM as their "scroll then remove
+      this enemy" terminal state. Composes `add_scroll_to_enemy_pos`
+      (already verified) with the already-verified `remove_enemy`,
+      keeping the real ASM's position-writing side effect even though its
+      *result* is otherwise discarded. This crate's completion of the
+      plain soldier's entire routine table (`soldier_routine_ptr_tbl`,
+      11 entries: `00`-`05` and `09`-`0a` are soldier-specific and now
+      all ported; the remaining 3 entries, `enemy_routine_init_explosion`/
+      `enemy_routine_explosion`/`enemy_routine_remove_enemy`, are this
+      same kind of shared entry - only the last of the three is ported so
+      far, the other two need `play_sound` ported first).
+      Unit-tested (2 new tests: the composition matches calling both
+      pieces directly, and the scrolled position is kept even when that
+      scroll's own internal check would have triggered removal too).
+      **Live-verified** (`VERIFY_ENEMY_ROUTINE_REMOVE_ENEMY=1`, hooking
+      real entry `$e806` and its one real exit, `$e813` - disambiguated
+      from a nested return through the same address via the real `jsr
+      add_scroll_to_enemy_pos`'s own internal removal path, the same
+      stack-peek technique used throughout this session): **24 real
+      calls across a 25000-frame session, zero mismatches** - a solid
+      sample for a routine shared this widely. Not yet integrated live,
+      same status as every routine above.
+- [ ] Everything else, logic side. Forty-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

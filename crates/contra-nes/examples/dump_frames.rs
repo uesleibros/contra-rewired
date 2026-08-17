@@ -698,6 +698,48 @@ fn verify_soldier_routine_0a(ctx: SoldierRoutine0aCtx, cpu: &contra_nes::cpu::Cp
     }
 }
 
+/// Captured inputs for one real `enemy_routine_remove_enemy` call
+/// (`$e806`) - a real, shared enemy-routine-table entry used by dozens
+/// of enemy types, not just the soldier, so this hook has no per-type
+/// fields at all.
+#[derive(Clone, Copy)]
+struct EnemyRoutineRemoveEnemyCtx {
+    x: usize,
+    scroll_type: u8,
+    frame_scroll: u8,
+    x_pos: u8,
+    y_pos: u8,
+}
+
+fn verify_enemy_routine_remove_enemy(
+    ctx: EnemyRoutineRemoveEnemyCtx,
+    cpu: &contra_nes::cpu::Cpu,
+    bus: &contra_nes::bus::NesBus,
+    frame: u32,
+    checked: &mut u64,
+) {
+    use contra_native::update_enemy_pos::enemy_routine_remove_enemy;
+
+    let x = ctx.x;
+    let expected = enemy_routine_remove_enemy(ctx.scroll_type, ctx.frame_scroll, ctx.x_pos, ctx.y_pos);
+    *checked += 1;
+
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_routine = bus.ram[0x4B8 + x];
+
+    let mismatch =
+        real_x_pos != expected.scroll.x_pos || real_y_pos != expected.scroll.y_pos || real_sprites != 0 || real_routine != 0;
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(enemy_routine_remove_enemy) frame={frame} pc={:04X} in=(scroll_type={:02X} frame_scroll={:02X} x={:02X} y={:02X}): expected {:?}, got x={real_x_pos:02X} y={real_y_pos:02X} sprites={real_sprites:02X} routine={real_routine:02X}",
+            cpu.pc, ctx.scroll_type, ctx.frame_scroll, ctx.x_pos, ctx.y_pos, expected
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -2872,6 +2914,57 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} soldier-routine-0a calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ENEMY_ROUTINE_REMOVE_ENEMY").is_ok() {
+            // VERIFY_ENEMY_ROUTINE_REMOVE_ENEMY=1: verification pass for
+            // `contra_native::update_enemy_pos::enemy_routine_remove_
+            // enemy`. Real entry $e806 (fixed bank, always mapped - no
+            // bank_select() gate needed, unlike the soldier_routine_0N
+            // hooks). Real (single) exit: `remove_enemy`'s own rts,
+            // `$e813` - reached both as a genuine final exit (this
+            // routine falls straight through into `remove_enemy`'s own
+            // body after its one real `jsr add_scroll_to_enemy_pos`) and,
+            // confusingly, as a *nested* return from that same `jsr` if
+            // its own scroll happens to trigger its own internal removal
+            // path first. Disambiguated by checking the stack's return
+            // address: the nested case always returns to exactly `$e808`
+            // (the last byte of the 3-byte `jsr add_scroll_to_enemy_pos`
+            // at $e806-$e808, immediately followed by `remove_enemy`'s
+            // own code at $e809) - any other return address is genuine.
+            let mut pending: Option<EnemyRoutineRemoveEnemyCtx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE806 => {
+                        let x = cpu.x as usize;
+                        pending = Some(EnemyRoutineRemoveEnemyCtx {
+                            x,
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                        });
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if ret == 0xE808 {
+                            // Nested return from `jsr add_scroll_to_enemy_
+                            // pos`'s own internal removal - not our exit,
+                            // keep waiting (execution falls through into
+                            // `remove_enemy`'s own body next anyway).
+                        } else if let Some(ctx) = pending.take() {
+                            verify_enemy_routine_remove_enemy(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-routine-remove-enemy calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();
