@@ -1077,7 +1077,40 @@ replacement for its real 6502 code, cycle for cycle.
       calls across a 25000-frame session, zero mismatches** - a solid
       sample for a routine shared this widely. Not yet integrated live,
       same status as every routine above.
-- [ ] Everything else, logic side. Forty-two routines out of what's
+- [x] **`enemy_explosion::enemy_routine_init_explosion`** (`crates/
+      contra-native/src/enemy_explosion.rs`, new module) - ported from
+      `enemy_routine_init_explosion` (`bank7.asm`, `$e74b`-`$e75d`):
+      another real, shared enemy-routine-table entry (the plain
+      soldier's own entry 6, among dozens of other enemy types) - marks
+      the enemy destroyed, optionally triggers the destruction sound
+      (`sound_19`), re-palettes its sprite to palette 2, and either
+      removes it immediately (no sprite left) or hides it for one frame
+      before the real explosion animation (`enemy_routine_explosion`,
+      still not ported - needs more of `show_explosion_a`'s own branches
+      worked out) takes over. `play_sound` (`$c16b`) itself is
+      deliberately **not** ported as a function - it's a real bank-switch
+      wrapper around the sound engine (`jsr load_bank_1; jsr init_sound_
+      code_vars; jsr local_previous_1_bank`), not a pure RAM transform
+      like everything else in this crate; this port instead returns
+      *whether and which* sound code would fire as plain data (`Option<u8>`),
+      the same way `create_enemy_bullet` returns a bullet's fields rather
+      than performing the spawn - a caller integrating this into live
+      gameplay is responsible for actually invoking the sound engine.
+      Real, faithfully-reproduced detail: the sound-trigger check tests
+      the *new* `state_width` (after the unconditional `|= $81`), not the
+      original input.
+      Unit-tested (6 new tests: the unconditional destroyed-bits set, the
+      sound gate on both sides, the palette override preserving other
+      bits, and both real outcomes).
+      **Live-verified** (`VERIFY_ENEMY_ROUTINE_INIT_EXPLOSION=1`, hooking
+      real entry `$e74b`, `play_sound`'s own real entry `$c16b` while a
+      call is pending - to confirm the `sound` field against real
+      hardware despite `play_sound` itself not being ported - and the 2
+      shared exits, disambiguated the same way as `enemy_routine_remove_
+      enemy`'s hook): **32 real calls across a 25000-frame session, zero
+      mismatches**, including the sound-code check. Not yet integrated
+      live, same status as every routine above.
+- [ ] Everything else, logic side. Forty-three routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

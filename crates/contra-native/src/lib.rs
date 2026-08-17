@@ -71,6 +71,7 @@ pub mod collision;
 pub mod create_enemy_bullet;
 pub mod enemy_clear;
 pub mod enemy_collision_flags;
+pub mod enemy_explosion;
 pub mod enemy_position_utils;
 pub mod enemy_routine_transition;
 pub mod enemy_slots;

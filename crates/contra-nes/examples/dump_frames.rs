@@ -740,6 +740,73 @@ fn verify_enemy_routine_remove_enemy(
     }
 }
 
+/// Captured inputs for one real `enemy_routine_init_explosion` call
+/// (`$e74b`) - a real, shared enemy-routine-table entry.
+#[derive(Clone, Copy)]
+struct EnemyRoutineInitExplosionCtx {
+    x: usize,
+    state_width: u8,
+    sprite_attr: u8,
+    sprites: u8,
+    scroll_type: u8,
+    frame_scroll: u8,
+    x_pos: u8,
+    y_pos: u8,
+    routine: u8,
+}
+
+fn verify_enemy_routine_init_explosion(
+    ctx: EnemyRoutineInitExplosionCtx,
+    sound_seen: Option<u8>,
+    cpu: &contra_nes::cpu::Cpu,
+    bus: &contra_nes::bus::NesBus,
+    frame: u32,
+    checked: &mut u64,
+) {
+    use contra_native::enemy_explosion::{enemy_routine_init_explosion, EnemyRoutineInitExplosionOutcome};
+
+    let x = ctx.x;
+    let expected =
+        enemy_routine_init_explosion(ctx.state_width, ctx.sprite_attr, ctx.sprites, ctx.scroll_type, ctx.frame_scroll, ctx.x_pos, ctx.y_pos, ctx.routine);
+    *checked += 1;
+
+    let real_state_width = bus.ram[0x598 + x];
+    let real_sprite_attr = bus.ram[0x358 + x];
+    let real_frame = bus.ram[0x568 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_delay = bus.ram[0x538 + x];
+    let real_routine = bus.ram[0x4B8 + x];
+
+    let sound_ok = sound_seen == expected.sound;
+
+    let mismatch = !sound_ok
+        || real_state_width != expected.state_width
+        || real_sprite_attr != expected.sprite_attr
+        || match expected.outcome {
+            EnemyRoutineInitExplosionOutcome::Removed(_) => real_sprites != 0 || real_routine != 0,
+            EnemyRoutineInitExplosionOutcome::Hidden(h) => {
+                let removed = h.scroll.should_remove;
+                let expected_sprites = if removed { 0 } else { h.enemy_sprites };
+                let expected_routine = if removed { 0 } else { h.delayed_routine.routine_update.routine };
+                real_frame != h.enemy_frame
+                    || real_sprites != expected_sprites
+                    || real_x_pos != h.scroll.x_pos
+                    || real_y_pos != h.scroll.y_pos
+                    || real_delay != h.delayed_routine.animation_delay
+                    || real_routine != expected_routine
+            }
+        };
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(enemy_routine_init_explosion) frame={frame} pc={:04X} in=(state_width={:02X} sprite_attr={:02X} sprites={:02X} scroll_type={:02X} frame_scroll={:02X} x={:02X} y={:02X} routine={:02X}): expected {:?} sound_seen={sound_seen:?}, got state_width={real_state_width:02X} sprite_attr={real_sprite_attr:02X} frame={real_frame:02X} sprites={real_sprites:02X} x={real_x_pos:02X} y={real_y_pos:02X} delay={real_delay:02X} routine={real_routine:02X}",
+            cpu.pc, ctx.state_width, ctx.sprite_attr, ctx.sprites, ctx.scroll_type, ctx.frame_scroll, ctx.x_pos, ctx.y_pos, ctx.routine, expected
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -2965,6 +3032,63 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-routine-remove-enemy calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ENEMY_ROUTINE_INIT_EXPLOSION").is_ok() {
+            // VERIFY_ENEMY_ROUTINE_INIT_EXPLOSION=1: verification pass
+            // for `contra_native::enemy_explosion::enemy_routine_init_
+            // explosion`. Real entry $e74b (fixed bank, no bank gate
+            // needed). While `pending` is armed, also watches `play_
+            // sound`'s own real entry ($c16b) to capture whether (and
+            // with what code, via `cpu.a`) it actually fired - `play_
+            // sound` itself isn't ported (it's a bank-switch wrapper, not
+            // a pure RAM transform), so this is the only way to verify
+            // the `sound` field against real hardware. Real exits: the 2
+            // shared exits `enemy_routine_remove_enemy` already uses
+            // ($e796/$e813), disambiguated from the real nested `jsr
+            // add_scroll_to_enemy_pos` the same way as every other hook
+            // this session - a nested return lands inside this routine's
+            // own body+tail (`$e74b`-`$e796`).
+            let mut pending: Option<EnemyRoutineInitExplosionCtx> = None;
+            let mut sound_seen: Option<u8> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE74B => {
+                        let x = cpu.x as usize;
+                        sound_seen = None;
+                        pending = Some(EnemyRoutineInitExplosionCtx {
+                            x,
+                            state_width: bus.ram[0x598 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            sprites: bus.ram[0x30A + x],
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xC16B if pending.is_some() => {
+                        sound_seen = Some(cpu.a);
+                    }
+                    0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xE74B..0xE796).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos` - not our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_enemy_routine_init_explosion(ctx, sound_seen, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-routine-init-explosion calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();
