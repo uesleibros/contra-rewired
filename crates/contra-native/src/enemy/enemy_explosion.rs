@@ -144,9 +144,9 @@ pub struct ShowExplosionAResult {
 }
 
 /// Native port of `show_explosion_a` (`$e7bc`) - the shared explosion-
-/// animation driver `enemy_routine_explosion` and several other real
-/// callers (`roller_routine_04`, `shared_enemy_routine_03`, not ported
-/// here) all fall into with their own `(explosion_type_override,
+/// animation driver [`enemy_routine_explosion`] and several other real
+/// callers ([`shared_enemy_routine_03`], `roller_routine_04` - not
+/// ported here) all fall into with their own `(explosion_type_override,
 /// max_sprites)` pair.
 #[allow(clippy::too_many_arguments)]
 pub fn show_explosion_a(
@@ -222,6 +222,28 @@ pub fn enemy_routine_explosion(
         enemy_animation_delay,
         enemy_frame,
     )
+}
+
+/// Native port of `shared_enemy_routine_03` (`$e7aa`) - "show explosion_
+/// type_02": real ASM is just `lda #$02; ldy #$03; bne show_explosion_a`,
+/// i.e. [`show_explosion_a`] with a fixed `(explosion_type_override=2,
+/// max_sprites=3)` pair - explosion_type_02, the small ring used for
+/// generated indoor soldiers. A real, shared enemy-routine-table entry
+/// itself (the indoor soldier family's own routine index 5 - see
+/// [`crate::enemy::indoor_soldier`]'s module doc comment), unlike
+/// [`enemy_routine_explosion`] which is the *plain* soldier's own entry.
+#[allow(clippy::too_many_arguments)]
+pub fn shared_enemy_routine_03(
+    enemy_state_width: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+    enemy_animation_delay: u8,
+    enemy_frame: u8,
+) -> ShowExplosionAResult {
+    show_explosion_a(2, 3, enemy_state_width, enemy_x_pos, enemy_y_pos, level_scrolling_type, frame_scroll, current_routine, enemy_animation_delay, enemy_frame)
 }
 
 #[cfg(test)]
@@ -341,6 +363,31 @@ mod tests {
             (ShowExplosionAOutcome::Animating { enemy_sprites: a, .. }, ShowExplosionAOutcome::Animating { enemy_sprites: b, .. }) => {
                 assert_eq!(a, EXPLOSION_TYPE_00[1]);
                 assert_eq!(b, EXPLOSION_TYPE_01[1]);
+            }
+            other => panic!("expected both Animating, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_routine_03_matches_show_explosion_a_with_type_2_and_3_sprites() {
+        let r = shared_enemy_routine_03(0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        let expected = show_explosion_a(2, 3, 0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        assert_eq!(r, expected);
+        match r.outcome {
+            ShowExplosionAOutcome::Animating { enemy_sprites, .. } => assert_eq!(enemy_sprites, EXPLOSION_TYPE_02[1]),
+            other => panic!("expected Animating, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_routine_03_ignores_state_width_bit_3_unlike_the_zero_override_case() {
+        // explosion_type_override=2 is fixed, so bit 3 of state_width (which would
+        // normally switch type 0 -> type 1) has no effect here.
+        let without_bit3 = shared_enemy_routine_03(0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        let with_bit3 = shared_enemy_routine_03(0x08, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        match (without_bit3.outcome, with_bit3.outcome) {
+            (ShowExplosionAOutcome::Animating { enemy_sprites: a, .. }, ShowExplosionAOutcome::Animating { enemy_sprites: b, .. }) => {
+                assert_eq!(a, b);
             }
             other => panic!("expected both Animating, got {other:?}"),
         }

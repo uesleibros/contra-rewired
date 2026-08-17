@@ -3,11 +3,16 @@
 //! routines. `indoor_soldier_routine_ptr_tbl` (`src/bank0.asm`, `$92c8`-
 //! onward) is actually shared by **4 real enemy types** ($15 indoor
 //! soldier, $16 jumping soldier, $17 grenade launcher, $18 group of four
-//! soldiers) - this module only carries the pieces reachable from
-//! `indoor_soldier_routine_00`/`_01`; the other 3 enemy types' own
-//! `_00`/`_01` entries are not yet ported (they reuse some of the same
-//! shared helpers here, e.g. `apply_enemy_velocity_set_bg_priority`, with
-//! different callers still missing).
+//! soldiers) - this module carries the pieces reachable from `indoor_
+//! soldier_routine_00`/`_01`, plus the 3 further table entries every one
+//! of those 4 types shares verbatim ([`shared_enemy_routine_00`]/[`shared_
+//! enemy_routine_01`], "soldier has been hit by player bullet"/"perform
+//! enemy hit by bullet animation", and [`crate::enemy::enemy_explosion::
+//! shared_enemy_routine_03`], "show explosion_type_02" - real, `.export`ed
+//! table entries every one of the 4 types' own pointer tables lists by
+//! name, not something specific to indoor soldiers). The other 3 enemy
+//! types' own `_00`/`_01` entries (their own initialization/attack logic)
+//! are not yet ported.
 //!
 //! ## `indoor_soldier_routine_01`'s weapon-type branch and its 3 new
 //! sub-routines
@@ -56,12 +61,13 @@
 use crate::enemy::add_with_enemy_pos::add_with_enemy_pos;
 use crate::enemy::create_enemy_bullet::ENEMY_TYPE_BULLET;
 use crate::enemy::enemy_clear::EnemyClearFields;
-use crate::enemy::enemy_position_utils::reverse_enemy_x_direction;
-use crate::enemy::enemy_routine_transition::{advance_enemy_routine, EnemyRoutineUpdate};
+use crate::enemy::enemy_collision_flags::disable_enemy_collision;
+use crate::enemy::enemy_position_utils::{add_a_to_enemy_y_fract_vel, reverse_enemy_x_direction};
+use crate::enemy::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, DelayedRoutineUpdate, EnemyRoutineUpdate};
 use crate::enemy::enemy_slots::{find_next_enemy_slot, ENEMY_SLOT_COUNT};
 use crate::enemy::find_far_segment::find_far_segment_for_x_pos;
 use crate::enemy::initialize_enemy::initialize_enemy;
-use crate::enemy::update_enemy_pos::{remove_enemy, RemovedEnemy};
+use crate::enemy::update_enemy_pos::{remove_enemy, set_enemy_x_velocity_to_0, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos, ZeroedVelocity};
 
 /// `indoor_soldier_x_velocity_tbl` (`$96b9`, 8 bytes) - `(x_vel_fract,
 /// x_vel_fast)` per real enemy type sharing this init helper, indexed by
@@ -430,6 +436,99 @@ pub fn indoor_soldier_routine_01(
     IndoorSoldierRoutine01Result { sprite, velocity, attack_delay, attack }
 }
 
+/// The full result of one [`shared_enemy_routine_00`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedEnemyRoutine00Result {
+    pub state_width: u8,
+    /// Always `$96` - the "hit by bullet" reaction sprite.
+    pub sprites: u8,
+    /// Always `$80` - Y velocity fractional part for the hit reaction.
+    pub y_velocity_fract: u8,
+    /// Always `$fd` (-3) - Y velocity fast part, knocking the enemy
+    /// upward.
+    pub y_velocity_fast: u8,
+    pub x_velocity: ZeroedVelocity,
+    pub delayed_routine: DelayedRoutineUpdate,
+}
+
+/// Native port of `shared_enemy_routine_00` (`$9346`) - "soldier has been
+/// hit by player bullet": disables player-enemy collision, sets the hit
+/// reaction sprite and an upward "knockback" Y velocity, zeroes X
+/// velocity, then advances to the next routine after a fixed `$10`-frame
+/// delay via `set_anim_delay_adv_enemy_routine_00` (`$8e77`, a bank0.asm-
+/// local byte-for-byte duplicate of [`set_enemy_delay_adv_routine`] -
+/// same real behavior, reused here rather than modeled as a separate
+/// port). Real comment: "used by the indoor soldiers: #$15 Indoor
+/// Soldier, #$16 Jumping Soldier, #$17 Grenade Launcher, #$18 Group of
+/// Four Soldiers" - a real, shared table entry for all 4 types, not
+/// indoor-soldier-specific despite living in this module.
+pub fn shared_enemy_routine_00(enemy_state_width: u8, current_routine: u8) -> SharedEnemyRoutine00Result {
+    SharedEnemyRoutine00Result {
+        state_width: disable_enemy_collision(enemy_state_width),
+        sprites: 0x96,
+        y_velocity_fract: 0x80,
+        y_velocity_fast: 0xFD,
+        x_velocity: set_enemy_x_velocity_to_0(),
+        delayed_routine: set_enemy_delay_adv_routine(0x10, current_routine),
+    }
+}
+
+/// What [`shared_enemy_routine_01`] did on one call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedEnemyRoutine01Outcome {
+    /// `ENEMY_ANIMATION_DELAY` hadn't reached 0 yet.
+    Waiting,
+    /// Delay elapsed - advances to the next routine.
+    Advanced(EnemyRoutineUpdate),
+}
+
+/// The full result of one [`shared_enemy_routine_01`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedEnemyRoutine01Result {
+    pub position: UpdatedEnemyPos,
+    /// `ENEMY_Y_VELOCITY_FRACT`/`_FAST` after adding gravity (`$38`) for
+    /// *next* frame - [`position`](Self::position) is computed from the
+    /// velocity *before* this addition, matching the real ASM's own
+    /// instruction order (`jsr update_enemy_pos` runs first).
+    pub y_velocity: (u8, u8),
+    pub animation_delay: u8,
+    pub outcome: SharedEnemyRoutine01Outcome,
+}
+
+/// Native port of `shared_enemy_routine_01` (`$9360`) - "perform enemy
+/// hit by bullet animation": applies the current velocity/gravity to
+/// position (via the already-ported [`update_enemy_pos`]), adds gravity
+/// to Y velocity for next frame, then advances once `ENEMY_ANIMATION_
+/// DELAY` elapses. Same real, shared-across-all-4-types table entry as
+/// [`shared_enemy_routine_00`].
+#[allow(clippy::too_many_arguments)]
+pub fn shared_enemy_routine_01(
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    x_pos: u8,
+    x_vel_accum: u8,
+    x_vel_fract: u8,
+    x_vel_fast: u8,
+    y_pos: u8,
+    y_vel_accum: u8,
+    y_vel_fract: u8,
+    y_vel_fast: u8,
+    enemy_animation_delay: u8,
+    current_routine: u8,
+) -> SharedEnemyRoutine01Result {
+    let position = update_enemy_pos(level_scrolling_type, frame_scroll, x_pos, x_vel_accum, x_vel_fract, x_vel_fast, y_pos, y_vel_accum, y_vel_fract, y_vel_fast);
+    let y_velocity = add_a_to_enemy_y_fract_vel(0x38, y_vel_fract, y_vel_fast);
+
+    let animation_delay = enemy_animation_delay.wrapping_sub(1);
+    let outcome = if animation_delay != 0 {
+        SharedEnemyRoutine01Outcome::Waiting
+    } else {
+        SharedEnemyRoutine01Outcome::Advanced(advance_enemy_routine(current_routine))
+    };
+
+    SharedEnemyRoutine01Result { position, y_velocity, animation_delay, outcome }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,5 +751,50 @@ mod tests {
             assert_eq!(r.fields.y_pos, 0x6D + 0x08);
             assert_eq!(r.fields.attributes, 0xCC);
         }
+    }
+
+    #[test]
+    fn shared_routine_00_composes_disable_collision_hit_reaction_and_delayed_advance() {
+        let r = shared_enemy_routine_00(0x00, 5);
+        assert_eq!(r.state_width, disable_enemy_collision(0x00));
+        assert_eq!(r.sprites, 0x96);
+        assert_eq!(r.y_velocity_fract, 0x80);
+        assert_eq!(r.y_velocity_fast, 0xFD);
+        assert_eq!(r.x_velocity, ZeroedVelocity::default());
+        assert_eq!(r.delayed_routine, set_enemy_delay_adv_routine(0x10, 5));
+    }
+
+    #[test]
+    fn shared_routine_00_delayed_advance_still_sets_the_delay_even_when_the_routine_guard_rejects() {
+        let r = shared_enemy_routine_00(0x00, 0);
+        assert_eq!(r.delayed_routine.animation_delay, 0x10);
+        assert_eq!(r.delayed_routine.routine_update, advance_enemy_routine(0));
+    }
+
+    #[test]
+    fn shared_routine_01_still_waits_while_animation_delay_has_not_elapsed() {
+        let r = shared_enemy_routine_01(0, 0x01, 0x50, 0, 0, 0, 0x50, 0, 0xF0, 0x01, 0x05, 5);
+        assert_eq!(r.animation_delay, 0x04);
+        assert_eq!(r.outcome, SharedEnemyRoutine01Outcome::Waiting);
+    }
+
+    #[test]
+    fn shared_routine_01_advances_once_the_delay_elapses() {
+        let r = shared_enemy_routine_01(0, 0x01, 0x50, 0, 0, 0, 0x50, 0, 0xF0, 0x01, 0x01, 5);
+        assert_eq!(r.animation_delay, 0x00);
+        assert_eq!(r.outcome, SharedEnemyRoutine01Outcome::Advanced(advance_enemy_routine(5)));
+    }
+
+    #[test]
+    fn shared_routine_01_position_matches_update_enemy_pos_using_the_pre_gravity_velocity() {
+        let r = shared_enemy_routine_01(0, 0x01, 0x50, 0, 0, 0, 0x50, 0, 0xF0, 0x01, 0x05, 5);
+        let expected_position = update_enemy_pos(0, 0x01, 0x50, 0, 0, 0, 0x50, 0, 0xF0, 0x01);
+        assert_eq!(r.position, expected_position);
+    }
+
+    #[test]
+    fn shared_routine_01_adds_gravity_to_y_velocity_for_next_frame() {
+        let r = shared_enemy_routine_01(0, 0x01, 0x50, 0, 0, 0, 0x50, 0, 0xF0, 0x01, 0x05, 5);
+        assert_eq!(r.y_velocity, add_a_to_enemy_y_fract_vel(0x38, 0xF0, 0x01));
     }
 }

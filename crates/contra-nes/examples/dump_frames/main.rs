@@ -2846,6 +2846,140 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} indoor-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_SHARED_ENEMY_ROUTINE_00").is_ok() {
+            // VERIFY_SHARED_ENEMY_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::indoor_soldier::shared_enemy_
+            // routine_00`. Real entry $9346 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // set_anim_delay_adv_enemy_routine_00` -> `jmp advance_
+            // enemy_routine` - the nested `jsr disable_enemy_collision`/
+            // `jsr set_enemy_x_velocity_to_0` both resolve in bank7's
+            // fixed region, well away from either address, so no
+            // disambiguation is needed.
+            let mut pending: Option<SharedEnemyRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9346 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SharedEnemyRoutine00Ctx { x, state_width: bus.ram[0x598 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_shared_enemy_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} shared-enemy-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SHARED_ENEMY_ROUTINE_01").is_ok() {
+            // VERIFY_SHARED_ENEMY_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::indoor_soldier::shared_enemy_
+            // routine_01`. Real entry $9360 (switchable bank, gated).
+            // Real exits: this routine's own local exit ($9345, real
+            // label `shared_enemy_routine_01_exit` - the `Waiting`
+            // outcome), plus the 2 shared exits ($e796/$e813, the
+            // `Advanced` outcome via `jmp advance_enemy_routine`). $9345
+            // is also `init_sprite_from_frame`'s own natural `rts` (a
+            // real, shared exit) - harmless here since this routine
+            // never calls `init_sprite_from_frame` itself, so within one
+            // tracked call $9345 can only be reached via this routine's
+            // own `bne`.
+            let mut pending: Option<SharedEnemyRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9360 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SharedEnemyRoutine01Ctx {
+                            x,
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x9345 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_shared_enemy_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_shared_enemy_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} shared-enemy-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SHARED_ENEMY_ROUTINE_03").is_ok() {
+            // VERIFY_SHARED_ENEMY_ROUTINE_03=1: verification pass for
+            // `contra_native::enemy::enemy_explosion::shared_enemy_
+            // routine_03`. Real entry $e7aa (fixed bank, no gate needed) -
+            // falls straight into `show_explosion_a` via `bne`, so this
+            // hook mirrors `VERIFY_ENEMY_ROUTINE_EXPLOSION`'s own hook
+            // exactly (same real exits: `enemy_routine_explosion_exit`
+            // $e805, the 2 shared exits $e796/$e813 disambiguated the
+            // same way against a nested return from `add_scroll_to_
+            // enemy_pos`).
+            let mut pending: Option<SharedEnemyRoutine03Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE7AA => {
+                        let x = cpu.x as usize;
+                        pending = Some(SharedEnemyRoutine03Ctx {
+                            x,
+                            state_width: bus.ram[0x598 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            routine: bus.ram[0x4B8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            frame: bus.ram[0x568 + x],
+                        });
+                    }
+                    0xE805 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_shared_enemy_routine_03(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xE7BC..0xE805).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos` - not our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_shared_enemy_routine_03(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} shared-enemy-routine-03 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

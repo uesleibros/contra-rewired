@@ -1328,7 +1328,41 @@ replacement for its real 6502 code, cycle for cycle.
       levels, not reachable from the current scripted outdoor level-1
       playthrough. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Sixty-four routines out of what's
+- [x] **`indoor_soldier::shared_enemy_routine_00` / `shared_enemy_routine_01`
+      / `enemy_explosion::shared_enemy_routine_03`**
+      (`crates/contra-native/src/enemy/indoor_soldier.rs` and `enemy_
+      explosion.rs`) - the 3 remaining table entries every one of the 4
+      indoor-family enemy types ($15-$18) shares verbatim, completing the
+      generic portion of `indoor_soldier_routine_ptr_tbl`'s 7 entries
+      (only the 2 already-shared explosion entries and these 3 - not
+      `_00`/`_01`, which are per-type). `shared_enemy_routine_00`
+      (`$9346`, "soldier has been hit by player bullet") composes the
+      already-ported `disable_enemy_collision`, `set_enemy_x_velocity_
+      to_0`, and `set_enemy_delay_adv_routine` - the last one standing in
+      for the real `set_anim_delay_adv_enemy_routine_00` (`$8e77`), a
+      bank0.asm-local byte-for-byte duplicate of the same logic, not
+      separately modeled. `shared_enemy_routine_01` (`$9360`, "perform
+      enemy hit by bullet animation") composes the already-ported
+      `update_enemy_pos` and `add_a_to_enemy_y_fract_vel`, applying
+      velocity to position *before* adding gravity for next frame,
+      matching the real instruction order. `shared_enemy_routine_03`
+      (`$e7aa`, "show explosion_type_02") is a one-line wrapper around
+      the already-ported `show_explosion_a` with a fixed
+      `(explosion_type_override=2, max_sprites=3)` pair - same shape as
+      `enemy_routine_explosion` (the plain soldier's own equivalent
+      entry), just a different fixed pair and a real, separate call
+      site.
+      Unit-tested (7 new tests: `shared_enemy_routine_00`'s full
+      composition and its guard-rejected case, `shared_enemy_routine_01`'s
+      waiting/advancing outcomes plus its position and gravity math cross-
+      checked directly against `update_enemy_pos`/`add_a_to_enemy_y_
+      fract_vel`, and `shared_enemy_routine_03`'s output matching
+      `show_explosion_a(2, 3, ...)` exactly).
+      **Live verification attempted but had 0 real hits for all 3**
+      across 1800-frame sessions - same as every other routine in this
+      family, indoor/base levels aren't reachable from the current
+      scripted outdoor level-1 playthrough.
+- [ ] Everything else, logic side. Sixty-seven routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
