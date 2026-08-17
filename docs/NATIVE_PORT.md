@@ -1110,7 +1110,37 @@ replacement for its real 6502 code, cycle for cycle.
       enemy`'s hook): **32 real calls across a 25000-frame session, zero
       mismatches**, including the sound-code check. Not yet integrated
       live, same status as every routine above.
-- [ ] Everything else, logic side. Forty-three routines out of what's
+- [x] **`enemy_explosion::enemy_routine_explosion` / `show_explosion_a`**
+      (`crates/contra-native/src/enemy/enemy_explosion.rs`) - ported from
+      `enemy_routine_explosion` (`bank7.asm`, `$e7b0`-`$e7bb`, the plain
+      soldier's own routine-table entry 7) and the shared animation
+      driver it falls into, `show_explosion_a` (`$e7bc`-`$e805`, also used
+      by `roller_routine_04`/`shared_enemy_routine_03`, not ported here):
+      cycles through one of 4 real fixed sprite-code sequences
+      (`explosion_type_ptr_tbl`, `$e823` - `EXPLOSION_TYPE_00`-`03` in
+      this port), one frame every `$0a` game-frames, disabling collision
+      right before the *last* frame, then advancing to the next real
+      routine once the sequence finishes. Composes already-verified
+      pieces (`add_scroll_to_enemy_pos`, `disable_enemy_collision`,
+      `advance_enemy_routine`) with one small new table-lookup. Faithful
+      to a real subtlety: `enemy_routine_explosion` always passes `$00`
+      for `show_explosion_a`'s own explosion-type override, so the type
+      actually used is derived from `ENEMY_STATE_WIDTH` bit 3 a *second*
+      time inside `show_explosion_a` itself - both checks read the same
+      bit, so they can't disagree for this specific caller, but the port
+      keeps the real two-step structure rather than collapsing it.
+      Unit-tested (14 new tests: all 4 outcomes, the override-bypasses-
+      state-width case, and both derived-type branches).
+      **Live-verified** (`VERIFY_ENEMY_ROUTINE_EXPLOSION=1`, hooking real
+      entry `$e7b0` and 3 real exits - `show_explosion_a`'s own dedicated
+      `$e805`, plus the 2 shared exits, `$e813` disambiguated from a
+      nested return through the routine's own early `jsr add_scroll_to_
+      enemy_pos` the usual way): **1312 real calls across a 25000-frame
+      session, zero mismatches** - by far the largest live sample so far
+      this session, unsurprising given how constantly *something* is
+      exploding in this game. Not yet integrated live, same status as
+      every routine above.
+- [ ] Everything else, logic side. Forty-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

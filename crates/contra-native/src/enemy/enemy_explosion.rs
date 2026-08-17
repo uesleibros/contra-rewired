@@ -6,7 +6,10 @@
 //! optionally triggers the destruction sound, re-palettes its sprite,
 //! and either removes it immediately (nothing left to show) or hides it
 //! for one frame before the actual explosion animation
-//! (`enemy_routine_explosion`, not yet ported) takes over.
+//! ([`enemy_routine_explosion`]/[`show_explosion_a`]) takes over: cycles
+//! through a per-explosion-type sprite sequence, one frame every `$0a`
+//! game-frames, disabling collision just before the final frame, then
+//! advances to the next routine once the sequence finishes.
 //!
 //! `play_sound` (`$c16b`) itself isn't ported here - it's a real bank-
 //! switch wrapper around the sound engine (`jsr load_bank_1; jsr
@@ -19,7 +22,8 @@
 //! live gameplay is responsible for actually invoking the sound engine.
 
 use crate::enemy::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
-use crate::enemy::enemy_routine_transition::{set_enemy_delay_adv_routine, DelayedRoutineUpdate};
+use crate::enemy::enemy_collision_flags::disable_enemy_collision;
+use crate::enemy::enemy_routine_transition::{advance_enemy_routine, set_enemy_delay_adv_routine, DelayedRoutineUpdate, EnemyRoutineUpdate};
 use crate::enemy::update_enemy_pos::{remove_enemy, RemovedEnemy};
 
 /// `enemy_routine_init_explosion`'s real destruction sound code
@@ -96,6 +100,130 @@ pub fn enemy_routine_init_explosion(
     EnemyRoutineInitExplosionResult { state_width, sound, sprite_attr, outcome }
 }
 
+/// `explosion_type_ptr_tbl` (`$e823`, 4 pointers) - the sprite-code
+/// sequences an explosion can cycle through, each pointer's target
+/// itself a small fixed-length real ROM table.
+const EXPLOSION_TYPE_00: [u8; 3] = [0x38, 0x39, 0x3A]; // larger circular ring
+const EXPLOSION_TYPE_01: [u8; 4] = [0x37, 0x35, 0x36, 0x37]; // cloudy
+const EXPLOSION_TYPE_02: [u8; 3] = [0x9D, 0x9E, 0x9F]; // small ring (generated indoor soldiers)
+const EXPLOSION_TYPE_03: [u8; 2] = [0x36, 0x37]; // short cloudy (rollers)
+
+fn explosion_sprite(explosion_type: u8, enemy_frame: u8) -> u8 {
+    match explosion_type {
+        0 => EXPLOSION_TYPE_00[enemy_frame as usize],
+        1 => EXPLOSION_TYPE_01[enemy_frame as usize],
+        2 => EXPLOSION_TYPE_02[enemy_frame as usize],
+        _ => EXPLOSION_TYPE_03[enemy_frame as usize],
+    }
+}
+
+/// The real, branchy result of one [`show_explosion_a`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowExplosionAOutcome {
+    /// `ENEMY_ROUTINE` was already `0` at entry - real ASM exits right
+    /// after the scroll, touching nothing else.
+    NoRoutine,
+    /// Animation delay hadn't elapsed yet.
+    Waiting { animation_delay: u8 },
+    /// Delay elapsed and the sequence isn't done: sprite advances one
+    /// frame, delay resets to `$0a`. `state_width` is `Some` only on the
+    /// call that shows the *last* frame of the sequence (collision gets
+    /// disabled pre-emptively right before it).
+    Animating { enemy_frame: u8, animation_delay: u8, state_width: Option<u8>, enemy_sprites: u8 },
+    /// Delay elapsed and the sequence just finished (this call's
+    /// incremented frame reached the sequence length): advances to the
+    /// next routine, nothing else in this call runs.
+    Advanced(EnemyRoutineUpdate),
+}
+
+/// The full result of one [`show_explosion_a`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowExplosionAResult {
+    pub scroll: ScrolledEnemyPos,
+    pub outcome: ShowExplosionAOutcome,
+}
+
+/// Native port of `show_explosion_a` (`$e7bc`) - the shared explosion-
+/// animation driver `enemy_routine_explosion` and several other real
+/// callers (`roller_routine_04`, `shared_enemy_routine_03`, not ported
+/// here) all fall into with their own `(explosion_type_override,
+/// max_sprites)` pair.
+#[allow(clippy::too_many_arguments)]
+pub fn show_explosion_a(
+    explosion_type_override: u8,
+    max_sprites: u8,
+    enemy_state_width: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+    enemy_animation_delay: u8,
+    enemy_frame: u8,
+) -> ShowExplosionAResult {
+    let scroll = add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+
+    if current_routine == 0 {
+        return ShowExplosionAResult { scroll, outcome: ShowExplosionAOutcome::NoRoutine };
+    }
+
+    let delay = enemy_animation_delay.wrapping_sub(1);
+    if delay != 0 {
+        return ShowExplosionAResult { scroll, outcome: ShowExplosionAOutcome::Waiting { animation_delay: delay } };
+    }
+
+    let new_frame = enemy_frame.wrapping_add(1);
+    if new_frame >= max_sprites {
+        let routine_update = advance_enemy_routine(current_routine);
+        return ShowExplosionAResult { scroll, outcome: ShowExplosionAOutcome::Advanced(routine_update) };
+    }
+
+    let state_width =
+        if new_frame.wrapping_add(1) >= max_sprites { Some(disable_enemy_collision(enemy_state_width)) } else { None };
+
+    let mut explosion_type = explosion_type_override;
+    if explosion_type == 0 && enemy_state_width & 0x08 != 0 {
+        explosion_type = 1;
+    }
+    let enemy_sprites = explosion_sprite(explosion_type, new_frame);
+
+    ShowExplosionAResult {
+        scroll,
+        outcome: ShowExplosionAOutcome::Animating { enemy_frame: new_frame, animation_delay: 0x0A, state_width, enemy_sprites },
+    }
+}
+
+/// Native port of `enemy_routine_explosion` (`$e7b0`) - another real,
+/// shared enemy-routine-table entry (the soldier's own entry 7): picks
+/// the explosion sequence length from `ENEMY_STATE_WIDTH` bit 3 (`4` if
+/// set, else `3`) and always lets [`show_explosion_a`] derive the
+/// explosion type from that same bit (`explosion_type_override = 0`).
+#[allow(clippy::too_many_arguments)]
+pub fn enemy_routine_explosion(
+    enemy_state_width: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+    enemy_animation_delay: u8,
+    enemy_frame: u8,
+) -> ShowExplosionAResult {
+    let max_sprites = if enemy_state_width & 0x08 != 0 { 4 } else { 3 };
+    show_explosion_a(
+        0,
+        max_sprites,
+        enemy_state_width,
+        enemy_x_pos,
+        enemy_y_pos,
+        level_scrolling_type,
+        frame_scroll,
+        current_routine,
+        enemy_animation_delay,
+        enemy_frame,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +272,88 @@ mod tests {
             }
             other => panic!("expected Hidden, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn no_routine_exits_after_the_scroll_with_nothing_else_touched() {
+        let r = show_explosion_a(0, 3, 0x00, 0x50, 0x60, 0, 0x02, 0, 0x0A, 0x00);
+        assert_eq!(r.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x50, 0x60));
+        assert_eq!(r.outcome, ShowExplosionAOutcome::NoRoutine);
+    }
+
+    #[test]
+    fn waits_when_delay_has_not_elapsed() {
+        let r = show_explosion_a(0, 3, 0x00, 0x50, 0x60, 0, 0x02, 3, 0x05, 0x00);
+        assert_eq!(r.outcome, ShowExplosionAOutcome::Waiting { animation_delay: 0x04 });
+    }
+
+    #[test]
+    fn advances_to_the_next_routine_once_the_sequence_is_fully_shown() {
+        // max_sprites=3, enemy_frame=2 -> new_frame=3 >= 3, sequence done.
+        let r = show_explosion_a(0, 3, 0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x02);
+        assert_eq!(r.outcome, ShowExplosionAOutcome::Advanced(advance_enemy_routine(3)));
+    }
+
+    #[test]
+    fn animates_the_middle_frame_without_disabling_collision_yet() {
+        // max_sprites=3, enemy_frame=0 -> new_frame=1, new_frame+1=2 < 3: not the last frame.
+        let r = show_explosion_a(0, 3, 0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        match r.outcome {
+            ShowExplosionAOutcome::Animating { enemy_frame, animation_delay, state_width, enemy_sprites } => {
+                assert_eq!(enemy_frame, 1);
+                assert_eq!(animation_delay, 0x0A);
+                assert_eq!(state_width, None);
+                assert_eq!(enemy_sprites, EXPLOSION_TYPE_00[1]);
+            }
+            other => panic!("expected Animating, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn animates_the_last_frame_and_disables_collision_first() {
+        // max_sprites=3, enemy_frame=0 -> new_frame=1, new_frame+1=2 >= max_sprites(2)? use max_sprites=2 to hit this.
+        let r = show_explosion_a(0, 2, 0xFF, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        match r.outcome {
+            ShowExplosionAOutcome::Animating { enemy_frame, state_width, .. } => {
+                assert_eq!(enemy_frame, 1);
+                assert_eq!(state_width, Some(disable_enemy_collision(0xFF)));
+            }
+            other => panic!("expected Animating, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explosion_type_override_bypasses_the_state_width_check() {
+        let r = show_explosion_a(3, 2, 0x08 /* bit 3 set, would normally mean type 1 */, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        match r.outcome {
+            ShowExplosionAOutcome::Animating { enemy_sprites, .. } => {
+                assert_eq!(enemy_sprites, EXPLOSION_TYPE_03[1]);
+            }
+            other => panic!("expected Animating, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zero_override_derives_type_from_state_width_bit_3() {
+        let without_bit3 = show_explosion_a(0, 3, 0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        let with_bit3 = show_explosion_a(0, 4, 0x08, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x00);
+        match (without_bit3.outcome, with_bit3.outcome) {
+            (ShowExplosionAOutcome::Animating { enemy_sprites: a, .. }, ShowExplosionAOutcome::Animating { enemy_sprites: b, .. }) => {
+                assert_eq!(a, EXPLOSION_TYPE_00[1]);
+                assert_eq!(b, EXPLOSION_TYPE_01[1]);
+            }
+            other => panic!("expected both Animating, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enemy_routine_explosion_picks_max_sprites_from_state_width_bit_3() {
+        let r3 = enemy_routine_explosion(0x00, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x01);
+        // frame 1 -> new_frame 2, 2 < 3 (max_sprites=3): still animating.
+        assert!(matches!(r3.outcome, ShowExplosionAOutcome::Animating { .. }));
+        let r4 = enemy_routine_explosion(0x08, 0x50, 0x60, 0, 0x02, 3, 0x01, 0x02);
+        // frame 2 -> new_frame 3, 3 < 4 (max_sprites=4): still animating (would have
+        // advanced already if max_sprites were still 3).
+        assert!(matches!(r4.outcome, ShowExplosionAOutcome::Animating { .. }));
     }
 }
