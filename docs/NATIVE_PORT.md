@@ -1140,7 +1140,35 @@ replacement for its real 6502 code, cycle for cycle.
       this session, unsurprising given how constantly *something* is
       exploding in this game. Not yet integrated live, same status as
       every routine above.
-- [ ] Everything else, logic side. Forty-five routines out of what's
+- [x] **`red_blue_soldier::red_blue_soldier_routine_00`** (`crates/
+      contra-native/src/enemy/red_blue_soldier.rs`, new module) - ported
+      from `red_blue_soldier_routine_00` (`bank0.asm`, `$a157`-`$a17d`),
+      entry 0 of both `blue_soldier_routine_ptr_tbl` and `red_soldier_
+      routine_ptr_tbl` - this project's **first enemy type beyond the
+      plain soldier**, though it already reuses the plain soldier's
+      shared explosion/removal routine-table entries (`enemy_routine_
+      init_explosion`/`enemy_routine_explosion`/`enemy_routine_remove_
+      enemy`, all already ported). Places the enemy at one of 4 fixed
+      screen corners and gives it an initial horizontal running velocity,
+      both picked from `ENEMY_ATTRIBUTES`, then advances to the next
+      routine - pure table lookups plus the already-verified `advance_
+      enemy_routine`, no new arithmetic. Real ASM doesn't mask
+      `ENEMY_ATTRIBUTES` before indexing the 4-entry position table (only
+      the 2-entry velocity table gets an explicit `and #$01`); this port
+      masks the position index defensively too, the same reasoning
+      `soldier::soldier_set_x_velocity` already documents for an
+      analogous case - every real spawn placement for this enemy type
+      uses attributes `0`-`3` exactly, so this is unreachable in
+      practice, not a behavior change.
+      Unit-tested (all 4 real attribute values' corner/direction pairs,
+      and the guarded routine-advance behavior).
+      **Live verification attempted but had 0 real hits** across a
+      25000-frame session - this enemy type doesn't appear in this
+      project's current scripted level-1 playthrough - noted honestly
+      rather than claimed as live-verified; confidence rests on the unit
+      tests above. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Forty-six routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

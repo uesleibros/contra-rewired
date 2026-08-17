@@ -2371,6 +2371,35 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-routine-explosion calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_RED_BLUE_SOLDIER_ROUTINE_00").is_ok() {
+            // VERIFY_RED_BLUE_SOLDIER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::red_blue_soldier::red_blue_soldier_
+            // routine_00`. Real entry $a157 (switchable bank - gated on
+            // bank_select()==0, same reasoning as every soldier_routine_0N
+            // hook). Real exit: the 2 shared exits ($e796/$e813, reached
+            // via `jmp advance_enemy_routine` at the very end) - no
+            // nested `jsr` anywhere in this routine, so no disambiguation
+            // needed.
+            let mut pending: Option<RedBlueSoldierRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA157 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RedBlueSoldierRoutine00Ctx { x, attributes: bus.ram[0x5A8 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_red_blue_soldier_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} red-blue-soldier-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

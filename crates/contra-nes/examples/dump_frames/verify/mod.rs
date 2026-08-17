@@ -7,6 +7,7 @@
 pub mod enemy_routine_explosion;
 pub mod enemy_routine_init_explosion;
 pub mod enemy_routine_remove_enemy;
+pub mod red_blue_soldier_routine_00;
 pub mod soldier_routine_01;
 pub mod soldier_routine_02_jumping;
 pub mod soldier_routine_03;
@@ -18,6 +19,7 @@ pub mod soldier_routine_0a;
 pub use enemy_routine_explosion::*;
 pub use enemy_routine_init_explosion::*;
 pub use enemy_routine_remove_enemy::*;
+pub use red_blue_soldier_routine_00::*;
 pub use soldier_routine_01::*;
 pub use soldier_routine_02_jumping::*;
 pub use soldier_routine_03::*;

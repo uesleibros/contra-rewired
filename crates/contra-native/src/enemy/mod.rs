@@ -16,5 +16,6 @@ pub mod find_far_segment;
 pub mod initialize_enemy;
 pub mod player_enemy_distance;
 pub mod quadrant_aim_dir;
+pub mod red_blue_soldier;
 pub mod soldier;
 pub mod update_enemy_pos;
