@@ -4,6 +4,9 @@
 //! mode's hook-registration/entry-capture logic and just calls into
 //! these on exit).
 
+pub mod blue_soldier_routine_01;
+pub mod blue_soldier_routine_02;
+pub mod blue_soldier_routine_03;
 pub mod enemy_routine_explosion;
 pub mod enemy_routine_init_explosion;
 pub mod enemy_routine_remove_enemy;
@@ -16,6 +19,9 @@ pub mod soldier_routine_05;
 pub mod soldier_routine_09;
 pub mod soldier_routine_0a;
 
+pub use blue_soldier_routine_01::*;
+pub use blue_soldier_routine_02::*;
+pub use blue_soldier_routine_03::*;
 pub use enemy_routine_explosion::*;
 pub use enemy_routine_init_explosion::*;
 pub use enemy_routine_remove_enemy::*;

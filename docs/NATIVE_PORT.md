@@ -1168,7 +1168,46 @@ replacement for its real 6502 code, cycle for cycle.
       rather than claimed as live-verified; confidence rests on the unit
       tests above. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Forty-six routines out of what's
+- [x] **`red_blue_soldier::blue_soldier_routine_01` / `_02` / `_03` / `red_blue_soldier_set_run_frame` / `red_blue_soldier_set_bg_priority`**
+      (`crates/contra-native/src/enemy/red_blue_soldier.rs`) - completes
+      the blue soldier's own routine table beyond entry 0 (`red_blue_
+      soldier_routine_00`, ported above): `blue_soldier_routine_01`
+      (`$a18a`-`$a19f`, run across the screen, then check real proximity
+      to a player before committing to the jump-attack), `_02` (`$a1f7`-
+      `$a240`, jump-attack windup animation, then set jump velocity from
+      direction), and `_03` (`$a245`-`$a266`, fall under gravity showing
+      one of two sprites). Plus the 2 small helpers both blue *and* red
+      soldiers share: `red_blue_soldier_set_run_frame` (`$a1c5`, cycles
+      the run-cycle animation every 4th frame) and `red_blue_soldier_set_
+      bg_priority` (`$a1db`, forces background draw priority near either
+      screen edge so the soldier draws behind pillar/wall decorations
+      there). Composes already-verified pieces (`update_enemy_pos`,
+      `player_enemy_x_dist`, `enable_enemy_collision`, `add_10_to_enemy_
+      y_fract_vel`, and `set_enemy_delay_adv_routine` reused directly for
+      the real ASM's own local duplicate, `set_anim_delay_adv_enemy_
+      routine_01` - mathematically identical code at a different bank0
+      address, the same "thin alias" reasoning already used for `check_
+      enemy_collision_solid_bg` and `set_soldier_sprite_add_scroll`).
+      **Corrected a misleading real-ASM comment during porting, not just
+      followed it**: `red_blue_soldier_set_bg_priority`'s own branch
+      comment says `bcs @continue` is taken "if to the right of `$dc`
+      (not behind pillar)", but tracing pure control flow (branch
+      targets, not comment text) shows `@continue` is exactly the
+      *behind-pillar* path (matching that label's own separate comment
+      two lines later) - this port follows the traced control flow, and
+      says so in its own doc comment rather than silently trusting either
+      comment.
+      Unit-tested (15 new tests: the run-frame cycle/wrap, both bg-
+      priority edges plus bit-preservation, all of routine_01's outcomes
+      including the pre-override-frame sprite subtlety, all of routine_
+      02's 3 outcomes, and routine_03's zero-delay/nonzero-delay sprite
+      choice).
+      **Live verification attempted but had 0 real hits for all 3**
+      across 25000-frame sessions - same reason as `red_blue_soldier_
+      routine_00` above (this enemy type isn't present in the current
+      scripted playthrough). Not yet integrated live, same status as
+      every routine above.
+- [ ] Everything else, logic side. Fifty-one routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
