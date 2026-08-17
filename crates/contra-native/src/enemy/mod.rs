@@ -16,6 +16,7 @@ pub mod find_far_segment;
 pub mod four_soldiers;
 pub mod grenade_launcher;
 pub mod indoor_soldier;
+pub mod indoor_soldier_gen;
 pub mod initialize_enemy;
 pub mod jumping_soldier;
 pub mod player_enemy_distance;

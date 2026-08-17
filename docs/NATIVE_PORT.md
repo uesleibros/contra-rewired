@@ -1484,7 +1484,44 @@ replacement for its real 6502 code, cycle for cycle.
       across 1800-frame sessions - same as the rest of the indoor family,
       not reachable from the current scripted outdoor level-1
       playthrough.
-- [ ] Everything else, logic side. Eighty routines out of what's
+- [x] **`indoor_soldier_gen::indoor_soldier_gen_routine_00` / `indoor_soldier_gen_routine_01`**
+      (`crates/contra-native/src/enemy/indoor_soldier_gen.rs`, new
+      module) - the "green guys generator" that actually spawns every
+      indoor-family enemy type this project ported over the last several
+      commits (indoor soldier, jumping soldier, grenade launcher, group
+      of four). Reads a level-and-screen-specific byte stream from raw
+      PRG-ROM via a real pointer chase (`indoor_enemy_gen_tbl` -> `lvl_
+      (2|4)_enemy_gen_tbl` -> per-screen bytes), same "walk the real
+      bytes, don't hand-transcribe" approach `initialize_enemy`/`enemy_
+      spawn` already use - up to `$07` "rounds" of attacks per screen
+      before the generator removes itself.
+      One real quirk worth calling out: the enemy-type bits are decoded
+      via `rol;rol;rol;and #$03` rather than a plain shift - `rol`
+      rotates through the carry flag, and the carry going into the first
+      rotate here is left over from a *much earlier*, unrelated `asl`
+      (picking the level-2-vs-level-4 table). Traced by hand assuming
+      that carry is always `0` (per the real ASM's own comment that this
+      generator's `ENEMY_ATTRIBUTES` never has bit 7 set), the 3 rotates
+      are mathematically equivalent to a plain `(byte0 >> 6) & 3` - this
+      port uses that simpler, verified-equivalent form.
+      Composes the already-ported `find_next_enemy_slot`/`initialize_
+      enemy` pipeline for all 4 spawn types, threading a local mutable
+      slot-occupancy copy through the group-of-4 loop the same way
+      `red_blue_soldier_gen_routine_01` already does, and stopping that
+      loop early (not just skipping one entry) the moment a slot isn't
+      available, matching the real ASM's own `bne indoor_soldier_gen_
+      routine_exit`.
+      Unit-tested (11 new tests: every gating branch, all 4 spawn types
+      decoded correctly from the same byte stream, the attack-count
+      increment and its cap triggering generator self-removal, the
+      group-of-4 loop's descending `ENEMY_VAR_1` assignment and its
+      early-stop behavior, and a slot-exhausted single-spawn case that
+      still updates the generator's own delay/read-offset state).
+      **Live verification attempted but had 0 real hits for both**
+      across 1800-frame sessions - same as the rest of the indoor
+      family, not reachable from the current scripted outdoor level-1
+      playthrough.
+- [ ] Everything else, logic side. Eighty-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

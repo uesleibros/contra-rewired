@@ -3304,6 +3304,86 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} four-soldiers-routine-02 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_INDOOR_SOLDIER_GEN_ROUTINE_00").is_ok() {
+            // VERIFY_INDOOR_SOLDIER_GEN_ROUTINE_00=1: verification pass
+            // for `contra_native::enemy::indoor_soldier_gen::indoor_
+            // soldier_gen_routine_00`. Real entry $8d1f (switchable
+            // bank, gated). Real exit: the 2 shared exits ($e796/$e813)
+            // via `jmp advance_enemy_routine` - no nested calls in this
+            // routine at all, so no disambiguation is needed.
+            let mut pending: Option<IndoorSoldierGenRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8D1F if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(IndoorSoldierGenRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_soldier_gen_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-soldier-gen-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_INDOOR_SOLDIER_GEN_ROUTINE_01").is_ok() {
+            // VERIFY_INDOOR_SOLDIER_GEN_ROUTINE_01=1: verification pass
+            // for `contra_native::enemy::indoor_soldier_gen::indoor_
+            // soldier_gen_routine_01`. Real entry $8d28 (switchable
+            // bank, gated). Real exits: `indoor_soldier_gen_exit` ($8d27,
+            // switchable, gated - the `EvenFrame`/`GrenadeLauncherOn
+            // Screen`/`StillWaiting` outcomes), `indoor_soldier_gen_
+            // routine_exit` ($8dcc, switchable, gated - the `Entry`
+            // outcome, both the single-enemy and group-of-4 spawn paths),
+            // and `remove_enemy`'s own address ($e809, fixed bank - the
+            // `RoundsExhausted` outcome via `jmp remove_enemy`).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<IndoorSoldierGenRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8D28 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(IndoorSoldierGenRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            frame_counter: bus.ram[0x1A],
+                            grenade_launcher_flag: bus.ram[0x8A],
+                            animation_delay: bus.ram[0x538 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            level_screen_number: bus.ram[0x64],
+                            var_1: bus.ram[0x5B8 + x],
+                            indoor_enemy_attack_count: bus.ram[0x88],
+                            enemy_routine,
+                        });
+                    }
+                    0x8D27 | 0x8DCC if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_soldier_gen_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_soldier_gen_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-soldier-gen-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
