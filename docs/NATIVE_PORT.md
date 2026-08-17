@@ -1270,7 +1270,38 @@ replacement for its real 6502 code, cycle for cycle.
       level 4 boss screen, not reachable from the current scripted
       playthrough. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Fifty-five routines out of what's
+- [x] **`indoor_soldier::indoor_soldier_routine_00` / `init_indoor_enemy_pos_and_vel` / `apply_enemy_velocity_set_bg_priority` / `init_sprite_from_frame`**
+      (`crates/contra-native/src/enemy/indoor_soldier.rs`, new module) -
+      this project's first step into a **new enemy family**: `indoor_
+      soldier_routine_ptr_tbl` (`bank0.asm`, `$92c8`-onward) is actually
+      shared by *4 real enemy types* (`$15` indoor soldier, `$16` jumping
+      soldier, `$17` grenade launcher, `$18` group of four soldiers), all
+      built on the same 3 shared helpers this port carries so far -
+      `init_indoor_enemy_pos_and_vel` (`$9697`, places the enemy at one
+      of 2 fixed X positions with a per-type initial velocity),
+      `apply_enemy_velocity_set_bg_priority` (`$96c1`, the family's X-
+      only velocity integrator - indoor enemies never move vertically -
+      with the same "draw behind background near either screen edge"
+      shape `red_blue_soldier_set_bg_priority` already has), and `init_
+      sprite_from_frame` (`$9316`, the run-cycle animation, same 4th-
+      frame cadence as `red_blue_soldier_set_run_frame`). Plus `indoor_
+      soldier_routine_00` itself (`$92c8`, "initializes indoor soldier:
+      sets position, velocity and attack delay"), the only routine of
+      the 7-entry table ported so far - `indoor_soldier_routine_01`
+      (attack/fire logic - bullets, rollers, *and* grenades, 3 more real
+      sub-systems) and the other 3 enemy types' own `_00`/`_01` entries
+      are not yet ported.
+      Unit-tested (9 new tests covering every real branch: both spawn
+      directions and their velocity reversal, per-type table row
+      selection, both disappearance limits, both background-priority
+      edges plus the mid-screen clear case, the run-frame cadence/wrap,
+      and the composition itself).
+      **Live verification attempted but had 0 real hits** across a
+      25000-frame session - indoor soldiers only appear on indoor/base
+      levels, not reachable from the current scripted outdoor level-1
+      playthrough. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Fifty-nine routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

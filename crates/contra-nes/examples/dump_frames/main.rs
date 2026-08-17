@@ -2757,6 +2757,36 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} red-blue-soldier-gen-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_INDOOR_SOLDIER_ROUTINE_00").is_ok() {
+            // VERIFY_INDOOR_SOLDIER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::indoor_soldier::indoor_soldier_
+            // routine_00`. Real entry $92c8 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // advance_enemy_routine` - the real nested `jsr init_indoor_
+            // enemy_pos_and_vel` (and its own further nested `jsr
+            // reverse_enemy_x_direction`) resolve well before that tail
+            // and don't themselves touch those addresses, so no
+            // disambiguation is needed.
+            let mut pending: Option<IndoorSoldierRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x92C8 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(IndoorSoldierRoutine00Ctx { x, attributes: bus.ram[0x5A8 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_soldier_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-soldier-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
