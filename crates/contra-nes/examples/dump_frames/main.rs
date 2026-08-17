@@ -2656,6 +2656,107 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} red-soldier-routine-02 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_RED_BLUE_SOLDIER_GEN_ROUTINE_00").is_ok() {
+            // VERIFY_RED_BLUE_SOLDIER_GEN_ROUTINE_00=1: verification pass
+            // for `contra_native::enemy::red_blue_soldier::red_blue_
+            // soldier_gen_routine_00`. Real entry $a304 (switchable bank,
+            // gated). Real exit: the 2 shared exits ($e796/$e813), no
+            // nested `jsr` anywhere in this trivial routine.
+            let mut pending: Option<u8> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA304 if bus.mapper.bank_select() == 0 => pending = Some(bus.ram[0x4B8 + cpu.x as usize]),
+                    0xE796 | 0xE813 => {
+                        if let Some(routine) = pending.take() {
+                            use contra_native::enemy::red_blue_soldier::red_blue_soldier_gen_routine_00;
+                            let x = cpu.x as usize;
+                            let expected = red_blue_soldier_gen_routine_00(routine);
+                            checked += 1;
+                            let real_delay = bus.ram[0x538 + x];
+                            let real_routine = bus.ram[0x4B8 + x];
+                            let real_sprites = bus.ram[0x30A + x];
+                            let mismatch = real_delay != expected.animation_delay
+                                || real_routine != expected.routine_update.routine
+                                || expected.routine_update.sprites.map(|s| real_sprites != s).unwrap_or(false);
+                            if mismatch {
+                                eprintln!(
+                                    "MISMATCH(red_blue_soldier_gen_routine_00) frame={frame} pc={:04X} in=(routine={routine:02X}): expected {expected:?}, got delay={real_delay:02X} routine={real_routine:02X} sprites={real_sprites:02X}",
+                                    cpu.pc
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} red-blue-soldier-gen-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_RED_BLUE_SOLDIER_GEN_ROUTINE_01").is_ok() {
+            // VERIFY_RED_BLUE_SOLDIER_GEN_ROUTINE_01=1: verification pass
+            // for `contra_native::enemy::red_blue_soldier::red_blue_
+            // soldier_gen_routine_01`. Real entry $a309 (switchable
+            // bank, gated). Real exits: the shared `remove_enemy` exit
+            // `$e813` (`Removed` - no nested `jsr` before the wall-
+            // plating check, unambiguous), `red_blue_soldier_gen_
+            // routine_01_exit` ($a367, `OddFrame`/`StillWaiting` - but
+            // *also* the real nested return address for every real `jsr
+            // @find_slot_init_red_blue_soldier` call the spawn loop
+            // makes, since that helper's own control flow falls straight
+            // into this same shared rts; disambiguated the usual way, a
+            // nested return lands inside this routine's own body,
+            // `$a309`-`$a367`), and `@set_delay_exit`'s own dedicated
+            // rts ($a34b, the `Spawned` outcome - reached by straight-
+            // line code with nothing after it, no ambiguity).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<RedBlueSoldierGenRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA309 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(RedBlueSoldierGenRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            wall_plating_destroyed_count: bus.ram[0x87],
+                            frame_counter: bus.ram[0x1A],
+                            animation_delay: bus.ram[0x538 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0xA34B => {
+                        if let Some(ctx) = pending.take() {
+                            verify_red_blue_soldier_gen_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xA367 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xA309..0xA367).contains(&ret) {
+                            // Nested return from `jsr @find_slot_init_
+                            // red_blue_soldier` - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_red_blue_soldier_gen_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} red-blue-soldier-gen-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

@@ -1232,7 +1232,45 @@ replacement for its real 6502 code, cycle for cycle.
       across 25000-frame sessions - same reason as the rest of this
       enemy family. Not yet integrated live, same status as every
       routine above.
-- [ ] Everything else, logic side. Fifty-three routines out of what's
+- [x] **`red_blue_soldier::red_blue_soldier_gen_routine_00` / `_01`**
+      (`crates/contra-native/src/enemy/red_blue_soldier.rs`) - the level
+      4 boss-screen generator that spawns both soldier types, completing
+      this enemy family end to end (generator through both soldier
+      types' full routine tables). `_00` (`$a304`) just sets the initial
+      generation delay. `_01` (`$a309`-`$a366`) is the real interesting
+      one: once its delay elapses, it reads through a **hand-authored
+      28-byte spawn script** (`red_blue_soldier_data_tbl`, `$a368`) that
+      can spawn **multiple soldiers in a single call** - every consecutive
+      positive byte spawns one (via the already-verified `find_next_
+      enemy_slot`/`initialize_enemy`) before the read hits a negative
+      byte, which sets the next delay and stops; hitting the table's
+      `$ff` terminator wraps the read offset back to `0` and keeps going
+      *within the same call*, not next frame. Ported as a bounded loop
+      (`Vec<RedBlueSoldierSpawn>` output, one entry per real spawn),
+      threading a local mutable copy of the enemy-slot occupancy array
+      through it so a slot claimed by the *first* spawn this call is
+      correctly seen as taken by `find_next_enemy_slot` if a *second*
+      spawn happens right after in the same call - the same kind of
+      real, easy-to-miss statefulness already handled in this session's
+      other multi-step compositions.
+      **Corrected the real ASM's own comments again, not just followed
+      them**: they claim the spawn byte's "bits 0, 1, and 2" pick
+      `ENEMY_ATTRIBUTES` and "bit 3" picks red/blue, but the actual
+      instructions are `and #$03` (bits 0-1 only) and an *unmasked*
+      `byte >> 2` (not a single bit) for the color selector - confirmed
+      against the table's own per-run comments (`$00`-`$03` marked "red",
+      `$04`-`$07` marked "blue", exactly matching `byte & 3` / `byte >>
+      2`, not the prose description).
+      Unit-tested (11 new tests: both trivial exits, wall-plating
+      removal, a full 4-soldier spawn run with slot-order verification,
+      slot exhaustion mid-run still advancing the read offset correctly,
+      the `$ff` wraparound, and blue-soldier color decoding).
+      **Live verification attempted but had 0 real hits for both**
+      across 25000-frame sessions - this generator only exists on the
+      level 4 boss screen, not reachable from the current scripted
+      playthrough. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Fifty-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

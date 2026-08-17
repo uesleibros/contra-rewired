@@ -10,10 +10,12 @@
 //!
 //! Also carries the blue soldier's own 3 routines beyond that shared
 //! init state ([`blue_soldier_routine_01`]/[`_02`]/[`_03`]: run across
-//! the screen, jump-attack windup, then fall) and the 2 small helpers
-//! both blue *and* red soldiers share ([`red_blue_soldier_set_run_frame`]/
-//! [`red_blue_soldier_set_bg_priority`]) - the red soldier's own routines,
-//! [`red_soldier_routine_01`]/[`_02`], reuse these same two helpers too.
+//! the screen, jump-attack windup, then fall), the 2 small helpers both
+//! blue *and* red soldiers share ([`red_blue_soldier_set_run_frame`]/
+//! [`red_blue_soldier_set_bg_priority`]), the red soldier's own routines
+//! ([`red_soldier_routine_01`]/[`_02`], reusing those same two helpers),
+//! and the level 4 boss-screen generator that spawns both
+//! ([`red_blue_soldier_gen_routine_00`]/[`_01`]).
 
 use crate::enemy::create_enemy_bullet::{aim_and_create_enemy_bullet, CreatedBullet};
 use crate::enemy::enemy_collision_flags::enable_enemy_collision;
@@ -21,9 +23,10 @@ use crate::enemy::enemy_position_utils::add_10_to_enemy_y_fract_vel;
 use crate::enemy::enemy_routine_transition::{
     advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate,
 };
-use crate::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+use crate::enemy::enemy_slots::{find_next_enemy_slot, ENEMY_SLOT_COUNT};
+use crate::enemy::initialize_enemy::{initialize_enemy, InitializedEnemy};
 use crate::enemy::player_enemy_distance::player_enemy_x_dist;
-use crate::enemy::update_enemy_pos::{update_enemy_pos, UpdatedEnemyPos};
+use crate::enemy::update_enemy_pos::{remove_enemy, update_enemy_pos, RemovedEnemy, UpdatedEnemyPos};
 
 /// `red_blue_soldier_init_pos_tbl` (`$a17e`, 8 bytes) - `(y_pos, x_pos)`
 /// per spawn corner, indexed by `ENEMY_ATTRIBUTES` (real ASM doesn't mask
@@ -473,6 +476,139 @@ pub fn red_soldier_routine_02(
     RedSoldierRoutine02Outcome::Fired(RedSoldierRoutine02FiredResult { sprites, var_1, attack_delay, sprite_attr, bullet })
 }
 
+/// Native port of `red_blue_soldier_gen_routine_00` (`$a304`) - sets the
+/// initial generation delay (`$80`) and advances.
+pub fn red_blue_soldier_gen_routine_00(current_routine: u8) -> DelayedRoutineUpdate {
+    set_enemy_delay_adv_routine(0x80, current_routine)
+}
+
+/// `red_blue_soldier_data_tbl` (`$a368`, 28 bytes) - a real, hand-authored
+/// spawn script the level 4 boss-screen generator reads through
+/// repeatedly (wrapping via the `$ff` terminator, not restarting the
+/// enemy routine): positive bytes spawn a soldier (bits 0-1 = spawn
+/// corner/`ENEMY_ATTRIBUTES`, bit 2 = red/blue - **not** "bits 0-2" and
+/// "bit 3" as the real ASM's own comments claim; this port follows the
+/// literal `and #$03`/`lsr;lsr` instructions, which the values below
+/// confirm: `$00`-`$03` are commented "red" and `$04`-`$07` "blue",
+/// exactly matching `byte & 3` for the corner and `byte >> 2` for the
+/// color), negative bytes set the next delay (`byte << 1`, real ASM's
+/// own `asl`) and stop the read for this call.
+const RED_BLUE_SOLDIER_DATA_TBL: [u8; 28] = [
+    0x00, 0x01, 0x02, 0x03, 0xD0, // red soldier x4, $a0 delay
+    0x06, 0x07, 0xA0, // blue soldier x2, $40 delay
+    0x04, 0x05, 0xC0, // blue soldier x2, $80 delay
+    0x00, 0x01, 0xB0, // red soldier x2, $60 delay
+    0x02, 0x03, 0xD0, // red soldier x2, $a0 delay
+    0x04, 0x05, 0x06, 0x07, 0xD0, // blue soldier x4, $a0 delay
+    0x00, 0x01, 0x02, 0x03, 0xFE, // red soldier x4, $fc delay
+    0xFF, // wrap to the start
+];
+
+/// One soldier spawned by [`red_blue_soldier_gen_routine_01`] - the enemy
+/// type/`ENEMY_ATTRIBUTES` are set directly on top of what [`initialize_
+/// enemy`] already wrote for the freshly-claimed slot (real ASM: `sta
+/// ENEMY_TYPE,x` happens *before* `jsr initialize_enemy`, so the
+/// property lookup inside it already sees the right type; `ENEMY_
+/// ATTRIBUTES,x` is set *after*, since `initialize_enemy` doesn't touch
+/// it at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedBlueSoldierSpawn {
+    pub slot: u8,
+    pub enemy_type: u8,
+    pub attributes: u8,
+    pub initialized: InitializedEnemy,
+}
+
+/// The real, branchy result of one [`red_blue_soldier_gen_routine_01`]
+/// call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedBlueSoldierGenRoutine01Outcome {
+    /// All 3 level 4 boss-screen wall platings destroyed: stops
+    /// generating.
+    Removed(RemovedEnemy),
+    /// Odd `FRAME_COUNTER` - real ASM exits before even touching `ENEMY_
+    /// ANIMATION_DELAY` this call.
+    OddFrame,
+    /// Even frame, but the (now-decremented) delay hasn't reached zero.
+    StillWaiting { animation_delay: u8 },
+    /// Delay reached zero: read through the spawn script, creating zero
+    /// or more soldiers (bounded by how many positive bytes precede the
+    /// next negative/delay byte, real data never more than 4), then set
+    /// the new delay from that byte.
+    Spawned { var_1: u8, animation_delay: u8 },
+}
+
+/// The full result of one [`red_blue_soldier_gen_routine_01`] call - see
+/// [`RedBlueSoldierGenRoutine01Outcome::Spawned`] for when `spawns` is
+/// nonempty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedBlueSoldierGenRoutine01Result {
+    pub spawns: Vec<RedBlueSoldierSpawn>,
+    pub outcome: RedBlueSoldierGenRoutine01Outcome,
+}
+
+/// Native port of `red_blue_soldier_gen_routine_01` (`$a309`) - the level
+/// 4 boss-screen red/blue soldier generator's main loop.
+pub fn red_blue_soldier_gen_routine_01(
+    prg_rom: &[u8],
+    enemy_routine: &[u8; ENEMY_SLOT_COUNT],
+    current_level: u8,
+    wall_plating_destroyed_count: u8,
+    frame_counter: u8,
+    enemy_animation_delay: u8,
+    enemy_var_1: u8,
+) -> RedBlueSoldierGenRoutine01Result {
+    if wall_plating_destroyed_count >= 0x03 {
+        return RedBlueSoldierGenRoutine01Result { spawns: Vec::new(), outcome: RedBlueSoldierGenRoutine01Outcome::Removed(remove_enemy()) };
+    }
+    if frame_counter & 0x01 != 0 {
+        return RedBlueSoldierGenRoutine01Result { spawns: Vec::new(), outcome: RedBlueSoldierGenRoutine01Outcome::OddFrame };
+    }
+    let delay = enemy_animation_delay.wrapping_sub(1);
+    if delay != 0 {
+        return RedBlueSoldierGenRoutine01Result {
+            spawns: Vec::new(),
+            outcome: RedBlueSoldierGenRoutine01Outcome::StillWaiting { animation_delay: delay },
+        };
+    }
+
+    let mut live_routine = *enemy_routine;
+    let mut spawns = Vec::new();
+    let mut read_offset = enemy_var_1;
+    let mut new_delay = 0u8;
+
+    // Generous safety cap - real data always terminates within a
+    // handful of bytes; this only guards against pathological/corrupted
+    // ENEMY_VAR_1 input, matching this crate's other bounded-loop ports.
+    for _ in 0..64 {
+        let byte = RED_BLUE_SOLDIER_DATA_TBL[read_offset as usize];
+        read_offset = read_offset.wrapping_add(1);
+
+        if byte == 0xFF {
+            read_offset = 0;
+            continue;
+        }
+        if (byte as i8) < 0 {
+            new_delay = byte.wrapping_shl(1);
+            break;
+        }
+
+        let attributes = byte & 0x03;
+        let is_blue = (byte >> 2) & 0x01 != 0;
+        if let Some(slot) = find_next_enemy_slot(&live_routine) {
+            let enemy_type = if is_blue { 0x1E } else { 0x1F };
+            let initialized = initialize_enemy(prg_rom, enemy_type, current_level);
+            live_routine[slot as usize] = initialized.routine;
+            spawns.push(RedBlueSoldierSpawn { slot, enemy_type, attributes, initialized });
+        }
+    }
+
+    RedBlueSoldierGenRoutine01Result {
+        spawns,
+        outcome: RedBlueSoldierGenRoutine01Outcome::Spawned { var_1: read_offset, animation_delay: new_delay },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +752,22 @@ mod tests {
         rom
     }
 
+    /// Like [`synthetic_prg_rom`], but also sets up level 0's per-level
+    /// property table with real-shaped records for enemy types `$1e`
+    /// (blue soldier) and `$1f` (red soldier) - `red_blue_soldier_gen_
+    /// routine_01` spawns types `>= $10`, which route through the *per-
+    /// level* pointer (`y = CURRENT_LEVEL*2`), not the shared one.
+    fn synthetic_prg_rom_with_level_soldiers() -> Vec<u8> {
+        let mut rom = synthetic_prg_rom();
+        let ptr_tbl_off = 7 * 0x4000 + (0xEE8D_usize - 0xC000);
+        let level_table_addr: u16 = 0xF000;
+        rom[ptr_tbl_off..ptr_tbl_off + 2].copy_from_slice(&level_table_addr.to_le_bytes()); // level 0 -> y=0
+        let table_off = 7 * 0x4000 + (level_table_addr as usize - 0xC000);
+        rom[table_off + 0x1E * 4..table_off + 0x1E * 4 + 4].copy_from_slice(&[0x10, 0x20, 0x05, 0x30]); // blue
+        rom[table_off + 0x1F * 4..table_off + 0x1F * 4 + 4].copy_from_slice(&[0x11, 0x21, 0x06, 0x31]); // red
+        rom
+    }
+
     #[test]
     fn routine_01_already_fired_skips_every_other_check() {
         let r = red_soldier_routine_01(0x00, 0x00, 0x00, 0x01, 0, 0x00, 0x50, 0, 0, 0x00, 0x60, 0, 0, 0, [0, 0], [0, 0], 5);
@@ -685,5 +837,81 @@ mod tests {
     fn routine_02_all_fired_marks_var_2_and_returns_to_routine_01() {
         let r = red_soldier_routine_02(&synthetic_prg_rom(), &[0u8; ENEMY_SLOT_COUNT], 0, 1, 0x01, 0x00, 0x00, 0x00, 0x50, 0x60, [0, 0], [0, 0], [0, 0], 0, 5);
         assert_eq!(r, RedSoldierRoutine02Outcome::AllFired { var_2: 0x01, routine_update: set_enemy_routine_to_a(5, 0x02) });
+    }
+
+    #[test]
+    fn gen_routine_00_sets_the_initial_generation_delay() {
+        assert_eq!(red_blue_soldier_gen_routine_00(5), set_enemy_delay_adv_routine(0x80, 5));
+    }
+
+    #[test]
+    fn gen_routine_01_removed_once_all_wall_platings_are_destroyed() {
+        let r = red_blue_soldier_gen_routine_01(&[], &[0u8; ENEMY_SLOT_COUNT], 0, 0x03, 0x00, 0x01, 0x00);
+        assert!(r.spawns.is_empty());
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::Removed(remove_enemy()));
+    }
+
+    #[test]
+    fn gen_routine_01_odd_frame_touches_nothing() {
+        let r = red_blue_soldier_gen_routine_01(&[], &[0u8; ENEMY_SLOT_COUNT], 0, 0x00, 0x01, 0x05, 0x00);
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::OddFrame);
+    }
+
+    #[test]
+    fn gen_routine_01_even_frame_decrements_and_waits() {
+        let r = red_blue_soldier_gen_routine_01(&[], &[0u8; ENEMY_SLOT_COUNT], 0, 0x00, 0x00, 0x05, 0x00);
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::StillWaiting { animation_delay: 0x04 });
+    }
+
+    #[test]
+    fn gen_routine_01_spawns_a_full_run_and_sets_the_next_delay() {
+        let rom = synthetic_prg_rom_with_level_soldiers();
+        let r = red_blue_soldier_gen_routine_01(&rom, &[0u8; ENEMY_SLOT_COUNT], 0, 0x00, 0x00, 0x01, 0x00);
+        // table[0..4] = 0x00,0x01,0x02,0x03 (4 red soldiers), table[4] = 0xD0 (delay byte).
+        assert_eq!(r.spawns.len(), 4);
+        for (i, spawn) in r.spawns.iter().enumerate() {
+            assert_eq!(spawn.attributes, i as u8);
+            assert_eq!(spawn.enemy_type, 0x1F); // all red (byte>>2 == 0 for 0x00-0x03)
+            assert_eq!(spawn.initialized.routine, 1);
+        }
+        // slots claimed in order 15, 14, 13, 12 (find_next_enemy_slot scans top-down).
+        assert_eq!(r.spawns.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![15, 14, 13, 12]);
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::Spawned { var_1: 5, animation_delay: 0xA0 });
+    }
+
+    #[test]
+    fn gen_routine_01_skips_spawns_once_slots_run_out_but_still_advances_the_read_offset() {
+        let rom = synthetic_prg_rom_with_level_soldiers();
+        let mut routine = [1u8; ENEMY_SLOT_COUNT];
+        routine[15] = 0;
+        routine[14] = 0; // only 2 free slots, run wants 4
+        let r = red_blue_soldier_gen_routine_01(&rom, &routine, 0, 0x00, 0x00, 0x01, 0x00);
+        assert_eq!(r.spawns.len(), 2);
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::Spawned { var_1: 5, animation_delay: 0xA0 });
+    }
+
+    #[test]
+    fn gen_routine_01_wraps_the_read_offset_at_the_ff_terminator() {
+        let rom = synthetic_prg_rom_with_level_soldiers();
+        // var_1=27 -> table[27]=0xFF (last byte) -> wraps to 0 -> reads table[0]=0x00 (red, attrs 0).
+        let r = red_blue_soldier_gen_routine_01(&rom, &[0u8; ENEMY_SLOT_COUNT], 0, 0x00, 0x00, 0x01, 27);
+        assert_eq!(r.spawns.len(), 4);
+        assert_eq!(r.spawns[0].attributes, 0x00);
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::Spawned { var_1: 5, animation_delay: 0xA0 });
+    }
+
+    #[test]
+    fn gen_routine_01_blue_soldiers_decode_from_the_high_bits() {
+        let rom = synthetic_prg_rom_with_level_soldiers();
+        // var_1=5 -> table[5..8] = 0x06,0x07,0xA0 (2 blue soldiers, then delay).
+        let r = red_blue_soldier_gen_routine_01(&rom, &[0u8; ENEMY_SLOT_COUNT], 0, 0x00, 0x00, 0x01, 5);
+        assert_eq!(r.spawns.len(), 2);
+        for spawn in &r.spawns {
+            assert_eq!(spawn.enemy_type, 0x1E); // blue
+        }
+        assert_eq!(r.spawns[0].attributes, 0x06 & 0x03);
+        assert_eq!(r.spawns[1].attributes, 0x07 & 0x03);
+        // table[7] = 0xA0 (delay byte) -> new_delay = 0xA0 << 1 = 0x40.
+        assert_eq!(r.outcome, RedBlueSoldierGenRoutine01Outcome::Spawned { var_1: 8, animation_delay: 0x40 });
     }
 }
