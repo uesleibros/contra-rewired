@@ -578,6 +578,126 @@ fn verify_soldier_routine_05(ctx: SoldierRoutine05Ctx, cpu: &contra_nes::cpu::Cp
     }
 }
 
+/// Captured inputs for one real `soldier_routine_09` call (`$888c`).
+#[derive(Clone, Copy)]
+struct SoldierRoutine09Ctx {
+    x: usize,
+    x_pos: u8,
+    y_pos: u8,
+    var_2: u8,
+    var_1: u8,
+    scroll_type: u8,
+    frame_scroll: u8,
+    routine: u8,
+}
+
+fn verify_soldier_routine_09(ctx: SoldierRoutine09Ctx, cpu: &contra_nes::cpu::Cpu, bus: &contra_nes::bus::NesBus, frame: u32, checked: &mut u64) {
+    use contra_native::soldier::soldier_routine_09;
+
+    let x = ctx.x;
+    let expected = soldier_routine_09(ctx.x_pos, ctx.y_pos, ctx.var_2, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine);
+    *checked += 1;
+
+    let real_frame = bus.ram[0x568 + x];
+    let real_var_1 = bus.ram[0x5B8 + x];
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_sprite_attr = bus.ram[0x358 + x];
+    let real_delay = bus.ram[0x538 + x];
+    let real_routine = bus.ram[0x4B8 + x];
+
+    let removed = expected.second.scroll.should_remove;
+    let expected_sprites = if removed { 0 } else { expected.second.sprite.sprite };
+    let expected_routine = if removed { 0 } else { expected.delayed_routine.routine_update.routine };
+
+    let mismatch = real_frame != 0x08
+        || real_var_1 != expected.second.sprite.var_1
+        || real_x_pos != expected.second.scroll.x_pos
+        || real_y_pos != expected.second.scroll.y_pos
+        || real_sprites != expected_sprites
+        || real_sprite_attr != expected.second.sprite.sprite_attr
+        || real_delay != expected.delayed_routine.animation_delay
+        || real_routine != expected_routine;
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(soldier_routine_09) frame={frame} pc={:04X} in=(x={:02X} y={:02X} var_2={:02X} var_1={:02X} scroll_type={:02X} frame_scroll={:02X} routine={:02X}): expected {:?}, got frame={real_frame:02X} var_1={real_var_1:02X} x={real_x_pos:02X} y={real_y_pos:02X} sprites={real_sprites:02X} sprite_attr={real_sprite_attr:02X} delay={real_delay:02X} routine={real_routine:02X}",
+            cpu.pc, ctx.x_pos, ctx.y_pos, ctx.var_2, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine, expected
+        );
+    }
+}
+
+/// Captured inputs for one real `soldier_routine_0a` call (`$88a1`).
+#[derive(Clone, Copy)]
+struct SoldierRoutine0aCtx {
+    x: usize,
+    animation_delay: u8,
+    frame: u8,
+    x_pos: u8,
+    y_pos: u8,
+    var_2: u8,
+    var_1: u8,
+    scroll_type: u8,
+    frame_scroll: u8,
+    routine: u8,
+}
+
+fn verify_soldier_routine_0a(ctx: SoldierRoutine0aCtx, cpu: &contra_nes::cpu::Cpu, bus: &contra_nes::bus::NesBus, frame: u32, checked: &mut u64) {
+    use contra_native::soldier::{soldier_routine_0a, SoldierRoutine0aOutcome};
+
+    let x = ctx.x;
+    let expected =
+        soldier_routine_0a(ctx.animation_delay, ctx.frame, ctx.x_pos, ctx.y_pos, ctx.var_2, ctx.var_1, ctx.scroll_type, ctx.frame_scroll);
+    *checked += 1;
+
+    let real_delay = bus.ram[0x538 + x];
+    let real_frame = bus.ram[0x568 + x];
+    let real_var_1 = bus.ram[0x5B8 + x];
+    let real_x_pos = bus.ram[0x33E + x];
+    let real_y_pos = bus.ram[0x324 + x];
+    let real_sprites = bus.ram[0x30A + x];
+    let real_sprite_attr = bus.ram[0x358 + x];
+    let real_routine = bus.ram[0x4B8 + x];
+
+    let mismatch = match expected {
+        SoldierRoutine0aOutcome::Waiting(tail) => {
+            let removed = tail.scroll.should_remove;
+            let expected_sprites = if removed { 0 } else { tail.sprite.sprite };
+            let expected_routine = if removed { 0 } else { ctx.routine };
+            real_frame != ctx.frame
+                || real_var_1 != tail.sprite.var_1
+                || real_x_pos != tail.scroll.x_pos
+                || real_y_pos != tail.scroll.y_pos
+                || real_sprites != expected_sprites
+                || real_sprite_attr != tail.sprite.sprite_attr
+                || real_delay != ctx.animation_delay.wrapping_sub(1)
+                || real_routine != expected_routine
+        }
+        SoldierRoutine0aOutcome::Removed(_) => real_routine != 0 || real_sprites != 0,
+        SoldierRoutine0aOutcome::StillSplashing { animation_delay, enemy_frame, tail } => {
+            let removed = tail.scroll.should_remove;
+            let expected_sprites = if removed { 0 } else { tail.sprite.sprite };
+            let expected_routine = if removed { 0 } else { ctx.routine };
+            real_frame != enemy_frame
+                || real_var_1 != tail.sprite.var_1
+                || real_x_pos != tail.scroll.x_pos
+                || real_y_pos != tail.scroll.y_pos
+                || real_sprites != expected_sprites
+                || real_sprite_attr != tail.sprite.sprite_attr
+                || real_delay != animation_delay
+                || real_routine != expected_routine
+        }
+    };
+
+    if mismatch {
+        eprintln!(
+            "MISMATCH(soldier_routine_0a) frame={frame} pc={:04X} in=(delay={:02X} frame={:02X} x={:02X} y={:02X} var_2={:02X} var_1={:02X} scroll_type={:02X} frame_scroll={:02X} routine={:02X}): expected {:?}, got delay={real_delay:02X} frame={real_frame:02X} var_1={real_var_1:02X} x={real_x_pos:02X} y={real_y_pos:02X} sprites={real_sprites:02X} sprite_attr={real_sprite_attr:02X} routine={real_routine:02X}",
+            cpu.pc, ctx.animation_delay, ctx.frame, ctx.x_pos, ctx.y_pos, ctx.var_2, ctx.var_1, ctx.scroll_type, ctx.frame_scroll, ctx.routine, expected
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rom_path = args.get(1).expect("usage: dump_frames <rom> <out_dir> [frames] [start_after]");
@@ -2657,6 +2777,101 @@ fn main() {
             });
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} soldier-routine-05 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SOLDIER_ROUTINE_09").is_ok() {
+            // VERIFY_SOLDIER_ROUTINE_09=1: verification pass for
+            // `contra_native::soldier::soldier_routine_09`. Real entry
+            // $888c (gated on bank_select()==0). This routine's own port
+            // exists specifically to test a surprising real-ASM reading:
+            // it calls `set_soldier_sprite`/`add_scroll_to_enemy_pos`
+            // *twice* (see the port's own doc comment) - if that reading
+            // is wrong, this hook is exactly what would catch it. Real
+            // exits: the 2 shared exits ($e796/$e813) reached via `jmp
+            // set_enemy_delay_adv_routine` at the very end, disambiguated
+            // from the 3 nested `jsr`s earlier in the call (`soldier_set_
+            // y_pos_sprite_add_scroll`, `set_soldier_sprite`, `add_
+            // scroll_to_enemy_pos`) the same way as every other soldier
+            // routine's hook - a nested return lands inside this
+            // routine's own body (`$888c`-`$88a1`, the next real label,
+            // `soldier_routine_0a`).
+            let mut pending: Option<SoldierRoutine09Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x888C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SoldierRoutine09Ctx {
+                            x,
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0x888C..0x88A1).contains(&ret) {
+                            // Nested return from one of this routine's own
+                            // 3 nested `jsr`s - not our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_09(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} soldier-routine-09 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SOLDIER_ROUTINE_0A").is_ok() {
+            // VERIFY_SOLDIER_ROUTINE_0A=1: verification pass for
+            // `contra_native::soldier::soldier_routine_0a`. Real entry
+            // $88a1 (gated on bank_select()==0). Real exits: `$e8b8`/
+            // `$e8c6` (`add_scroll_to_enemy_pos`'s own success exits,
+            // reached via a real tail-call chain the whole way for both
+            // the `Waiting` and `StillSplashing` outcomes - the `jsr
+            // set_soldier_sprite` inside that chain returns through its
+            // own separate address, not these, so no disambiguation is
+            // needed here), and the shared `remove_enemy` exit `$e813`
+            // (the `Removed` outcome, or either other outcome's own
+            // off-screen removal).
+            let mut pending: Option<SoldierRoutine0aCtx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x88A1 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SoldierRoutine0aCtx {
+                            x,
+                            animation_delay: bus.ram[0x538 + x],
+                            frame: bus.ram[0x568 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            scroll_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE8B8 | 0xE8C6 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_soldier_routine_0a(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} soldier-routine-0a calls verified this frame, no mismatches unless printed above");
             }
         } else {
             nes.run_frame();

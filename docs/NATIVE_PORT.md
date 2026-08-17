@@ -1018,7 +1018,40 @@ replacement for its real 6502 code, cycle for cycle.
       above and on every composed building block already being
       independently live-verified in its own right. Not yet integrated
       live, same status as every routine above.
-- [ ] Everything else, logic side. Thirty-eight routines out of what's
+- [x] **`soldier::soldier_routine_09` / `soldier_routine_0a` / `soldier_set_y_pos_sprite_add_scroll`**
+      (`crates/contra-native/src/soldier.rs`) - ported from `soldier_
+      routine_09` (`bank0.asm`, `$888c`-`$88a0`, "soldier landing in
+      water") and `soldier_routine_0a` (`$88a1`-`$88b9`, "continue splash
+      animation and begin removing soldier"), plus `soldier_set_y_pos_
+      sprite_add_scroll` (`$88ba`). `soldier_routine_09` sets the water-
+      splash sprite frame and nudges the soldier `$10`px down into the
+      water; `soldier_routine_0a` waits out the splash animation frame by
+      frame, removing the soldier once it's played through.
+      **Caught a genuinely surprising real-ASM quirk by reading the
+      disassembly instruction-by-instruction rather than assuming**:
+      `soldier_routine_09` calls `set_soldier_sprite`/`add_scroll_to_
+      enemy_pos` **twice**, not once - `jsr soldier_set_y_pos_sprite_add_
+      scroll` already falls all the way through that exact pair itself
+      (confirmed via real addresses in `docs/rom-symbols.txt`, not just
+      the local disassembly text's line order), and the routine's next
+      two lines call `jsr set_soldier_sprite`/`jsr add_scroll_to_enemy_
+      pos` again, separately - meaning camera scroll is applied to the
+      position *twice* and the gun-recoil timer is decremented *twice* on
+      this specific call, both faithfully reproduced (see [`crate::
+      soldier::SoldierRoutine09Result::second`]'s doc comment) rather
+      than "corrected" as a suspected typo. Live verification (below)
+      confirms this reading is exactly right.
+      Unit-tested (7 new tests, including one asserting the second pass's
+      scroll re-applies on top of the first's already-adjusted position
+      and the recoil timer decrements twice when it started nonzero).
+      **Live-verified**: `soldier_routine_09` - 1 real call across a
+      25000-frame session, zero mismatches (this transition only fires
+      once per water-landing enemy, so a low sample count is expected;
+      what matters is that the one real call, including its double-call
+      quirk, matched exactly). `soldier_routine_0a` - 16 real calls, zero
+      mismatches. Not yet integrated live, same status as every routine
+      above.
+- [ ] Everything else, logic side. Forty-one routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

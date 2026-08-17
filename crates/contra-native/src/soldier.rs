@@ -27,7 +27,9 @@ use crate::add_scroll_to_enemy_pos::{add_scroll_to_enemy_pos, ScrolledEnemyPos};
 use crate::collision::{add_y_to_y_pos_get_bg_collision, check_enemy_collision_solid_bg, get_bg_collision_far, CollisionCode, BG_COLLISION_DATA_LEN};
 use crate::create_enemy_bullet::{create_enemy_bullet_angle_a, CreatedBullet};
 use crate::enemy_collision_flags::{disable_enemy_collision, enable_enemy_collision};
-use crate::enemy_position_utils::{add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos, add_a_to_enemy_y_fract_vel, reverse_enemy_x_direction};
+use crate::enemy_position_utils::{
+    add_10_to_enemy_y_fract_vel, add_4_to_enemy_y_pos, add_a_to_enemy_y_fract_vel, add_a_to_enemy_y_pos, reverse_enemy_x_direction,
+};
 use crate::enemy_routine_transition::{
     advance_enemy_routine, set_enemy_delay_adv_routine, set_enemy_routine_to_a, DelayedRoutineUpdate, EnemyRoutineUpdate,
 };
@@ -872,6 +874,132 @@ pub fn soldier_routine_05(
     SoldierRoutine05Result { sprite, y_velocity, outcome }
 }
 
+/// Native port of `soldier_set_y_pos_sprite_add_scroll` (`$88ba`) - adds
+/// `a` to `ENEMY_Y_POS`, then falls into `set_soldier_sprite_add_scroll`
+/// (`$88bd`) with the new position. That fallthrough target is its own
+/// separate real routine (a physically distinct `jsr set_soldier_sprite;
+/// jmp add_scroll_to_enemy_pos` at `$88bd`, not the same bytes as
+/// `soldier_routine_01`/`02`/`03`'s own identical-shaped tail at `$8864`)
+/// but is mathematically the exact same composition, so this port reuses
+/// [`set_soldier_sprite_add_scroll_01`] rather than duplicating it -
+/// same reasoning as [`check_enemy_collision_solid_bg`] reusing [`get_bg_
+/// collision_far`].
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_set_y_pos_sprite_add_scroll(
+    a: u8,
+    enemy_y_pos: u8,
+    enemy_frame: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    enemy_x_pos: u8,
+) -> SoldierSpriteScrollResult {
+    let y_pos = add_a_to_enemy_y_pos(a, enemy_y_pos);
+    set_soldier_sprite_add_scroll_01(enemy_frame, enemy_var_2, enemy_var_1, level_scrolling_type, frame_scroll, enemy_x_pos, y_pos)
+}
+
+/// The full result of one [`soldier_routine_09`] call - see this
+/// function's own doc comment for why there are *two* sprite/scroll
+/// results rather than one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoldierRoutine09Result {
+    /// The result of the `jsr soldier_set_y_pos_sprite_add_scroll` call
+    /// (Y position nudged `+$10` first).
+    pub first: SoldierSpriteScrollResult,
+    /// The result of the real ASM's *second*, separate `jsr set_soldier_
+    /// sprite` / `jsr add_scroll_to_enemy_pos` pair, run immediately
+    /// after `first` - reading whatever RAM state `first` already left
+    /// behind (so `second.scroll` applies camera scroll a *second* time
+    /// on top of `first.scroll`'s already-adjusted position, and `second.
+    /// sprite` decrements `ENEMY_VAR_1`/the gun-recoil timer a second
+    /// time too, if it was still nonzero after `first`'s own decrement).
+    pub second: SoldierSpriteScrollResult,
+    pub delayed_routine: DelayedRoutineUpdate,
+}
+
+/// Native port of `soldier_routine_09` (`$888c`) - "soldier landing in
+/// water": sets the water-splash sprite frame, nudges the soldier down
+/// `$10` pixels into the water, and advances to `soldier_routine_0a`
+/// after `$08` frames.
+///
+/// **Real ASM genuinely calls `set_soldier_sprite`/`add_scroll_to_enemy_
+/// pos` twice, not once**: `jsr soldier_set_y_pos_sprite_add_scroll`
+/// itself already falls all the way through that pair (there's no `rts`
+/// between `soldier_set_y_pos_sprite_add_scroll`'s `jsr add_a_to_enemy_
+/// y_pos` and `set_soldier_sprite_add_scroll`'s own body - confirmed via
+/// `docs/rom-symbols.txt`'s real addresses, not just the local disassembly
+/// text's line ordering), and the routine's next two lines call `jsr
+/// set_soldier_sprite`/`jsr add_scroll_to_enemy_pos` again, separately.
+/// Ported literally rather than "corrected" - if this reading is wrong,
+/// live verification against real hardware will show it as a mismatch;
+/// see [`SoldierRoutine09Result::second`]'s own doc comment for exactly
+/// what the second pass does differently from a naive re-run.
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_09(
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+) -> SoldierRoutine09Result {
+    let first = soldier_set_y_pos_sprite_add_scroll(0x10, enemy_y_pos, 0x08, enemy_var_2, enemy_var_1, level_scrolling_type, frame_scroll, enemy_x_pos);
+    let second_sprite = set_soldier_sprite(0x08, enemy_var_2, first.sprite.var_1);
+    let second_scroll = add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, first.scroll.x_pos, first.scroll.y_pos);
+    let second = SoldierSpriteScrollResult { sprite: second_sprite, scroll: second_scroll };
+    let delayed_routine = set_enemy_delay_adv_routine(0x08, current_routine);
+    SoldierRoutine09Result { first, second, delayed_routine }
+}
+
+/// The real, branchy result of one [`soldier_routine_0a`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoldierRoutine0aOutcome {
+    /// Splash animation delay hadn't elapsed yet - just the sprite/scroll
+    /// tail ran, position untouched.
+    Waiting(SoldierSpriteScrollResult),
+    /// Delay elapsed and `ENEMY_FRAME` (after incrementing) reached the
+    /// "splash finished" sentinel (`$0a`): removed, nothing else runs.
+    Removed(RemovedEnemy),
+    /// Delay elapsed but the splash animation isn't done: delay reset to
+    /// `$08`, `ENEMY_FRAME` incremented, position nudged down another
+    /// `$08` pixels.
+    StillSplashing { animation_delay: u8, enemy_frame: u8, tail: SoldierSpriteScrollResult },
+}
+
+/// Native port of `soldier_routine_0a` (`$88a1`) - "continue splash
+/// animation and begin removing soldier": waits out `ENEMY_ANIMATION_
+/// DELAY`, then advances the water-splash animation frame by frame,
+/// removing the soldier once it's played through.
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_0a(
+    enemy_animation_delay: u8,
+    enemy_frame: u8,
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+) -> SoldierRoutine0aOutcome {
+    let delay = enemy_animation_delay.wrapping_sub(1);
+    if delay != 0 {
+        let tail =
+            set_soldier_sprite_add_scroll_01(enemy_frame, enemy_var_2, enemy_var_1, level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
+        return SoldierRoutine0aOutcome::Waiting(tail);
+    }
+
+    let new_frame = enemy_frame.wrapping_add(1);
+    if new_frame >= 0x0A {
+        return SoldierRoutine0aOutcome::Removed(remove_enemy());
+    }
+
+    let animation_delay = 0x08;
+    let tail = soldier_set_y_pos_sprite_add_scroll(0x08, enemy_y_pos, new_frame, enemy_var_2, enemy_var_1, level_scrolling_type, frame_scroll, enemy_x_pos);
+    SoldierRoutine0aOutcome::StillSplashing { animation_delay, enemy_frame: new_frame, tail }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1398,5 +1526,71 @@ mod tests {
             }
             other => panic!("expected Advanced, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn soldier_set_y_pos_sprite_add_scroll_composes_y_offset_and_sprite_scroll() {
+        let r = soldier_set_y_pos_sprite_add_scroll(0x10, 0x50, 0x08, 0, 0, 0, 0x02, 0x60);
+        let expected_y = add_a_to_enemy_y_pos(0x10, 0x50);
+        assert_eq!(r.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x60, expected_y));
+        assert_eq!(r.sprite, set_soldier_sprite(0x08, 0, 0));
+    }
+
+    #[test]
+    fn routine_09_sets_water_splash_frame_and_advances_after_8_frames() {
+        let r = soldier_routine_09(0x60, 0x50, 0, 0, 0, 0x02, 3);
+        let expected_y_1 = add_a_to_enemy_y_pos(0x10, 0x50);
+        let expected_scroll_1 = add_scroll_to_enemy_pos(0, 0x02, 0x60, expected_y_1);
+        assert_eq!(r.first.scroll, expected_scroll_1);
+        assert_eq!(r.first.sprite, set_soldier_sprite(0x08, 0, 0));
+        // the real ASM's second, separate call re-applies scroll on top
+        // of `first`'s already-scrolled position.
+        let expected_scroll_2 = add_scroll_to_enemy_pos(0, 0x02, expected_scroll_1.x_pos, expected_scroll_1.y_pos);
+        assert_eq!(r.second.scroll, expected_scroll_2);
+        assert_eq!(r.second.sprite, set_soldier_sprite(0x08, 0, r.first.sprite.var_1));
+        assert_eq!(r.delayed_routine, set_enemy_delay_adv_routine(0x08, 3));
+    }
+
+    #[test]
+    fn routine_09_second_pass_decrements_gun_recoil_a_second_time_if_still_nonzero() {
+        // var_1=2 entering: first pass decrements to 1, second pass to 0.
+        let r = soldier_routine_09(0x60, 0x50, 0, 2, 0, 0x02, 3);
+        assert_eq!(r.first.sprite.var_1, 1);
+        assert_eq!(r.second.sprite.var_1, 0);
+    }
+
+    #[test]
+    fn routine_0a_waits_when_delay_has_not_elapsed() {
+        let r = soldier_routine_0a(0x05, 0x08, 0x60, 0x50, 0, 0, 0, 0x02);
+        match r {
+            SoldierRoutine0aOutcome::Waiting(tail) => {
+                assert_eq!(tail.sprite, set_soldier_sprite(0x08, 0, 0));
+                assert_eq!(tail.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x60, 0x50));
+            }
+            other => panic!("expected Waiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_0a_still_splashing_increments_frame_and_nudges_y_down() {
+        // delay=1 -> elapses this call; frame 8 -> 9, still < 0x0a.
+        let r = soldier_routine_0a(0x01, 0x08, 0x60, 0x50, 0, 0, 0, 0x02);
+        match r {
+            SoldierRoutine0aOutcome::StillSplashing { animation_delay, enemy_frame, tail } => {
+                assert_eq!(animation_delay, 0x08);
+                assert_eq!(enemy_frame, 0x09);
+                let expected_y = add_a_to_enemy_y_pos(0x08, 0x50);
+                assert_eq!(tail.scroll, add_scroll_to_enemy_pos(0, 0x02, 0x60, expected_y));
+                assert_eq!(tail.sprite, set_soldier_sprite(0x09, 0, 0));
+            }
+            other => panic!("expected StillSplashing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_0a_removes_the_enemy_once_the_splash_animation_finishes() {
+        // delay=1 -> elapses; frame 9 -> 0x0a, >= 0x0a -> removed.
+        let r = soldier_routine_0a(0x01, 0x09, 0x60, 0x50, 0, 0, 0, 0x02);
+        assert_eq!(r, SoldierRoutine0aOutcome::Removed(remove_enemy()));
     }
 }
