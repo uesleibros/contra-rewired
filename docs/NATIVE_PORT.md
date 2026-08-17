@@ -1270,38 +1270,65 @@ replacement for its real 6502 code, cycle for cycle.
       level 4 boss screen, not reachable from the current scripted
       playthrough. Not yet integrated live, same status as every routine
       above.
-- [x] **`indoor_soldier::indoor_soldier_routine_00` / `init_indoor_enemy_pos_and_vel` / `apply_enemy_velocity_set_bg_priority` / `init_sprite_from_frame`**
-      (`crates/contra-native/src/enemy/indoor_soldier.rs`, new module) -
-      this project's first step into a **new enemy family**: `indoor_
-      soldier_routine_ptr_tbl` (`bank0.asm`, `$92c8`-onward) is actually
-      shared by *4 real enemy types* (`$15` indoor soldier, `$16` jumping
-      soldier, `$17` grenade launcher, `$18` group of four soldiers), all
-      built on the same 3 shared helpers this port carries so far -
-      `init_indoor_enemy_pos_and_vel` (`$9697`, places the enemy at one
-      of 2 fixed X positions with a per-type initial velocity),
-      `apply_enemy_velocity_set_bg_priority` (`$96c1`, the family's X-
-      only velocity integrator - indoor enemies never move vertically -
-      with the same "draw behind background near either screen edge"
-      shape `red_blue_soldier_set_bg_priority` already has), and `init_
-      sprite_from_frame` (`$9316`, the run-cycle animation, same 4th-
-      frame cadence as `red_blue_soldier_set_run_frame`). Plus `indoor_
-      soldier_routine_00` itself (`$92c8`, "initializes indoor soldier:
-      sets position, velocity and attack delay"), the only routine of
-      the 7-entry table ported so far - `indoor_soldier_routine_01`
-      (attack/fire logic - bullets, rollers, *and* grenades, 3 more real
-      sub-systems) and the other 3 enemy types' own `_00`/`_01` entries
-      are not yet ported.
-      Unit-tested (9 new tests covering every real branch: both spawn
-      directions and their velocity reversal, per-type table row
-      selection, both disappearance limits, both background-priority
-      edges plus the mid-screen clear case, the run-frame cadence/wrap,
-      and the composition itself).
-      **Live verification attempted but had 0 real hits** across a
-      25000-frame session - indoor soldiers only appear on indoor/base
+- [x] **`indoor_soldier::indoor_soldier_routine_00` / `indoor_soldier_routine_01` / `init_indoor_enemy_pos_and_vel` / `apply_enemy_velocity_set_bg_priority` / `init_sprite_from_frame` / `create_indoor_bullet` / `enemy_launch_grenade` / `create_roller` / `create_roller_with_segment_a`**
+      (`crates/contra-native/src/enemy/indoor_soldier.rs`) - this
+      project's first step into a **new enemy family**: `indoor_soldier_
+      routine_ptr_tbl` (`bank0.asm`, `$92c8`-onward) is actually shared by
+      *4 real enemy types* (`$15` indoor soldier, `$16` jumping soldier,
+      `$17` grenade launcher, `$18` group of four soldiers), all built on
+      the same 3 shared helpers this port carries so far - `init_indoor_
+      enemy_pos_and_vel` (`$9697`, places the enemy at one of 2 fixed X
+      positions with a per-type initial velocity), `apply_enemy_velocity_
+      set_bg_priority` (`$96c1`, the family's X-only velocity integrator -
+      indoor enemies never move vertically - with the same "draw behind
+      background near either screen edge" shape `red_blue_soldier_set_bg_
+      priority` already has), and `init_sprite_from_frame` (`$9316`, the
+      run-cycle animation, same 4th-frame cadence as `red_blue_soldier_
+      set_run_frame`). Plus the indoor soldier's own first two table
+      entries: `indoor_soldier_routine_00` (`$92c8`, "initializes indoor
+      soldier: sets position, velocity and attack delay") and `indoor_
+      soldier_routine_01` (`$92d5`, waits for `ENEMY_ATTACK_DELAY` then
+      fires one of 3 weapons based on `(ENEMY_ATTRIBUTES >> 1) & 3`) -
+      the other 3 enemy types' own `_00`/`_01` entries still aren't
+      ported.
+      `indoor_soldier_routine_01`'s weapon-type branch composes 3 new
+      real sub-routines: `create_indoor_bullet` (`$9784`, weapon type
+      `0`, gated by both an on-screen X range *and* `ENEMY_ATTACK_FLAG`),
+      `enemy_launch_grenade` (`$9743`, weapon type `1` - but real ASM
+      only actually launches it every *other* time this branch is
+      reached, via an `ENEMY_VAR_1` parity check, effectively doubling
+      the attack delay for this weapon specifically), and `create_roller`/
+      `create_roller_with_segment_a` (`$9700`/`$9703`, weapon types `2`
+      *and* `3` alike - real ASM's `dey; bne @create_roller` only
+      special-cases weapon type `1` for the grenade, so type `3` silently
+      falls into the same roller path as type `2`, not a distinct 4th
+      weapon). All 3 compose the already-ported `find_next_enemy_slot`/
+      `initialize_enemy`/`find_far_segment_for_x_pos` pipeline, same
+      shape as `create_enemy_bullet`.
+      One real quirk ported faithfully rather than "fixed": the roller's
+      `ENEMY_ATTRIBUTES` comes from a stale `$0a` scratch byte that
+      *nothing* in `indoor_soldier_routine_01`'s own call chain (nor the
+      master `exe_enemy_routine_loop` dispatcher) ever writes - modeled
+      as an explicit `attributes_scratch` parameter threaded straight
+      through rather than guessed at. A second quirk: `apply_enemy_
+      velocity_set_bg_priority`'s off-screen removal is a plain `jmp
+      remove_enemy` (not `jsr`), so execution returns straight back into
+      `indoor_soldier_routine_01` and keeps going (can decrement the
+      attack delay and even fire a weapon in the same frame an enemy was
+      just removed) - harmless since `ENEMY_ROUTINE` is now `0`, but real,
+      faithfully preserved control flow.
+      Unit-tested (10 new tests on top of the 9 pre-existing helper/
+      `routine_00` tests, 19 total in the module: every real branch of
+      all 3 new sub-routines including their own gates/range checks, the
+      weapon-type dispatch for all 4 attribute values, the grenade parity
+      gate firing and skipping, the stale-`$0a` roller quirk, and the
+      attack-delay/range gate).
+      **Live verification attempted but had 0 real hits** across an
+      1800-frame session - indoor soldiers only appear on indoor/base
       levels, not reachable from the current scripted outdoor level-1
       playthrough. Not yet integrated live, same status as every routine
       above.
-- [ ] Everything else, logic side. Fifty-nine routines out of what's
+- [ ] Everything else, logic side. Sixty-four routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

@@ -2787,6 +2787,65 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} indoor-soldier-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_INDOOR_SOLDIER_ROUTINE_01").is_ok() {
+            // VERIFY_INDOOR_SOLDIER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::indoor_soldier::indoor_soldier_
+            // routine_01`. Real entry $92d5 (switchable bank, gated).
+            // Real exits: this routine's own local `@exit` ($9315, the
+            // `StillWaiting`/`OutOfRange`/`GrenadeSkipped` outcomes - all
+            // 3 share this one address), plus the 3 sub-routines'
+            // `@exit`s it tail-jumps into for the other outcomes:
+            // `create_indoor_bullet`'s ($97c3, `Bullet`), `enemy_launch_
+            // grenade`'s ($9773, `Grenade` fired), and `create_roller_
+            // with_segment_a`'s ($9732, `Roller`). None of the nested
+            // `jsr`s along the way (`init_sprite_from_frame`,
+            // `apply_enemy_velocity_set_bg_priority`, `add_with_enemy_
+            // pos`, `find_next_enemy_slot`, `initialize_enemy`, `find_
+            // far_segment_for_x_pos`) revisit any of these 4 addresses,
+            // so no disambiguation is needed.
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<IndoorSoldierRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x92D5 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(IndoorSoldierRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            frame_counter: bus.ram[0x1A],
+                            enemy_frame: bus.ram[0x568 + x],
+                            enemy_sprite_attr: bus.ram[0x358 + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            attack_delay: bus.ram[0x558 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            attack_flag: bus.ram[0x8E],
+                            attributes_scratch: bus.ram[0x0A],
+                            enemy_routine,
+                        });
+                    }
+                    0x9315 | 0x9732 | 0x9773 | 0x97C3 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_indoor_soldier_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} indoor-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
