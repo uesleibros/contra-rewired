@@ -3073,6 +3073,102 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} jumping-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_GRENADE_LAUNCHER_ROUTINE_00").is_ok() {
+            // VERIFY_GRENADE_LAUNCHER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::grenade_launcher::grenade_launcher_
+            // routine_00`. Real entry $9468 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // set_anim_delay_adv_enemy_routine_00` -> `jmp advance_
+            // enemy_routine` - the nested `jsr player_enemy_x_dist`
+            // ($ecf5, fixed bank) and `jsr init_indoor_enemy_pos_and_vel`
+            // (switchable, own address range) never revisit either
+            // shared exit, so no disambiguation is needed.
+            let mut pending: Option<GrenadeLauncherRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9468 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(GrenadeLauncherRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_grenade_launcher_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} grenade-launcher-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_GRENADE_LAUNCHER_ROUTINE_01").is_ok() {
+            // VERIFY_GRENADE_LAUNCHER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::grenade_launcher::grenade_launcher_
+            // routine_01`. Real entry $9479 (switchable bank, gated).
+            // Real exits (all switchable bank, all gated): `@exit`
+            // ($94b0, the `Cooldown/Redirected` outcome), `@launch_
+            // grenade_exit` ($94c6, `Cooldown/LaunchCheck`'s `NotReady`/
+            // `Waiting` cases), `enemy_launch_grenade`'s own `@exit`
+            // ($9773, `Cooldown/LaunchCheck`'s `Launched` case - same
+            // shared tail `indoor_soldier_routine_01`'s own grenade
+            // branch reaches), and `grenade_launcher_exit` ($9515, both
+            // `ApplyVelAim` sub-cases).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<GrenadeLauncherRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9479 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(GrenadeLauncherRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            attack_flag: bus.ram[0x8E],
+                            var_3: bus.ram[0x5D8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            attack_delay: bus.ram[0x558 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            frame_counter: bus.ram[0x1A],
+                            frame: bus.ram[0x568 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            enemy_routine,
+                        });
+                    }
+                    0x94B0 | 0x94C6 | 0x9773 | 0x9515 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_grenade_launcher_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} grenade-launcher-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

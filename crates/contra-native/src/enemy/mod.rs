@@ -13,6 +13,7 @@ pub mod enemy_routine_transition;
 pub mod enemy_slots;
 pub mod enemy_spawn;
 pub mod find_far_segment;
+pub mod grenade_launcher;
 pub mod indoor_soldier;
 pub mod initialize_enemy;
 pub mod jumping_soldier;

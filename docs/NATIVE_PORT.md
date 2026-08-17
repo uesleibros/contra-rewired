@@ -1405,7 +1405,57 @@ replacement for its real 6502 code, cycle for cycle.
       across 1800-frame sessions - same as the rest of the indoor family,
       not reachable from the current scripted outdoor level-1
       playthrough.
-- [ ] Everything else, logic side. Sixty-nine routines out of what's
+- [x] **`find_far_segment::find_close_segment` / `grenade_launcher::grenade_launcher_routine_00`
+      / `grenade_launcher_routine_01` / `grenade_launcher_apply_vel_aim`
+      / `launch_grenade_if_appropriate` / `set_enemy_var_2_to_closest_x_player`**
+      (`crates/contra-native/src/enemy/find_far_segment.rs` and new
+      `grenade_launcher.rs`) - the grenade launcher/"seeking guy" enemy
+      type's ($17) own `_00`/`_01` table entries; the other 3 entries of
+      its routine table are the same shared routines every indoor-family
+      type reuses, already ported. `find_close_segment` (`$967c`) is a
+      real, separate routine sharing `find_far_segment_for_a`'s exact
+      descending-threshold-scan shape (own 7-byte table, own real
+      address) to bucket a *player's* X position instead of an enemy's -
+      the scan itself got factored into one shared private helper rather
+      than duplicated, even though the real ROM has two separate copies
+      of the loop.
+      `grenade_launcher_routine_00` (`$9468`) composes the already-ported
+      `init_indoor_enemy_pos_and_vel` (logical index `3`) and
+      `set_enemy_delay_adv_routine`, plus the new `set_enemy_var_2_to_
+      closest_x_player` (`$9516`, resolves the closer player via the
+      already-ported `player_enemy_x_dist`, swapping to the other player
+      if that one isn't in a normal state - unconditionally, without
+      checking the swapped-to player's own state either).
+      `grenade_launcher_routine_01` (`$9479`) branches on `ENEMY_VAR_3`:
+      `0` delegates entirely to `grenade_launcher_apply_vel_aim` (`$94c7`
+      - moves and, once its own animation delay elapses or the enemy ran
+      too far past either screen edge to move, compares its segment
+      against `ENEMY_VAR_2`'s *already-stored* player to arm a grenade
+      count and set a pause length); nonzero is a "cooldown" state that
+      either checks `launch_grenade_if_appropriate` (`$94b1`, composes
+      the already-ported `enemy_launch_grenade`) or, once its own delay
+      elapses, re-resolves the closest player fresh and reverses
+      direction if not already facing them.
+      One real quirk ported faithfully: `grenade_launcher_apply_vel_aim`'s
+      tail computes `(ENEMY_ATTRIBUTES>>1)&3` (the configured grenade
+      count) into `a`, then immediately restores the *earlier*
+      same-segment comparison's saved flags via `plp` - so the branch
+      that follows tests the same-segment result, not whether the count
+      is zero (the `and`'s own flags are silently discarded); net effect,
+      `ENEMY_VAR_1` becomes the configured count only when the player
+      shares the launcher's segment, `0` otherwise.
+      Unit-tested (16 new tests across both files: the shared segment-
+      scan cross-checked against a direct reference implementation for
+      `find_close_segment` too, both `_00` composition, `_01`'s velocity-
+      skip-at-screen-edge case, the `ENEMY_VAR_1` quirk verified directly
+      against same-segment vs. different-segment inputs, all 3 `launch_
+      grenade_if_appropriate` branches, and both top-level `_01` branches
+      including the direction-reversal condition).
+      **Live verification attempted but had 0 real hits for both `_00`
+      and `_01`** across 1800-frame sessions - same as the rest of the
+      indoor family, not reachable from the current scripted outdoor
+      level-1 playthrough.
+- [ ] Everything else, logic side. Seventy-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
