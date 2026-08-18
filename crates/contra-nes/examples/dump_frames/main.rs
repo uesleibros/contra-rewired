@@ -3867,6 +3867,57 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} sniper-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_SNIPER_ROUTINE_01").is_ok() {
+            // VERIFY_SNIPER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::sniper::sniper_routine_01`. Real
+            // entry $8982 (switchable bank, gated). Real exits:
+            // `sniper_routine_exit` ($89cb, switchable, gated - the
+            // `Waiting`/`CrouchCycling` outcomes), and the 2 shared
+            // exits ($e796/$e813, the `Activated` outcome via `jmp
+            // advance_enemy_routine`). The nested `jsr sniper_set_
+            // sprite`/`jsr add_scroll_to_enemy_pos`/`jsr enable_enemy_
+            // collision` never revisit either address (their own
+            // internal removal, if any, goes through `remove_enemy`'s
+            // own unrelated address instead), so no disambiguation is
+            // needed.
+            let mut pending: Option<SniperRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8982 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SniperRoutine01Ctx {
+                            x,
+                            sniper_type: bus.ram[0x5A8 + x],
+                            frame: bus.ram[0x568 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            var_3: bus.ram[0x5D8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            state_width: bus.ram[0x598 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x89CB if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_sniper_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_sniper_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} sniper-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

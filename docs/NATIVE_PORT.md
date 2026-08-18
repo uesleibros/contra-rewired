@@ -1712,7 +1712,34 @@ replacement for its real 6502 code, cycle for cycle.
       through the first position update).
       **Live-verified against real gameplay**: 5 real calls, zero
       mismatches (across a 6000-frame session).
-- [ ] Everything else, logic side. One hundred two routines out of what's
+- [x] **`sniper::sniper_routine_01` / `sniper_set_sprite`**
+      (`crates/contra-native/src/enemy/sniper.rs`) - the sniper's crouch-
+      cycle-then-activate entry (`$8982`). Standing snipers (type `0`)
+      skip straight to "activated" once their delay elapses; crouching/
+      hiding snipers (type `1`/`2`) cycle `ENEMY_FRAME` through 3 pop-up
+      frames first, then either apply a real `-14`/`+1` Y/X position
+      nudge (boss screen, type `2`) or decrement the frame once more with
+      no nudge (crouching, type `1`) before activating. `sniper_set_
+      sprite` picks the sprite from one of 2 per-type 7-frame tables and
+      derives the sprite palette from the current firing angle's low
+      bit, additionally setting a gun-recoil flag while `ENEMY_VAR_3`
+      (a firing-animation counter) is still counting down.
+      One real branch ported faithfully but traced as practically
+      unreachable: real ASM's crouching-type frame decrement *can* fall
+      through into the same nudge code the boss-screen type uses, if
+      that decrement ever lands on exactly `0` - by hand-tracing the
+      real frame arithmetic from `_00`'s own fixed starting frame (`0`),
+      this never actually happens for type `1`, but the branch is real,
+      valid control flow this port still models
+      (`ActivatedFrom::CrouchFallthroughNudge`) rather than silently
+      dropping.
+      Unit-tested (9 new tests: both sprite tables, the firing-angle
+      palette bit, the gun-recoil counter's decrement/flag behavior, and
+      all 3 real ways `_01` reaches "activated" including the full
+      3-frame crouch cycle).
+      **Live-verified against real gameplay**: 315 real calls, zero
+      mismatches (across a 6000-frame session).
+- [ ] Everything else, logic side. One hundred four routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
