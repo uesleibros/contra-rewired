@@ -4495,6 +4495,95 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} mortar-shot-routine-03 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ROLLER_ROUTINE_00").is_ok() {
+            // VERIFY_ROLLER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::roller::roller_routine_00`. Real
+            // entry $8f8c (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via `jmp advance_enemy_
+            // routine`. No nested calls, so no disambiguation is needed.
+            let mut pending: Option<RollerRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8F8C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RollerRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_roller_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} roller-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ROLLER_ROUTINE_01").is_ok() {
+            // VERIFY_ROLLER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::roller::roller_routine_01`. Real
+            // entry $8f94 (switchable bank, gated). Real exits: `@exit`
+            // ($8fc2, `NotCloseEnough`), the shared collision-toggle rts
+            // ($eb1e, `CollisionEnabled`, via `jmp enable_enemy_
+            // collision`), and `remove_enemy`'s own address ($e809,
+            // `Removed`, via this routine's own tail `jmp remove_enemy`)
+            // - $e809 disambiguated via stack-peek: this routine's own
+            // `jsr update_enemy_pos` can itself trigger a nested removal
+            // that also reaches $e809; genuine hits return outside this
+            // routine's own $8f94-$8fc6 range.
+            let mut pending: Option<RollerRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8F94 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RollerRoutine01Ctx {
+                            x,
+                            y_pos: bus.ram[0x324 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            state_width: bus.ram[0x598 + x],
+                        });
+                    }
+                    0x8FC2 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_roller_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xEB1E => {
+                        if let Some(ctx) = pending.take() {
+                            verify_roller_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE809 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0x8F94..0x8FC6).contains(&ret) {
+                            // Nested return from `jsr update_enemy_pos`'s
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_roller_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} roller-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

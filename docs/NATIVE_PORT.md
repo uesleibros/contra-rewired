@@ -1830,7 +1830,26 @@ replacement for its real 6502 code, cycle for cycle.
       are created by scuba divers (unreached, see above) or a hangar-zone
       boss screen this session's playthrough didn't reach either.
       Deferred alongside `scuba_soldier` for the same reason.
-- [ ] Everything else, logic side. One hundred seventeen routines out of what's
+- [x] **`roller` family** (`crates/contra-native/src/enemy/roller.rs`) -
+      the outdoor roller enemy's own `_00`/`_01` routine (`$8f8c`-
+      `$8fb2`), distinct from the already-ported `indoor_roller_gen`
+      (which only *spawns* rollers on indoor levels - this is the
+      roller object's own AI). `_00` sets a fixed initial Y position and
+      advances; `_01` grows the roller through 4 sprite sizes as it
+      rolls down the screen (a real Y-cutoff table scanned from largest
+      to smallest), only sets `ENEMY_SCORE_COLLISION` once it's reached
+      one of the 2 largest sizes, then enables player collision or
+      removes the roller once it crosses the real `$ac`/`$bc` Y
+      thresholds. `roller_routine_04` (the destroyed-explosion entry,
+      `$e7a4`) needed no new port - it's already covered by the existing
+      `show_explosion_a(explosion_type_override=3, max_sprites=2)`, the
+      same composition `shared_enemy_routine_03` already uses.
+      Unit-tested (7 new tests: the Y-cutoff scan's own fallback-to-
+      smallest behavior, the score/collision size gate, and all 3 real
+      outcome bands).
+      **Live-verified against real gameplay** (level `1` - `JUMP_STAGE=
+      1`): `_00` 1 real call, `_01` 6940 real calls, zero mismatches.
+- [ ] Everything else, logic side. One hundred eighteen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

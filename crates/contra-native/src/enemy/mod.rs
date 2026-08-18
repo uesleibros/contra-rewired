@@ -27,6 +27,7 @@ pub mod mortar_shot;
 pub mod player_enemy_distance;
 pub mod quadrant_aim_dir;
 pub mod red_blue_soldier;
+pub mod roller;
 pub mod scuba_soldier;
 pub mod sniper;
 pub mod soldier;
