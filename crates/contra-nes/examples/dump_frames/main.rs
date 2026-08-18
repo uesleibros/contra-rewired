@@ -3513,6 +3513,45 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} indoor-roller-gen-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_WEAPON_ITEM_ROUTINE_00").is_ok() {
+            // VERIFY_WEAPON_ITEM_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::weapon_item::weapon_item_routine_00`.
+            // Real entry $8007 (switchable bank, gated). Real exit: the
+            // 2 shared exits ($e796/$e813) via `weapon_item_advance_
+            // enemy_routine` ($8059) -> `jmp advance_enemy_routine` -
+            // both the indoor and outdoor branches funnel through this
+            // one tail-jump, no other real exit exists. The nested `jsr
+            // set_weapon_item_indoor_velocity` (`$ed9d`, fixed bank,
+            // itself calling `jsr find_far_segment_for_a`) never
+            // revisits either shared exit, so no disambiguation is
+            // needed.
+            let mut pending: Option<WeaponItemRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8007 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(WeaponItemRoutine00Ctx {
+                            x,
+                            level_location_type: bus.ram[0x40],
+                            y_pos: bus.ram[0x324 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_weapon_item_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} weapon-item-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

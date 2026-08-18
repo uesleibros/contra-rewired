@@ -25,3 +25,4 @@ pub mod quadrant_aim_dir;
 pub mod red_blue_soldier;
 pub mod soldier;
 pub mod update_enemy_pos;
+pub mod weapon_item;

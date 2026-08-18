@@ -1585,7 +1585,39 @@ replacement for its real 6502 code, cycle for cycle.
       **Live verification attempted but had 0 real hits** across a
       1800-frame session - same as the rest of the indoor family, not
       reachable from the current scripted outdoor level-1 playthrough.
-- [ ] Everything else, logic side. Ninety routines out of what's
+- [x] **`weapon_item::weapon_item_routine_00` / `set_weapon_item_indoor_velocity`**
+      (`crates/contra-native/src/enemy/weapon_item.rs`, new module) -
+      the first entry of the weapon-item pickup's own routine table
+      (`$8007`): sets the marker that lets bullets pass through it
+      (`ENEMY_STATE_WIDTH`), its score/collision code, and its initial
+      velocity - indoor levels pick an X velocity off the item's own
+      horizontal segment (composes the already-ported `find_far_
+      segment_for_a`, same shape as the indoor-family roller/grenade
+      routines) with a fixed slow fall speed; outdoor levels pick one of
+      3 fixed `(y, x)` velocity rows depending on the level's scrolling
+      type and, for vertical levels, which half of the screen the item
+      spawned on. `weapon_item_routine_01`/`_02` (falling and landing on
+      the ground, then watching for the ground to disappear) are **not
+      yet ported** - real ASM pulls in a much deeper dependency chain
+      from there (`set_outdoor_weapon_item_vel`, `set_enemy_falling_arc_
+      pos`, 2 new background-collision helpers, a sprite-selection
+      routine), none of which exist in this crate yet.
+      Also confirmed directly from `docs/rom-symbols.txt`: `ENEMY_VAR_B`
+      and `ENEMY_ATTACK_DELAY` are real, literal aliases for the *same*
+      RAM byte (`$558+x`) - a genuine space-saving trick this ROM uses,
+      not a disassembly error; this routine's own `ENEMY_VAR_B` write is
+      named accordingly rather than borrowing unrelated terminology.
+      Unit-tested (5 new tests: the indoor branch's full composition,
+      all 3 outdoor velocity rows, and the indoor velocity helper's own
+      segment lookup).
+      **Live verification attempted but had 0 real hits** across both an
+      1800-frame and a 6000-frame session - the real ASM's own comment
+      says weapon items are only created after a flying capsule, pill
+      box sensor, or (indoor) red soldier is destroyed, *not* from
+      regular soldier kills - the current scripted playthrough is a
+      plain walk-and-shoot demo that doesn't destroy any of those
+      sources, so this is expected, not a sign of a broken hook.
+- [ ] Everything else, logic side. Ninety-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

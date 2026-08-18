@@ -38,6 +38,7 @@ pub mod soldier_routine_04;
 pub mod soldier_routine_05;
 pub mod soldier_routine_09;
 pub mod soldier_routine_0a;
+pub mod weapon_item_routine_00;
 
 pub use blue_soldier_routine_01::*;
 pub use blue_soldier_routine_02::*;
@@ -73,3 +74,4 @@ pub use soldier_routine_04::*;
 pub use soldier_routine_05::*;
 pub use soldier_routine_09::*;
 pub use soldier_routine_0a::*;
+pub use weapon_item_routine_00::*;
