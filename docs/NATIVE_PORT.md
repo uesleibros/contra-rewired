@@ -1617,7 +1617,49 @@ replacement for its real 6502 code, cycle for cycle.
       regular soldier kills - the current scripted playthrough is a
       plain walk-and-shoot demo that doesn't destroy any of those
       sources, so this is expected, not a sign of a broken hook.
-- [ ] Everything else, logic side. Ninety-two routines out of what's
+- [x] **`enemy_bullet::enemy_bullet_routine_00` / `_01` / `_02`**
+      (`crates/contra-native/src/enemy/enemy_bullet.rs`, new module) -
+      the enemy bullet *entity's* own per-frame routine table (`$814f`-
+      `$8202`; entry 3, `remove_enemy`, was already ported) - a
+      different thing from `create_enemy_bullet`, which only spawns
+      one. `ENEMY_VAR_1` selects one of 5 real bullet types: `0` regular
+      (removed on solid-bg collision if the level checks for it), `1`
+      large cannonball (falls with gravity, explodes into `_02`'s 3-frame
+      animation at the ground), `2` a real, documented no-op here, `3`
+      indoor regular bullet (on-screen bounds check only, no gravity),
+      `4` the level-3 dragon boss's fire ball (recolors/flips every 4
+      frames). All 5 share one `update_enemy_pos` call before branching
+      on type; level 5 ("snow field") recolors regular bullets red via a
+      sprite-table-only index override that doesn't touch the real
+      stored bullet type.
+      **A real bug live verification caught and this port then fixed**:
+      `update_enemy_pos`'s own off-screen removal is a tail `jmp remove_
+      enemy`, so it can zero `ENEMY_ROUTINE`/`ENEMY_SPRITES` *mid-call*
+      and execution keeps going into the bullet-type branch regardless
+      (same quirk this crate has documented before) - but the first
+      port of `enemy_bullet_routine_01`'s `Exploded` outcome still fed
+      the *entry-time* `current_routine` into `advance_enemy_routine`,
+      not the already-zeroed value a same-frame removal leaves behind.
+      12 real mismatches on the first live-verification run (all
+      `sprites`/`routine` disagreements on frames where a bullet's own
+      `update_enemy_pos` call had just removed it) pointed straight at
+      this; fixed by deriving an `effective_routine` from `position.
+      removed` before any downstream routine-transition call, with a
+      regression test covering the exact scenario, and a matching fix to
+      the verify hook's own sprite/routine resolution (it needs the same
+      "did `update_enemy_pos` already remove this" check the port itself
+      now does).
+      Unit-tested (16 new tests: the collision table for every real
+      bullet type, all 5 branches of `_01` including the snow-field
+      override and the same-frame-removal regression case, and `_02`'s
+      waiting/animating/advancing outcomes).
+      **Live-verified against real gameplay**: `_00` 12 real calls,
+      `_01` 610 real calls, both zero mismatches after the fix above
+      (across a 6000-frame session). `_02` (the level 1 boss cannonball's
+      own explosion animation) had 0 real hits, as expected - not
+      reachable before the boss fight in the current scripted
+      walk-and-shoot playthrough.
+- [ ] Everything else, logic side. Ninety-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

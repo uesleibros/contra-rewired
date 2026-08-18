@@ -3552,6 +3552,167 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} weapon-item-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ENEMY_BULLET_ROUTINE_00").is_ok() {
+            // VERIFY_ENEMY_BULLET_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::enemy_bullet::enemy_bullet_
+            // routine_00`. Real entry $814f (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // advance_enemy_routine` - no nested calls at all in this
+            // trivial routine, so no disambiguation is needed.
+            let mut pending: Option<EnemyBulletRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x814F if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(EnemyBulletRoutine00Ctx { x, bullet_type: bus.ram[0x5B8 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_enemy_bullet_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-bullet-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ENEMY_BULLET_ROUTINE_01").is_ok() {
+            // VERIFY_ENEMY_BULLET_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::enemy_bullet::enemy_bullet_
+            // routine_01`. Real entry $8161 (switchable bank, gated).
+            // Real exits: `enemy_bullet_routine_01_exit` ($81a5,
+            // switchable, gated - the `Exited`/`DragonOrbAnimated`
+            // outcomes), `enemy_bullet_exit` ($8201, switchable, gated -
+            // `StillFalling`/`IndoorOnScreen`), the 2 shared exits
+            // ($e796/$e813, `Exploded`, via `adv_bullet_routine`'s own
+            // `jmp advance_enemy_routine` - no nested calls reach these
+            // 2 addresses so no disambiguation needed there), and
+            // `remove_enemy`'s own address ($e809, fixed bank -
+            // `RemovedBySolidCollision`/`IndoorRemoved`, **with**
+            // disambiguation: `update_enemy_pos`'s own internal removal
+            // (real ASM: `jmp remove_enemy`, a tail-jump) also reaches
+            // $e809 as a *nested* occurrence that returns straight back
+            // into this routine's own body (since `jsr update_enemy_pos`
+            // pushed the return address, not the nested jmp) - if the
+            // stack's return address falls inside this routine's own
+            // $8161-$81a5 range, it's that nested case, not our real
+            // exit; keep waiting).
+            use contra_native::physics::collision::BG_COLLISION_DATA_LEN;
+
+            let mut pending: Option<EnemyBulletRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8161 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut bg_collision_data = [0u8; BG_COLLISION_DATA_LEN];
+                        for (i, b) in bg_collision_data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some(EnemyBulletRoutine01Ctx {
+                            x,
+                            bullet_type: bus.ram[0x5B8 + x],
+                            current_level: bus.ram[0x30],
+                            level_solid_bg_collision_check: bus.ram[0x59],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            vertical_scroll: bus.ram[0xFC],
+                            horizontal_scroll: bus.ram[0xFD],
+                            ppuctrl_settings: bus.ram[0xFF],
+                            bg_collision_data,
+                            frame_counter: bus.ram[0x1A],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x81A5 | 0x8201 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_enemy_bullet_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_enemy_bullet_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE809 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0x8161..0x81A6).contains(&ret) {
+                            // Nested return from `jsr update_enemy_pos`'s
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_enemy_bullet_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-bullet-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ENEMY_BULLET_ROUTINE_02").is_ok() {
+            // VERIFY_ENEMY_BULLET_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::enemy_bullet::enemy_bullet_
+            // routine_02`. Real entry $81e4 (switchable bank, gated).
+            // Real exits: `enemy_bullet_exit` ($8201, switchable, gated -
+            // the `Waiting`/`Animating` outcomes, same shared address
+            // `enemy_bullet_routine_01`'s own `StillFalling`/
+            // `IndoorOnScreen` outcomes reach - harmless since these are
+            // separate, mutually-exclusive `VERIFY_` modes), and the 2
+            // shared exits ($e796/$e813, `Advanced`, via `jmp advance_
+            // enemy_routine`). The nested `jsr add_scroll_to_enemy_pos`
+            // can itself trigger a nested removal (`$e809`), but that
+            // address isn't one of this routine's own real exits, so no
+            // disambiguation is needed here.
+            let mut pending: Option<EnemyBulletRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x81E4 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(EnemyBulletRoutine02Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            frame: bus.ram[0x568 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x8201 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_enemy_bullet_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_enemy_bullet_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} enemy-bullet-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
