@@ -3918,6 +3918,583 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} sniper-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_TURRET_MAN_ROUTINE_00").is_ok() {
+            // VERIFY_TURRET_MAN_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::turret_man::turret_man_routine_00`.
+            // Real entry $f0c9 (fixed bank, no gate needed). Real exit:
+            // the 2 shared exits ($e796/$e813) via `jmp set_anim_delay_
+            // adv_enemy_routine`. No nested calls, so no disambiguation
+            // is needed.
+            let mut pending: Option<TurretManRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF0C9 => {
+                        let x = cpu.x as usize;
+                        pending = Some(TurretManRoutine00Ctx { x, enemy_attributes: bus.ram[0x5A8 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_turret_man_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} turret-man-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_TURRET_MAN_ROUTINE_01").is_ok() {
+            // VERIFY_TURRET_MAN_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::turret_man::turret_man_routine_01`.
+            // Real entry $f0db (fixed bank). Real exits: `turret_man_
+            // exit` ($f0eb, `Waiting`), and the 2 shared exits
+            // ($e796/$e813, `RecoilStarted`, via `jmp set_anim_delay_adv_
+            // enemy_routine`). The nested `jsr add_scroll_to_enemy_pos`
+            // can itself trigger a nested removal that also reaches
+            // $e813 (falling through `remove_enemy`/`set_sprite_0`) -
+            // disambiguated via stack-peek: if the return address falls
+            // inside this routine's own $f0db-$f0ec range, it's that
+            // nested case, not our real exit.
+            let mut pending: Option<TurretManRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF0DB => {
+                        let x = cpu.x as usize;
+                        pending = Some(TurretManRoutine01Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            sprite: bus.ram[0x30A + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xF0EB | 0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_turret_man_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xF0DB..0xF0EC).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_turret_man_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} turret-man-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_TURRET_MAN_ROUTINE_02").is_ok() {
+            // VERIFY_TURRET_MAN_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::turret_man::turret_man_routine_02`.
+            // Real entry $f0ec (fixed bank). Real exits: `turret_man_
+            // exit` ($f0eb, `Waiting` - same address `_01`'s own
+            // `Waiting` exit uses, harmless since these are separate,
+            // mutually-exclusive `VERIFY_` modes), `set_enemy_routine_
+            // to_a`'s own success rts ($e822, `Fired`), and the shared
+            // guard-rejected rts ($e813, `Fired`) - disambiguated the
+            // same way as `_01` (nested `jsr add_scroll_to_enemy_pos`
+            // removal vs. this routine's own $f0ec-$f119 range).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<TurretManRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF0EC => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine_slots = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine_slots.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(TurretManRoutine02Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            enemy_attributes: bus.ram[0x5A8 + x],
+                            enemy_sprites: bus.ram[0x30A + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine_slots,
+                        });
+                    }
+                    0xF0EB | 0xE822 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_turret_man_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xF0EC..0xF119).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_turret_man_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} turret-man-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_TURRET_MAN_BULLET_ROUTINE_00").is_ok() {
+            // VERIFY_TURRET_MAN_BULLET_ROUTINE_00=1: verification pass
+            // for `contra_native::enemy::turret_man::turret_man_bullet_
+            // routine_00`. Real entry $f11f (fixed bank). Real exit: the
+            // 2 shared exits ($e796/$e813) via `turret_man_adv_routine`'s
+            // own `jmp advance_enemy_routine`. No nested calls, so no
+            // disambiguation is needed.
+            let mut pending: Option<TurretManBulletRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF11F => {
+                        let x = cpu.x as usize;
+                        pending = Some(TurretManBulletRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_turret_man_bullet_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} turret-man-bullet-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_TURRET_MAN_BULLET_ROUTINE_01").is_ok() {
+            // VERIFY_TURRET_MAN_BULLET_ROUTINE_01=1: verification pass
+            // for `contra_native::enemy::turret_man::turret_man_bullet_
+            // routine_01`. Real entry $f131 (fixed bank). Real exits: the
+            // 2 shared exits ($e796/$e813, `Advanced`, via `turret_man_
+            // adv_routine`'s own tail `jmp advance_enemy_routine` -
+            // reached directly, no intervening calls), and `update_
+            // enemy_pos`'s own real exits ($e849/$e809, `Position`, via
+            // this routine's own tail `jmp update_enemy_pos`). No
+            // disambiguation needed either way since both jumps are real
+            // tail calls, not nested `jsr`s.
+            let mut pending: Option<TurretManBulletRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF131 => {
+                        let x = cpu.x as usize;
+                        pending = Some(TurretManBulletRoutine01Ctx {
+                            x,
+                            x_pos: bus.ram[0x33E + x],
+                            routine: bus.ram[0x4B8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 | 0xE849 | 0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_turret_man_bullet_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} turret-man-bullet-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SCUBA_SOLDIER_ROUTINE_00").is_ok() {
+            // VERIFY_SCUBA_SOLDIER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::scuba_soldier::scuba_soldier_
+            // routine_00`. Real entry $f147 (fixed bank). Real exit: the
+            // 2 shared exits ($e796/$e813) via `jmp set_anim_delay_adv_
+            // enemy_routine`. No nested calls, so no disambiguation is
+            // needed.
+            let mut pending: Option<ScubaSoldierRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF147 => {
+                        let x = cpu.x as usize;
+                        pending = Some(ScubaSoldierRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_scuba_soldier_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} scuba-soldier-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SCUBA_SOLDIER_ROUTINE_01").is_ok() {
+            // VERIFY_SCUBA_SOLDIER_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::scuba_soldier::scuba_soldier_
+            // routine_01`. Real entry $f14c (fixed bank). Real exits:
+            // `@exit` ($f175, `Waiting`/`NotYetHighEnough`), and the 2
+            // shared exits ($e796/$e813, `Activated`, via `jmp set_anim_
+            // delay_adv_enemy_routine`) - $e813 disambiguated via
+            // stack-peek the same way as `turret_man_routine_01` (nested
+            // `jsr add_scroll_to_enemy_pos` removal vs. this routine's
+            // own $f14c-$f183 range).
+            let mut pending: Option<ScubaSoldierRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF14C => {
+                        let x = cpu.x as usize;
+                        pending = Some(ScubaSoldierRoutine01Ctx {
+                            x,
+                            animation_delay: bus.ram[0x538 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xF175 | 0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_scuba_soldier_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xF14C..0xF183).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_scuba_soldier_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} scuba-soldier-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SCUBA_SOLDIER_ROUTINE_02").is_ok() {
+            // VERIFY_SCUBA_SOLDIER_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::scuba_soldier::scuba_soldier_
+            // routine_02`. Real entry $f183 (fixed bank). Real exits:
+            // `@add_scroll_exit` ($f1b1, `Firing`/`Fired` - this
+            // routine's own unique `jmp add_scroll_to_enemy_pos`
+            // instruction address, captured *before* it executes so no
+            // ambiguity with the shared target), `set_enemy_routine_to_
+            // a`'s own success rts ($e822, `Submerging`), and the shared
+            // guard-rejected rts ($e813, `Submerging`) - disambiguated
+            // via stack-peek (nested `jsr add_scroll_to_enemy_pos`
+            // removal vs. this routine's own $f183-$f1c4 range).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<ScubaSoldierRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF183 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine_slots = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine_slots.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(ScubaSoldierRoutine02Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            var_1: bus.ram[0x5B8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            attack_delay: bus.ram[0x558 + x],
+                            state_width: bus.ram[0x598 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine_slots,
+                        });
+                    }
+                    0xF1B1 | 0xE822 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_scuba_soldier_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xF183..0xF1C4).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_scuba_soldier_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} scuba-soldier-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MORTAR_SHOT_ROUTINE_00").is_ok() {
+            // VERIFY_MORTAR_SHOT_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::mortar_shot::mortar_shot_
+            // routine_00`. Real entry $f1d6 (fixed bank). Real exit: the
+            // 2 shared exits ($e796/$e813) via `mortar_shot_adv_
+            // routine`'s own `jmp advance_enemy_routine`. No nested
+            // calls, so no disambiguation is needed.
+            let mut pending: Option<MortarShotRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF1D6 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MortarShotRoutine00Ctx { x, enemy_attributes: bus.ram[0x5A8 + x], enemy_var_1: bus.ram[0x5B8 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mortar_shot_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mortar-shot-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MORTAR_SHOT_ROUTINE_01").is_ok() {
+            // VERIFY_MORTAR_SHOT_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::mortar_shot::mortar_shot_
+            // routine_01`. Real entry $f237 (fixed bank). Real exits:
+            // `@mortar_shot_routine_01_exit` ($f24e, `StillRising`/
+            // `SplitStillRising`/`SplitAboveClosestPlayer`/
+            // `SplitNoBgCollision` - all 4 converge here), `advance_
+            // enemy_routine`'s own success rts ($e796, `Advanced`),
+            // `set_enemy_routine_to_a`'s own success rts ($e822,
+            // `SplitCollided`), and the shared guard-rejected rts
+            // ($e813, either `Advanced` or `SplitCollided`) - $e813
+            // disambiguated via stack-peek (this routine's own `jsr
+            // update_enemy_pos` can itself trigger a nested removal that
+            // also reaches $e813; genuine hits return outside this
+            // routine's own $f237-$f26e range).
+            let mut pending: Option<MortarShotRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF237 => {
+                        let x = cpu.x as usize;
+                        let mut bg_collision_data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
+                        for (i, b) in bg_collision_data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some(MortarShotRoutine01Ctx {
+                            x,
+                            enemy_attributes: bus.ram[0x5A8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            sprite_y_pos: [bus.ram[0x31A], bus.ram[0x31B]],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            vertical_scroll: bus.ram[0xFC],
+                            horizontal_scroll: bus.ram[0xFD],
+                            ppuctrl_settings: bus.ram[0xFF],
+                            bg_collision_data,
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xF24E | 0xE796 | 0xE822 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mortar_shot_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xF237..0xF26E).contains(&ret) {
+                            // Nested return from `jsr update_enemy_pos`'s
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_mortar_shot_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mortar-shot-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MORTAR_SHOT_ROUTINE_02").is_ok() {
+            // VERIFY_MORTAR_SHOT_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::mortar_shot::mortar_shot_
+            // routine_02`. Real entry $f26e (fixed bank). Real exits:
+            // `advance_enemy_routine`'s own success rts ($e796), and the
+            // shared guard-rejected rts ($e813) - disambiguated via
+            // stack-peek the same way as `_01` (nested `jsr update_
+            // enemy_pos` removal vs. this routine's own $f26e-$f29e
+            // range, which also covers its own local `@advance_enemy_
+            // routine` slot-restore helper).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<MortarShotRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xF26E => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine_slots = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine_slots.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(MortarShotRoutine02Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            routine: bus.ram[0x4B8 + x],
+                            enemy_routine_slots,
+                        });
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mortar_shot_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xF26E..0xF29E).contains(&ret) {
+                            // Nested return from `jsr update_enemy_pos`'s
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_mortar_shot_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mortar-shot-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MORTAR_SHOT_ROUTINE_03").is_ok() {
+            // VERIFY_MORTAR_SHOT_ROUTINE_03=1: verification pass for
+            // `contra_native::enemy::mortar_shot::mortar_shot_
+            // routine_03`. Real entry $e752 (fixed bank - also reused by
+            // ice grenades, so hits aren't exclusively from split
+            // mortars). Real exits: `remove_enemy`'s own address ($e809,
+            // `Removed`, direct tail `jmp remove_enemy` from entry - no
+            // intervening calls), and the 2 shared exits ($e796/$e813,
+            // `Hidden`, via `jmp set_enemy_delay_adv_routine`). This
+            // routine's own `jsr add_scroll_to_enemy_pos` (inside the
+            // `Hidden` path only) can itself trigger a nested removal
+            // that also reaches $e809/$e813 - both disambiguated via
+            // stack-peek against this routine's own $e752-$e78b range
+            // (genuine hits, reached via a real tail `jmp`, return
+            // outside that range - this routine's own caller, not
+            // anything inside it).
+            let mut pending: Option<MortarShotRoutine03Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xE752 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MortarShotRoutine03Ctx {
+                            x,
+                            state_width: bus.ram[0x598 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            sprites: bus.ram[0x30A + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE809 | 0xE796 | 0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if cpu.pc != 0xE796 && (0xE752..0xE78B).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal (only
+                            // possible at $e809/$e813 - $e796 is only
+                            // ever reached via advance_enemy_routine's
+                            // own real tail jmp) - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_mortar_shot_routine_03(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mortar-shot-routine-03 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

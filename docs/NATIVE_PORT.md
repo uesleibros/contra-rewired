@@ -1739,7 +1739,98 @@ replacement for its real 6502 code, cycle for cycle.
       3-frame crouch cycle).
       **Live-verified against real gameplay**: 315 real calls, zero
       mismatches (across a 6000-frame session).
-- [ ] Everything else, logic side. One hundred four routines out of what's
+- [x] **`generate_enemy_at_pos`** (`crates/contra-native/src/enemy/
+      generate_enemy_at_pos.rs`, `$e94a`) - the shared "spawn a new enemy
+      relative to the caller's own position" primitive: [`find_next_
+      enemy_slot`] + [`initialize_enemy`] (both already ported) plus the
+      real `(x_offset, y_offset)` position-offset arithmetic. A pure
+      composition of two existing primitives, no new real logic beyond
+      that - but it unlocks every enemy type whose own routine spawns a
+      *new* object (bullets, split projectiles), not just moves/animates
+      itself, which no earlier port in this crate had touched yet.
+      Unit-tested (2 new tests: successful spawn at caller position plus
+      offset, and no-free-slot failure).
+- [x] **`turret_man` family** (`crates/contra-native/src/enemy/
+      turret_man.rs`) - the turret man enemy's `_00`/`_01`/`_02` table
+      (`$f0c9`-`$f118`, fixed bank) and its bullet's own `_00`/`_01`
+      table (`$f11f`-`$f136`). `_00` sets the initial recoil-cycle delay
+      from `ENEMY_ATTRIBUTES`; `_01` waits out that delay then starts the
+      visible recoil animation; `_02` (real ASM: its own separate scroll-
+      then-countdown guard, easy to misread as a bare continuation of
+      `_01`'s own delay) fires a bullet (enemy type `$0f`) via `generate_
+      enemy_at_pos` at relative position `($f0, $fc)` once its own delay
+      elapses, then jumps its own routine index back to `2` (array
+      position `1`, i.e. `_01`'s own wait state) to keep firing on a
+      cadence derived from `ENEMY_ATTRIBUTES`. The bullet's own `_00`
+      sets a fixed leftward velocity; `_01` advances once it scrolls past
+      `$f0`, otherwise just integrates position.
+      Unit-tested (11 new tests, including the real ASM's own byte-
+      truncating `asl` x4 nibble shift and the post-scroll position used
+      for the bullet's spawn offset).
+      **Live-verified against real gameplay** (level `5`, a fortress-type
+      indoor level - `JUMP_STAGE=5`): `_00` 3 real calls, `_01` 390,
+      `_02` 75, bullet `_00` 15, bullet `_01` 354 - all zero mismatches
+      (837 real calls total across an 8000-frame session).
+- [x] **`scuba_soldier` family** (`crates/contra-native/src/enemy/
+      scuba_soldier.rs`) - the scuba diver enemy's `_00`/`_01`/`_02`
+      table (`$f147`-`$f1c3`, fixed bank). `_00` sets the initial hiding
+      delay; `_01` hides underwater (flashing a gun-recoil sprite
+      attribute on a 16-frame cycle derived from bit 4 of the *pre-
+      decrement* delay) until both the delay elapses and the diver has
+      scrolled to real attack height (`$b8`); `_02` alternates firing a
+      mortar shot (enemy type `$0b`, via `generate_enemy_at_pos`) with a
+      recoil-timer countdown until its own visible-duration timer
+      elapses, then submerges again. One real bug caught by careful
+      re-reading before live verification even ran: the submerge exit
+      (`lda #$02; jmp set_enemy_routine_to_a`) is a direct jump to
+      routine index `2`, *not* the combined `set_anim_delay_adv_enemy_
+      routine` the other two exits in this family use - an initial port
+      modeled it as the latter (which would have advanced instead of
+      jumping), caught and fixed against the real ASM's own instruction
+      sequence.
+      Unit-tested (8 new tests, including the real gun-recoil-flag
+      override that persists even though its own top-of-routine
+      countdown left `ENEMY_VAR_1` at a different value).
+      **Live-verified against real gameplay**: 0 real hits - `_00`/`_01`/
+      `_02` only run once the scuba diver's own indoor screen
+      (`level_3_enemy_screen_01`) is reached, and the scripted walk-
+      and-shoot playthrough this crate's verification harness uses gets
+      stuck against an earlier obstacle room on that level (confirmed via
+      screenshot: character position unchanged across 1600+ frames) and
+      never reaches it. Deferred to a smarter playthrough script rather
+      than claimed as verified without evidence.
+- [x] **`mortar_shot` family** (`crates/contra-native/src/enemy/
+      mortar_shot.rs`) - the mortar shot projectile's `_00`/`_01`/`_02`/
+      `_03` table (`_00`-`_02` at `$f1d6`-`$f2a6`, `_03` shared at the
+      fixed-bank `$e752` - also reused by ice grenades per the real ASM
+      comment). `_00` sets the initial sprite/velocity from either a
+      split-mortar direction (`ENEMY_ATTRIBUTES` `1`-`3`, indexed
+      directly) or a main/hangar-aimed shot (`ENEMY_VAR_1`, offset `+3`
+      when nonzero); `_01` applies gravity then either advances a main
+      shot once it starts falling, or (for a split mortar) checks it
+      against the closest player's height and the background collision
+      map before jumping to `_03`; `_02` divides a falling main shot into
+      3 split mortars (`ENEMY_ATTRIBUTES` `3`,`2`,`1`) via a real inline
+      `find_next_enemy_slot`/`initialize_enemy` loop (not `generate_
+      enemy_at_pos` - this one claims up to 3 slots against the same
+      evolving snapshot before any of them can be picked twice); `_03`
+      plays the destroy sound/re-palettes/hides the sprite before
+      advancing, the same real shared tail `enemy_routine_init_
+      explosion` falls into, reproduced locally since the two entry
+      points compute their own incoming `ENEMY_STATE_WIDTH` differently.
+      Every outcome that continues past a `jsr update_enemy_pos`/`jsr
+      add_scroll_to_enemy_pos` call correctly accounts for that call's
+      own possible internal removal already zeroing the routine/sprite
+      fields before this family's own remaining code runs (the same
+      `effective_routine` pattern this crate's `enemy_bullet_routine_01`
+      needed).
+      Unit-tested (13 new tests, including the table-index selection for
+      all 3 real paths and the multi-slot split-mortar spawn loop).
+      **Live-verified against real gameplay**: 0 real hits - mortar shots
+      are created by scuba divers (unreached, see above) or a hangar-zone
+      boss screen this session's playthrough didn't reach either.
+      Deferred alongside `scuba_soldier` for the same reason.
+- [ ] Everything else, logic side. One hundred seventeen routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
