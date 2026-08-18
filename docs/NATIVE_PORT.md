@@ -1690,7 +1690,29 @@ replacement for its real 6502 code, cycle for cycle.
       session). `_02` had 0 real hits - the capsule flies off screen
       without being destroyed in the current scripted walk-and-shoot
       playthrough.
-- [ ] Everything else, logic side. One hundred one routines out of what's
+- [x] **`sniper::sniper_routine_00`**
+      (`crates/contra-native/src/enemy/sniper.rs`, new module) - the
+      sniper ("rifle man")'s own initialization entry (`$8958`): picks
+      `ENEMY_ANIMATION_DELAY`/`ENEMY_FRAME` from `ENEMY_ATTRIBUTES`'s
+      3 real sniper types (standing, crouching/hiding, boss-screen
+      hiding), then nudges Y position down - always by `$04` (via the
+      already-ported vertical-scroll-aware `add_a_with_vert_scroll_to_
+      enemy_y_pos`), plus another plain `$05` for crouching snipers only.
+      `sniper_routine_01`-`_05` (crouch-cycle animation, then a real
+      bullet-angle-quadrant aiming/firing subsystem built around a new
+      `get_rotate_01` dependency and several new sprite/offset tables)
+      are **not yet ported** - substantially larger than `_00` alone,
+      deferred to a future pass. Note for future work: unlike the
+      `weapon_box`/`rotating_gun`/`red_turret` families (all blocked on
+      an unported PPU graphics-buffer subsystem, `draw_enemy_supertile_a`
+      and its bank-3 nametable-update chain), the sniper family has *no*
+      such dependency - `_01`-`_05` are tractable, just large.
+      Unit-tested (4 new tests: all 3 sniper types' own delay/frame rows,
+      the crouching-only extra nudge, and vertical scroll threading
+      through the first position update).
+      **Live-verified against real gameplay**: 5 real calls, zero
+      mismatches (across a 6000-frame session).
+- [ ] Everything else, logic side. One hundred two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

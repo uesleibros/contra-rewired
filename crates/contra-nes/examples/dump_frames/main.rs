@@ -3832,6 +3832,41 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} flying-capsule-routine-02 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_SNIPER_ROUTINE_00").is_ok() {
+            // VERIFY_SNIPER_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::sniper::sniper_routine_00`. Real
+            // entry $8958 (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via `jmp advance_enemy_
+            // routine` - the nested `jsr add_4_to_enemy_y_pos`/`jsr
+            // add_a_to_enemy_y_pos` (both pure position arithmetic, no
+            // further calls) never revisit either address, so no
+            // disambiguation is needed.
+            let mut pending: Option<SniperRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8958 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SniperRoutine00Ctx {
+                            x,
+                            sniper_type: bus.ram[0x5A8 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            vertical_scroll: bus.ram[0xFC],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_sniper_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} sniper-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

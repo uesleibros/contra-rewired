@@ -25,6 +25,7 @@ pub mod jumping_soldier;
 pub mod player_enemy_distance;
 pub mod quadrant_aim_dir;
 pub mod red_blue_soldier;
+pub mod sniper;
 pub mod soldier;
 pub mod update_enemy_pos;
 pub mod weapon_item;
