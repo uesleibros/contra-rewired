@@ -94,6 +94,28 @@ pub fn bg_collision(
     ppuctrl_settings: u8,
     bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
 ) -> CollisionCode {
+    bg_collision_with_nametable_xor(x, y, vertical_scroll, horizontal_scroll, ppuctrl_settings, 0x00, bg_collision_data)
+}
+
+/// Native port of `get_cart_bg_collision` (`$e0c4`) composed with the
+/// shared `bg_collision_logic` tail [`bg_collision`] itself uses - the
+/// hangar mine cart's own entry point, which (unlike every other real
+/// caller) leaves `$10` nonzero before falling into that shared code:
+/// `nametable_xor` is that value (`eor $10` against `PPUCTRL_SETTINGS`,
+/// "almost always `#$00`" per the real ASM comment - checking the
+/// *opposite* nametable's collision data when a moving cart is heading
+/// toward it). [`bg_collision`] itself is just this function called with
+/// `nametable_xor = 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn bg_collision_with_nametable_xor(
+    x: u8,
+    y: u8,
+    vertical_scroll: u8,
+    horizontal_scroll: u8,
+    ppuctrl_settings: u8,
+    nametable_xor: u8,
+    bg_collision_data: &[u8; BG_COLLISION_DATA_LEN],
+) -> CollisionCode {
     // bg_collision_logic: vertical adjustment.
     //   tya; sta $15 (y kept aside, unmodified, for the row-guard below)
     //   clc; adc VERTICAL_SCROLL; bcs @vert_overflow
@@ -107,14 +129,11 @@ pub fn bg_collision(
     // lda $13 (x); clc; adc HORIZONTAL_SCROLL; sta $12
     let (hx, hx_overflowed) = x.overflowing_add(horizontal_scroll);
 
-    // lda PPUCTRL_SETTINGS; eor $10 (always 0 via this entry point - only
-    // the hangar-mine-cart entry point, `get_cart_bg_collision`, leaves
-    // $10 nonzero, and this function only ports the plain `get_bg_collision`
-    // entry); and #$01; bcc @bg_collision_data; eor #$01
-    // (the bcc tests the carry *from the ADC HORIZONTAL_SCROLL above* -
-    // AND doesn't touch carry on 6502 - so this flips the nametable bit
-    // exactly when x+horizontal_scroll overflowed a byte)
-    let base_nametable_bit = ppuctrl_settings & 0x01;
+    // lda PPUCTRL_SETTINGS; eor $10; and #$01; bcc @bg_collision_data;
+    // eor #$01 (the bcc tests the carry *from the ADC HORIZONTAL_SCROLL
+    // above* - AND doesn't touch carry on 6502 - so this flips the
+    // nametable bit exactly when x+horizontal_scroll overflowed a byte)
+    let base_nametable_bit = (ppuctrl_settings ^ nametable_xor) & 0x01;
     let nametable_number = if hx_overflowed { base_nametable_bit ^ 0x01 } else { base_nametable_bit };
 
     // lda $11 (vy); lsr; lsr; and #$3c
@@ -450,6 +469,24 @@ mod tests {
         let data = data_with(0x00, 0b0000_0011 << 4); // column 1 -> shift 4 -> code 3 (solid)
         let result = bg_collision(0x80, 0x00, 0x00, 0x90, 0x01, &data);
         assert_eq!(result, CollisionCode::Solid);
+    }
+
+    #[test]
+    fn nametable_xor_zero_matches_plain_bg_collision() {
+        let data = data_with(0x10, 0b0000_0011 << 4);
+        assert_eq!(bg_collision_with_nametable_xor(0x40, 0x20, 0x00, 0x00, 0x01, 0x00, &data), bg_collision(0x40, 0x20, 0x00, 0x00, 0x01, &data));
+    }
+
+    #[test]
+    fn nametable_xor_flips_the_nametable_bit_like_a_toggled_ppuctrl_bit() {
+        // Same inputs, only differing by ppuctrl's own bit 0 vs an
+        // equivalent nametable_xor - both must land on the same
+        // (flipped) nametable half of BG_COLLISION_DATA.
+        let data = data_with(0x50, 0b0000_0011 << 4); // offset 0x50 = table[1] (0x40) | vy/hx bits (0x10)
+        let via_ppuctrl_bit = bg_collision(0x10, 0x40, 0x00, 0x00, 0x01, &data);
+        let via_xor = bg_collision_with_nametable_xor(0x10, 0x40, 0x00, 0x00, 0x00, 0x01, &data);
+        assert_eq!(via_ppuctrl_bit, via_xor);
+        assert_eq!(via_ppuctrl_bit, CollisionCode::Solid);
     }
 
     #[test]

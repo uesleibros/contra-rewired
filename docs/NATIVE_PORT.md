@@ -1892,7 +1892,45 @@ replacement for its real 6502 code, cycle for cycle.
       reach (tried levels `1`/`3`/`5`/`7`, up to 20000 frames). Deferred
       to a smarter playthrough script, same as `scuba_soldier`/`mortar_
       shot`.
-- [ ] Everything else, logic side. One hundred twenty-two routines out of what's
+- [x] **`mine_cart` family** (`crates/contra-native/src/enemy/mine_cart.rs`,
+      `$b122`-`$b1fe`, level 7/hangar-zone only) - `mine_cart_generator`
+      (spawns a moving cart on a delay, tracks its own enemy slot, and
+      respawns once it's destroyed), `immobile_cart_generator` (a
+      stationary cart that starts rolling once the player lands on it -
+      that landing check itself lives in player-side collision code, not
+      here), and `moving_cart_routine_00` (the single real routine every
+      one of enemy type `$14`'s own table indices `0`-`2` maps to - a
+      physics-driven object with no state-machine transitions of its own
+      except jumping to routine index `4` on an explosive impact).
+      Needed a real, if small, extension to already-shipped code:
+      `get_cart_bg_collision` (`$e0c3`) shares `get_bg_collision`'s own
+      `bg_collision_logic` tail, but leaves a nonzero nametable-flip XOR
+      (`$10`) this crate's existing `bg_collision` never modeled (its own
+      doc comment already flagged this exact gap from an earlier
+      session). Generalized as `bg_collision_with_nametable_xor` with
+      `bg_collision` itself now a thin `nametable_xor = 0` wrapper over
+      it - a pure refactor with zero behavior change for every existing
+      caller (all 20 pre-existing `collision.rs` tests still pass
+      unmodified), plus 2 new tests confirming the XOR path matches an
+      equivalent `PPUCTRL_SETTINGS` bit toggle.
+      One real, easy-to-miss control-flow reuse caught while tracing
+      `immobile_cart_generator_routine_01`: its own "not yet landed on"
+      branch has no `rts` of its own in the real ROM - it falls straight
+      through into the *next* routine's own code, `rising_spiked_wall_
+      routine_03`'s `jmp add_scroll_to_enemy_pos` (confirmed via that
+      label's own real ASM comment, "ensure scroll up to date", which is
+      exactly what this branch needs - a deliberate ROM-space-saving
+      reuse, not a disassembly artifact).
+      Unit-tested (15 new tests, including the generator's own cross-slot
+      `ENEMY_ROUTINE` read to detect a destroyed cart and the collision-
+      ahead/collision-below split that needed genuinely different real
+      background-collision-data offsets to exercise independently).
+      **Live-verified against real gameplay**: 0 real hits - mine carts
+      only appear on later screens of level 7 (hangar zone) the scripted
+      walkthrough didn't reach before dying to an earlier boss encounter.
+      Deferred alongside `scuba_soldier`/`mortar_shot`/`grenade` for the
+      same reason.
+- [ ] Everything else, logic side. One hundred twenty-nine routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

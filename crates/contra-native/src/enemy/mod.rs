@@ -25,6 +25,7 @@ pub mod indoor_soldier;
 pub mod indoor_soldier_gen;
 pub mod initialize_enemy;
 pub mod jumping_soldier;
+pub mod mine_cart;
 pub mod mortar_shot;
 pub mod player_enemy_distance;
 pub mod quadrant_aim_dir;

@@ -4740,6 +4740,220 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} grenade-routine-02 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_IMMOBILE_CART_GENERATOR_ROUTINE_00").is_ok() {
+            // VERIFY_IMMOBILE_CART_GENERATOR_ROUTINE_00=1: verification
+            // pass for `contra_native::enemy::mine_cart::immobile_cart_
+            // generator_routine_00`. Real entry $b1e5 (switchable bank,
+            // gated). Real exit: the 2 shared exits ($e796/$e813) via
+            // `cart_advance_enemy_routine`'s own `jmp advance_enemy_
+            // routine`. No nested calls, so no disambiguation is needed.
+            let mut pending: Option<ImmobileCartGeneratorRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB1E5 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(ImmobileCartGeneratorRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_immobile_cart_generator_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} immobile-cart-generator-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_IMMOBILE_CART_GENERATOR_ROUTINE_01").is_ok() {
+            // VERIFY_IMMOBILE_CART_GENERATOR_ROUTINE_01=1: verification
+            // pass for `contra_native::enemy::mine_cart::immobile_cart_
+            // generator_routine_01`. Real entry $b1fb (switchable bank,
+            // gated). Only the `Advanced` outcome is checked here (the 2
+            // shared exits, $e796/$e813) - see this mode's own `Ctx` doc
+            // comment for why `ScrollOnly` isn't independently hooked.
+            let mut pending: Option<ImmobileCartGeneratorRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB1FB if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(ImmobileCartGeneratorRoutine01Ctx {
+                            x,
+                            enemy_frame: bus.ram[0x568 + x],
+                            routine: bus.ram[0x4B8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_immobile_cart_generator_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} immobile-cart-generator-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MINE_CART_GENERATOR_ROUTINE_00").is_ok() {
+            // VERIFY_MINE_CART_GENERATOR_ROUTINE_00=1: verification pass
+            // for `contra_native::enemy::mine_cart::mine_cart_generator_
+            // routine_00`. Real entry $b122 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp set_
+            // enemy_delay_adv_routine`. No nested calls, so no
+            // disambiguation is needed.
+            let mut pending: Option<MineCartGeneratorRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB122 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MineCartGeneratorRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mine_cart_generator_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mine-cart-generator-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MINE_CART_GENERATOR_ROUTINE_01").is_ok() {
+            // VERIFY_MINE_CART_GENERATOR_ROUTINE_01=1: verification pass
+            // for `contra_native::enemy::mine_cart::mine_cart_generator_
+            // routine_01`. Real entry $b12c (switchable bank, gated).
+            // Real exits: the spawn-path's own `@exit` ($b166,
+            // `Spawned`/`NoSlotAvailable`), and `cart_routine_exit`
+            // ($b179, `Waiting`/`CartStillAlive`/`CartDestroyed`). No
+            // nested calls that reach either address, so no
+            // disambiguation is needed.
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<MineCartGeneratorRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB12C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine_slots = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine_slots.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(MineCartGeneratorRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            enemy_frame: bus.ram[0x568 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            enemy_routine_slots,
+                        });
+                    }
+                    0xB166 | 0xB179 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mine_cart_generator_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mine-cart-generator-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MOVING_CART_ROUTINE_00").is_ok() {
+            // VERIFY_MOVING_CART_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::mine_cart::moving_cart_routine_00`.
+            // Real entry $b186 (switchable bank, gated) - the single
+            // real routine every one of enemy type $14's own table
+            // indices 0-2 maps to. Real exits: `reverse_enemy_x_
+            // direction`'s own rts ($e92f, `ReversesDirection`, reached
+            // directly with no intervening jsr so no disambiguation is
+            // needed there), `add_a_to_enemy_y_fract_vel`'s own rts
+            // ($eb51, `Falling`, same reasoning), `cart_routine_exit`
+            // ($b179, `OnTrack` - shared with `mine_cart_generator_
+            // routine_01`'s own exit, harmless since these are separate,
+            // mutually-exclusive `VERIFY_` modes), and the shared guard-
+            // rejected/success rts pair ($e822/$e813, `Explodes`) -
+            // $e813 disambiguated via stack-peek: this routine's own
+            // `jsr update_enemy_pos` can itself trigger a nested removal
+            // that also reaches $e813; genuine hits return outside this
+            // routine's own $b186-$b1d5 range.
+            let mut pending: Option<MovingCartRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB186 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut bg_collision_data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
+                        for (i, b) in bg_collision_data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some(MovingCartRoutine00Ctx {
+                            x,
+                            frame_counter: bus.ram[0x1A],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            var_4: bus.ram[0x5E8 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            vertical_scroll: bus.ram[0xFC],
+                            horizontal_scroll: bus.ram[0xFD],
+                            ppuctrl_settings: bus.ram[0xFF],
+                            bg_collision_data,
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE92F | 0xEB51 | 0xE822 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_moving_cart_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xB179 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_moving_cart_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xB186..0xB1D5).contains(&ret) {
+                            // Nested return from `jsr update_enemy_pos`'s
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_moving_cart_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} moving-cart-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
