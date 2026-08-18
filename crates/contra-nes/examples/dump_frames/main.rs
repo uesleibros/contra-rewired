@@ -4584,6 +4584,162 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} roller-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_GRENADE_ROUTINE_00").is_ok() {
+            // VERIFY_GRENADE_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::grenade::grenade_routine_00`. Real
+            // entry $8fd5 (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via `grenade_adv_routine`'s own
+            // `jmp advance_enemy_routine`. No nested calls, so no
+            // disambiguation is needed.
+            let mut pending: Option<GrenadeRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8FD5 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(GrenadeRoutine00Ctx { x, y_pos: bus.ram[0x324 + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_grenade_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} grenade-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_GRENADE_ROUTINE_01").is_ok() {
+            // VERIFY_GRENADE_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::grenade::grenade_routine_01`. Real
+            // entry $8fe8 (switchable bank, gated). This mode only
+            // verifies the `Some(routine_update)` outcome (real ASM's
+            // `bpl grenade_adv_routine`, reaching the 2 shared exits
+            // $e796/$e813) - the `None`/"stayed" outcome's own `rts` has
+            // no exported label to hook (unlike `roller_routine_01`'s
+            // `@exit` or `turret_man_routine_01`'s `turret_man_exit`),
+            // so it isn't independently exercised here; every real field
+            // this routine touches (sprite/frame/arc vars) still gets
+            // checked on whichever call happens to reach the advance
+            // path. $e813 disambiguated via stack-peek: this routine's
+            // own `jsr set_enemy_falling_arc_pos` can itself trigger a
+            // nested removal that also reaches $e813 (falling through
+            // `remove_enemy`/`set_sprite_0`) and returns into this
+            // routine's own remaining code (same call shape `jsr
+            // update_enemy_pos` nested removals use elsewhere) - genuine
+            // hits return outside this routine's own $8fe8-$9049 range.
+            let mut pending: Option<GrenadeRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8FE8 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(GrenadeRoutine01Ctx {
+                            x,
+                            var_1: bus.ram[0x5B8 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            var_3: bus.ram[0x5D8 + x],
+                            var_4: bus.ram[0x5E8 + x],
+                            var_b: bus.ram[0x558 + x],
+                            enemy_frame: bus.ram[0x568 + x],
+                            frame_counter: bus.ram[0x1A],
+                            attack_delay: bus.ram[0x558 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_grenade_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0x8FE8..0x9049).contains(&ret) {
+                            // Nested return from `jsr set_enemy_falling_
+                            // arc_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_grenade_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} grenade-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_GRENADE_ROUTINE_02").is_ok() {
+            // VERIFY_GRENADE_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::grenade::grenade_routine_02`. Real
+            // entry $907c (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via this routine's own trailing
+            // `jmp advance_enemy_routine` - reached unconditionally,
+            // always *after* `jsr mortar_shot_routine_03` already
+            // returns (see this crate's `grenade` module doc comment for
+            // why that `jsr`, not the usual tail `jmp`, means the enemy
+            // routine index really does advance twice on the "still had
+            // a sprite" path). `$e813 disambiguated via stack-peek: `
+            // `mortar_shot_routine_03`'s own internal removal can itself
+            // reach $e813 first (a real, *expected* nested hit here, not
+            // a bug) before this routine's own final tail jump reaches
+            // it again - genuine (final) hits return outside this
+            // routine's own $907c-$908c range.
+            let mut pending: Option<GrenadeRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x907C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(GrenadeRoutine02Ctx {
+                            x,
+                            state_width: bus.ram[0x598 + x],
+                            sprite_attr: bus.ram[0x358 + x],
+                            sprites: bus.ram[0x30A + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_grenade_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0x907C..0x908C).contains(&ret) {
+                            // Nested return from `jsr mortar_shot_
+                            // routine_03`'s own internal removal - not
+                            // our final exit yet, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_grenade_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} grenade-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

@@ -1849,7 +1849,50 @@ replacement for its real 6502 code, cycle for cycle.
       outcome bands).
       **Live-verified against real gameplay** (level `1` - `JUMP_STAGE=
       1`): `_00` 1 real call, `_01` 6940 real calls, zero mismatches.
-- [ ] Everything else, logic side. One hundred eighteen routines out of what's
+- [x] **`set_enemy_falling_arc_pos`** (`crates/contra-native/src/enemy/
+      enemy_falling_arc.rs`, `$ee08`) - a real, shared "parabolic falling
+      arc" position updater that repurposes `ENEMY_VAR_1`/`_2`/`_3`/`_4`/
+      `_b` as two extra accumulator pairs on top of the normal Y-velocity
+      fields (`VAR_2`/`VAR_4` track a fractional delta the caller grows
+      itself frame-to-frame; `VAR_1`/`Y_VEL_ACCUM`/`Y_VELOCITY_FRACT`/
+      `Y_VELOCITY_FAST` integrate the actual fall the same way
+      `update_enemy_y_pos` does). Both real removal checks (`VAR_1`
+      reaching `$f0`, or the X update landing `< $08`) are ported the
+      same short-circuiting way `update_enemy_pos` already models its
+      own two-axis removal.
+      Unit-tested (5 new tests: the two accumulator pairs' own carry
+      chains, both real removal boundaries, and the exact byte where Y
+      survives).
+- [x] **`grenade` family** (`crates/contra-native/src/enemy/grenade.rs`)
+      - the indoor grenade projectile's `_00`/`_01`/`_02` table
+      (`$8fd5`-`$90f5`), thrown by indoor soldiers and grenade launchers.
+      `_00` seeds the arc from the grenade's spawn Y position; `_01`
+      picks one of 3 perspective sprite tables from how far the arc has
+      fallen (the same "walk down from the largest matching cutoff" scan
+      `roller_routine_01`'s own sprite-size lookup uses), cycles frames
+      on a global-frame-counter cadence, grows the arc's own `ENEMY_
+      VAR_4` accumulator by `$0c` every call, then advances once `set_
+      enemy_falling_arc_pos`'s own `ENEMY_VAR_3` output goes
+      non-negative; `_02` detonates via the already-ported `mortar_shot_
+      routine_03`. One real, easy-to-miss control-flow quirk caught by
+      hand-tracing rather than assumed: `_02` calls `mortar_shot_
+      routine_03` via `jsr` (every other real caller of it in this crate
+      tail-jumps instead), so that call's own `rts` returns into `_02`'s
+      own trailing `jmp advance_enemy_routine` - meaning the enemy
+      routine index genuinely advances *twice* in one call on the "still
+      had a sprite to hide" path, modeled explicitly rather than
+      collapsed into one advance.
+      Unit-tested (10 new tests, including the real double-advance and
+      the falling-arc's own nested-removal-vs-`current_routine` handling
+      `enemy_bullet_routine_01` first surfaced this session).
+      **Live-verified against real gameplay**: 0 real hits - grenades
+      only appear once an indoor soldier generator happens to roll the
+      grenade-launcher variant *and* that enemy gets a clear throw
+      opportunity, neither guaranteed within the scripted walkthrough's
+      reach (tried levels `1`/`3`/`5`/`7`, up to 20000 frames). Deferred
+      to a smarter playthrough script, same as `scuba_soldier`/`mortar_
+      shot`.
+- [ ] Everything else, logic side. One hundred twenty-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
