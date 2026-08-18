@@ -14,6 +14,7 @@ pub mod enemy_routine_transition;
 pub mod enemy_slots;
 pub mod enemy_spawn;
 pub mod find_far_segment;
+pub mod flying_capsule;
 pub mod four_soldiers;
 pub mod grenade_launcher;
 pub mod indoor_roller_gen;

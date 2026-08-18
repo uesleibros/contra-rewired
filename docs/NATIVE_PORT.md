@@ -1659,7 +1659,38 @@ replacement for its real 6502 code, cycle for cycle.
       own explosion animation) had 0 real hits, as expected - not
       reachable before the boss fight in the current scripted
       walk-and-shoot playthrough.
-- [ ] Everything else, logic side. Ninety-five routines out of what's
+- [x] **`flying_capsule::flying_capsule_routine_00` / `_01` / `_02` /
+      `set_flying_capsule_path` / `set_flying_capsule_y_vel` /
+      `set_flying_capsule_x_vel`**
+      (`crates/contra-native/src/enemy/flying_capsule.rs`, new module) -
+      the flying weapon capsule ("weapon zeppelin")'s own routine table
+      (`$830b`-`$8376`). Flies a slow, spring-like oscillating path -
+      bobbing vertically on horizontal levels, swaying side-to-side on
+      the level 3 waterfall's vertical scroll - anchored to wherever it
+      first spawned (`ENEMY_VAR_1`/`ENEMY_VAR_2`, captured once by `_00`).
+      `set_flying_capsule_path` (the shared core both `_y_vel`/`_x_vel`
+      fall into) computes `2 * (position - reference)` as a signed
+      16-bit value and subtracts it from a base velocity - a linear
+      restoring force that grows the further the capsule has drifted
+      from its own anchor point. Real ASM's shift-count parameter
+      supports an arbitrary left *or* right shift via two different
+      loops, but both real callers here always pass a shift of `1` -
+      the right-shift path is real, valid control flow this port still
+      models, but isn't independently exercised or verified the way the
+      always-used left-shift-by-1 path is. `_02` (explosion + weapon
+      item drop on death) is a one-line `jmp play_explosion_sound`,
+      already ported.
+      Unit-tested (9 new tests: the spring-term math including a
+      negative-diff and a zero-shift case, both `_00` position/velocity
+      branches, both `_01` oscillation branches cross-checked directly
+      against the underlying velocity helpers, and `_02`'s full
+      delegation to `play_explosion_sound`).
+      **Live-verified against real gameplay**: `_00` 2 real calls, `_01`
+      744 real calls, both zero mismatches (across a 6000-frame
+      session). `_02` had 0 real hits - the capsule flies off screen
+      without being destroyed in the current scripted walk-and-shoot
+      playthrough.
+- [ ] Everything else, logic side. One hundred one routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

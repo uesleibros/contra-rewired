@@ -3713,6 +3713,125 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} enemy-bullet-routine-02 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_FLYING_CAPSULE_ROUTINE_00").is_ok() {
+            // VERIFY_FLYING_CAPSULE_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::flying_capsule::flying_capsule_
+            // routine_00`. Real entry $830b (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // advance_enemy_routine` - no nested calls reach either
+            // address, so no disambiguation is needed.
+            let mut pending: Option<FlyingCapsuleRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x830B if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FlyingCapsuleRoutine00Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            y_pos: bus.ram[0x324 + x],
+                            x_pos: bus.ram[0x33E + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_flying_capsule_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} flying-capsule-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FLYING_CAPSULE_ROUTINE_01").is_ok() {
+            // VERIFY_FLYING_CAPSULE_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::flying_capsule::flying_capsule_
+            // routine_01`. Real entry $835d (switchable bank, gated).
+            // This routine's own body ends in a tail `jmp update_enemy_
+            // pos`, so its real exits are that routine's own: `apply_
+            // vel_exit` ($e849, fixed bank, success) and `remove_enemy`'s
+            // own address ($e809, fixed bank, off-screen removal). The
+            // nested `jsr set_flying_capsule_y_vel`/`_x_vel` (pure
+            // arithmetic, no further calls) never reach either address,
+            // so no disambiguation is needed.
+            let mut pending: Option<FlyingCapsuleRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x835D if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FlyingCapsuleRoutine01Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                        });
+                    }
+                    0xE849 | 0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_flying_capsule_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} flying-capsule-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FLYING_CAPSULE_ROUTINE_02").is_ok() {
+            // VERIFY_FLYING_CAPSULE_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::flying_capsule::flying_capsule_
+            // routine_02`. Real entry $8376 (switchable bank, gated) - a
+            // one-line `jmp play_explosion_sound`, so its own real exit
+            // is that routine's own `weapon_box_exit_1` ($82f4,
+            // switchable bank, gated). Nothing nested reaches that
+            // address, so no disambiguation is needed.
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<FlyingCapsuleRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x8376 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(FlyingCapsuleRoutine02Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            attributes: bus.ram[0x5A8 + x],
+                            enemy_routine,
+                        });
+                    }
+                    0x82F4 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_flying_capsule_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} flying-capsule-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
