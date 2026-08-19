@@ -5894,6 +5894,259 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} claw-routine-01 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_RISING_SPIKED_WALL_ROUTINE_00").is_ok() {
+            // VERIFY_RISING_SPIKED_WALL_ROUTINE_00=1: verification pass
+            // for `contra_native::enemy::spiked_wall::rising_spiked_
+            // wall_routine_00`. Real entry $afd6 (switchable bank,
+            // gated) - falls straight through (no call boundary) into
+            // `spiked_wall_set_collision_box`. Real exit: the 2 shared
+            // exits ($e796/$e813) via `advance_spiked_wall_enemy_
+            // routine`'s own `jmp advance_enemy_routine`. $e813
+            // disambiguated via stack-peek: `spiked_wall_set_collision_
+            // box`'s own `jsr add_scroll_to_enemy_pos` can itself
+            // trigger a nested removal that also reaches $e813 - the
+            // return address in that case lands inside `spiked_wall_
+            // set_collision_box`'s own $aff5-$affd span regardless of
+            // which routine fell/jumped into it, so that (not this
+            // routine's own $afd6 entry) is the range checked.
+            let mut pending: Option<RisingSpikedWallRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xAFD6 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RisingSpikedWallRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rising_spiked_wall_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xAFF5..0xAFFD).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_rising_spiked_wall_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} rising-spiked-wall-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_RISING_SPIKED_WALL_ROUTINE_01").is_ok() {
+            // VERIFY_RISING_SPIKED_WALL_ROUTINE_01=1: verification pass
+            // for `contra_native::enemy::spiked_wall::rising_spiked_
+            // wall_routine_01`. Real entry $b00c (switchable bank,
+            // gated). Real exits: `rising_spiked_wall_exit` ($b071,
+            // `Waiting`), and the 2 shared exits ($e796/$e813,
+            // `Triggered`, via `jmp set_enemy_delay_adv_routine`). $e813
+            // disambiguated via stack-peek: this routine's own `jsr add_
+            // scroll_to_enemy_pos` can itself trigger a nested removal -
+            // genuine hits return outside this routine's own $b00c-
+            // $b025 range.
+            let mut pending: Option<RisingSpikedWallRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB00C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RisingSpikedWallRoutine01Ctx {
+                            x,
+                            var_3: bus.ram[0x5D8 + x],
+                            var_4: bus.ram[0x5E8 + x],
+                            state_width: bus.ram[0x598 + x],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xB071 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rising_spiked_wall_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rising_spiked_wall_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xB00C..0xB025).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_rising_spiked_wall_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} rising-spiked-wall-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_RISING_SPIKED_WALL_ROUTINE_03").is_ok() {
+            // VERIFY_RISING_SPIKED_WALL_ROUTINE_03=1: verification pass
+            // for `contra_native::enemy::spiked_wall::rising_spiked_
+            // wall_routine_03`. Real entry $b200 (switchable bank,
+            // gated) - a bare `jmp add_scroll_to_enemy_pos`, no wrapping
+            // `advance_enemy_routine` call at all, reached directly with
+            // no intervening jsr, so its own real exits (`add_scroll_
+            // to_enemy_pos`'s own 3: $e8b8/$e8c6/$e813) need no
+            // disambiguation.
+            let mut pending: Option<RisingSpikedWallRoutine03Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB200 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RisingSpikedWallRoutine03Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                        });
+                    }
+                    0xE8B8 | 0xE8C6 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rising_spiked_wall_routine_03(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} rising-spiked-wall-routine-03 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SPIKED_WALL_ROUTINE_00").is_ok() {
+            // VERIFY_SPIKED_WALL_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::spiked_wall::spiked_wall_
+            // routine_00`. Real entry $b103 (switchable bank, gated) -
+            // tail-jumps into the same `spiked_wall_set_collision_box`
+            // shared tail `rising_spiked_wall_routine_00` uses. Real
+            // exit: the 2 shared exits ($e796/$e813), $e813
+            // disambiguated the same way (against `spiked_wall_set_
+            // collision_box`'s own $aff5-$affd span, not this routine's
+            // own entry).
+            let mut pending: Option<SpikedWallRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB103 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SpikedWallRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_spiked_wall_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xAFF5..0xAFFD).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_spiked_wall_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} spiked-wall-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_SPIKED_WALL_ROUTINE_02").is_ok() {
+            // VERIFY_SPIKED_WALL_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::spiked_wall::spiked_wall_
+            // routine_02`. Real entry $b091 (switchable bank, gated).
+            // Real exit: the 2 shared exits ($e796/$e813) via `jmp
+            // advance_enemy_routine`, reached directly after this
+            // routine's own `jsr add_scroll_to_enemy_pos` (no
+            // intervening code) - $e813 disambiguated via stack-peek,
+            // genuine hits return outside this routine's own $b091-
+            // $b09c range.
+            let mut pending: Option<SpikedWallRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xB091 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(SpikedWallRoutine02Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_spiked_wall_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xB091..0xB09C).contains(&ret) {
+                            // Nested return from `jsr add_scroll_to_
+                            // enemy_pos`'s own internal removal - not our
+                            // exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_spiked_wall_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} spiked-wall-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

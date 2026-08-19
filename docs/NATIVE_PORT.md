@@ -2029,7 +2029,29 @@ replacement for its real 6502 code, cycle for cycle.
       shared left-edge guard).
       **Live-verified against real gameplay** (level `6` - `JUMP_STAGE=
       6`): `_00` 9 real calls, `_01` 5635 real calls, zero mismatches.
-- [ ] Everything else, logic side. One hundred fifty-five routines out of what's
+- [x] **`spiked_wall` family** (`crates/contra-native/src/enemy/
+      spiked_wall.rs`, `$afd6`-`$b0b1` plus the shared `$b200` tail) -
+      `rising_spiked_wall_routine_00`/`_01`/`_03` and `spiked_wall_
+      routine_00`/`_02`, the "activate, wait, get destroyed" states both
+      wall variants share via the real, shared `spiked_wall_set_
+      collision_box` tail. `rising_spiked_wall_routine_02`/`_04`/`_05`
+      (the actual rising/destruction animation) are **not ported** - all
+      three call `load_bank_3_update_nametable_supertile` directly.
+      One real data-table quirk ported faithfully rather than
+      "corrected": `spiked_wall_destroyed_data_tbl` is read with a raw,
+      un-doubled `ENEMY_ATTRIBUTES` byte offset despite its own comment
+      describing 2-byte pairs, so adjacent attribute values read
+      overlapping windows - kept as the literal byte-indexed access the
+      ROM performs.
+      Unit-tested (6 new tests, including that overlapping-window read
+      at both attribute values actually exercised).
+      **Live-verified against real gameplay**: 0 real hits across all 8
+      real `CURRENT_LEVEL` values, despite `claw_routine_00`/`_01`
+      (grouped under the same level-6 remap table) getting real hits
+      this session - likely a different screen within that level the
+      scripted walkthrough doesn't visit. Deferred alongside the other
+      0-hit families this session.
+- [ ] Everything else, logic side. One hundred sixty-one routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

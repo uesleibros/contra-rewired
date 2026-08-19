@@ -37,6 +37,7 @@ pub mod roller;
 pub mod scuba_soldier;
 pub mod sniper;
 pub mod soldier;
+pub mod spiked_wall;
 pub mod turret_man;
 pub mod ufo;
 pub mod update_enemy_pos;
