@@ -1955,7 +1955,33 @@ replacement for its real 6502 code, cycle for cycle.
       same screen the scripted walkthrough gets stuck against an
       obstacle in, already noted for `scuba_soldier`). Deferred for the
       same reason.
-- [ ] Everything else, logic side. One hundred forty routines out of what's
+- [x] **`ice` family** (`crates/contra-native/src/enemy/ice.rs`, `$a384`-
+      `$a3fb` / `$a985`-`$a99b`) - `ice_grenade_generator` (waits for the
+      player to scroll within trigger range, then periodically lobs ice
+      grenades via `generate_enemy_a`), `ice_grenade` itself (a lobbed
+      projectile that falls under gravity and explodes on the first real
+      ground collision - its own explosion state is the already-ported
+      `mortar_shot_routine_03`, no new port needed), and `ice_separator`
+      (the purely cosmetic "pipe joint" sprite between tank body
+      segments, following the tank's own scripted scroll illusion via a
+      global flag rather than real physics - the only real table entry
+      for its enemy type, so it stays in this one routine forever).
+      `tank_routine` itself is not ported here - real ASM comment: "tank
+      is actually in nametable, not a sprite", a genuinely different
+      rendering path this crate hasn't touched yet.
+      Unit-tested (11 new tests, including the real gravity-then-ground-
+      check ordering and the cosmetic separator's 3-way scroll/flag
+      branch).
+      **Live-verified against real gameplay**: 0 real hits across all 8
+      real `CURRENT_LEVEL` values (both wide sweeps and longer capture
+      windows) - this content's actual placement wasn't pinned down
+      with confidence from the disassembly's own level-grouping
+      comments (which turned out unreliable for this exact family after
+      cross-checking against other already-verified placements this
+      session), and the scripted walkthrough never happened to reach it
+      either way. Deferred alongside the other 0-hit families this
+      session rather than guessed at further.
+- [ ] Everything else, logic side. One hundred forty-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

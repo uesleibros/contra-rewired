@@ -20,6 +20,7 @@ pub mod four_soldiers;
 pub mod generate_enemy_at_pos;
 pub mod grenade;
 pub mod grenade_launcher;
+pub mod ice;
 pub mod indoor_roller_gen;
 pub mod indoor_soldier;
 pub mod indoor_soldier_gen;

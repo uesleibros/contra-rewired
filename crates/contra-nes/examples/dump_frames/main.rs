@@ -5341,6 +5341,238 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} falling-rock-routine-02 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_ICE_GRENADE_GENERATOR_ROUTINE_00").is_ok() {
+            // VERIFY_ICE_GRENADE_GENERATOR_ROUTINE_00=1: verification
+            // pass for `contra_native::enemy::ice::ice_grenade_
+            // generator_routine_00`. Real entry $a38a (switchable bank,
+            // gated). Real exits: `ice_grenade_exit` ($a3d6, `Waiting`),
+            // and the 2 shared exits ($e796/$e813, `Activated`, via
+            // `jmp set_anim_delay_adv_routine`). No nested calls, so no
+            // disambiguation is needed.
+            let mut pending: Option<IceGrenadeGeneratorRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA38A if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(IceGrenadeGeneratorRoutine00Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xA3D6 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_generator_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_generator_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} ice-grenade-generator-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ICE_GRENADE_GENERATOR_ROUTINE_01").is_ok() {
+            // VERIFY_ICE_GRENADE_GENERATOR_ROUTINE_01=1: verification
+            // pass for `contra_native::enemy::ice::ice_grenade_
+            // generator_routine_01`. Real entry $a399 (switchable bank,
+            // gated) - stays in this same routine forever (real ASM's
+            // own tail is `jmp generate_enemy_a`, never `advance_enemy_
+            // routine`). Real exits: `ice_grenade_exit` ($a3d6,
+            // `Waiting`), and `generate_enemy_a`'s own entry address
+            // ($eb52, `Spawned`, reached only via this routine's own
+            // real tail jump).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<IceGrenadeGeneratorRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA399 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine_slots = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine_slots.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(IceGrenadeGeneratorRoutine01Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            animation_delay: bus.ram[0x538 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            enemy_routine_slots,
+                        });
+                    }
+                    0xA3D6 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_generator_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xEB52 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_generator_routine_01(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} ice-grenade-generator-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ICE_GRENADE_ROUTINE_00").is_ok() {
+            // VERIFY_ICE_GRENADE_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::ice::ice_grenade_routine_00`. Real
+            // entry $a3b5 (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via `jmp advance_enemy_
+            // routine`. No nested calls, so no disambiguation is needed.
+            let mut pending: Option<IceGrenadeRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA3B5 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(IceGrenadeRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} ice-grenade-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ICE_GRENADE_ROUTINE_01").is_ok() {
+            // VERIFY_ICE_GRENADE_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::ice::ice_grenade_routine_01`. Real
+            // entry $a3d7 (switchable bank, gated). Real exits: `ice_
+            // grenade_exit` ($a3d6, `StillFalling`/`NoGroundYet` - both
+            // real branches share this one address), and the 2 shared
+            // exits ($e796/$e813, `Exploding`, via `jmp advance_enemy_
+            // routine`). This routine's own `jsr update_enemy_pos` can
+            // itself trigger a nested removal that also reaches
+            // $e813 - disambiguated via stack-peek, genuine hits return
+            // outside this routine's own $a3d7-$a3fb range.
+            let mut pending: Option<IceGrenadeRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA3D7 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut bg_collision_data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
+                        for (i, b) in bg_collision_data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some(IceGrenadeRoutine01Ctx {
+                            x,
+                            frame_counter: bus.ram[0x1A],
+                            enemy_frame: bus.ram[0x568 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            vertical_scroll: bus.ram[0xFC],
+                            horizontal_scroll: bus.ram[0xFD],
+                            ppuctrl_settings: bus.ram[0xFF],
+                            bg_collision_data,
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xA3D6 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xA3D7..0xA3FB).contains(&ret) {
+                            // Nested return from `jsr update_enemy_pos`'s
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_ice_grenade_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} ice-grenade-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ICE_SEPARATOR_ROUTINE_00").is_ok() {
+            // VERIFY_ICE_SEPARATOR_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::ice::ice_separator_routine_00`.
+            // Real entry $a985 (switchable bank, gated) - the only real
+            // table entry for enemy type $13 (level 5's own remap),
+            // stays here forever. Real exits: `@exit` ($a995,
+            // `NoScrollThisFrame`/`Nudged`), and `add_scroll_to_enemy_
+            // pos`'s own 3 real exits ($e8b8/$e8c6/$e813, `Scrolled` -
+            // this routine's own tail is a bare `jmp add_scroll_to_
+            // enemy_pos`, no wrapping `advance_enemy_routine` call at
+            // all, so those are genuinely this call's own final exits,
+            // not shared-tail ambiguity).
+            let mut pending: Option<IceSeparatorRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA985 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(IceSeparatorRoutine00Ctx {
+                            x,
+                            tank_ice_joint_scroll_flag: bus.ram[0x7F],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                        });
+                    }
+                    0xA995 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_separator_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE8B8 | 0xE8C6 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_ice_separator_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} ice-separator-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
