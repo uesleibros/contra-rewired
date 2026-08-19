@@ -2012,7 +2012,24 @@ replacement for its real 6502 code, cycle for cycle.
       (grouped under the same real per-level remap table), the
       scripted walkthrough never reaching whichever level hosts it.
       Deferred alongside the other 0-hit families this session.
-- [ ] Everything else, logic side. One hundred fifty-three routines out of what's
+- [x] **`claw::claw_routine_00` / `claw_routine_01`** (`crates/contra-
+      native/src/enemy/claw.rs`, `$aec3`-`$af45`) - the level-7
+      mechanical claw's "wait, then decide to descend" half.
+      `claw_routine_00` splits `ENEMY_ATTRIBUTES` into a descend-trigger
+      frame and the claw's own length code; `claw_routine_01` either
+      waits for `FRAME_COUNTER` to match that trigger (regular claws) or
+      for a player to get close (length code `3`, the "seeking claw"
+      variant), both funneling into the *same* real `< $2c` left-edge
+      guard before actually descending. `claw_routine_02`/`_03` (the
+      descend/ascend animation itself) are **not ported** - both depend
+      on the unported PPU graphics-buffer subsystem.
+      Unit-tested (8 new tests, including the seeking claw's own 3
+      independent gates - delay countdown, the real 25% random-skip
+      window, and player distance - each checked to still respect the
+      shared left-edge guard).
+      **Live-verified against real gameplay** (level `6` - `JUMP_STAGE=
+      6`): `_00` 9 real calls, `_01` 5635 real calls, zero mismatches.
+- [ ] Everything else, logic side. One hundred fifty-five routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

@@ -4,6 +4,7 @@
 
 pub mod add_scroll_to_enemy_pos;
 pub mod add_with_enemy_pos;
+pub mod claw;
 pub mod create_enemy_bullet;
 pub mod enemy_bullet;
 pub mod enemy_clear;

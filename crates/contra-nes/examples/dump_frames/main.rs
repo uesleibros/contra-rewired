@@ -5811,6 +5811,89 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} boss-ufo-bomb-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_CLAW_ROUTINE_00").is_ok() {
+            // VERIFY_CLAW_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::claw::claw_routine_00`. Real entry
+            // $aec3 (switchable bank, gated). Real exit: the 2 shared
+            // exits ($e796/$e813) via `claw_set_delay_adv_routine`'s own
+            // `jmp set_enemy_delay_adv_routine`. No nested calls, so no
+            // disambiguation is needed.
+            let mut pending: Option<ClawRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xAEC3 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(ClawRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_claw_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} claw-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_CLAW_ROUTINE_01").is_ok() {
+            // VERIFY_CLAW_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::claw::claw_routine_01`. Real entry
+            // $aee5 (switchable bank, gated). Real exits: `claw_routine_
+            // 01_exit` ($af45, `Waiting`), `claw_dec_delay_exit` ($af27,
+            // `SeekingDelayCountdown`), and the 2 shared exits ($e796/
+            // $e813, `Descending`, via `claw_set_delay_adv_routine`'s
+            // own tail). The nested `jsr player_enemy_x_dist` (pure
+            // arithmetic, no further calls) never reaches any of these
+            // addresses, so no disambiguation is needed.
+            let mut pending: Option<ClawRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xAEE5 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(ClawRoutine01Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            frame_counter: bus.ram[0x1A],
+                            enemy_frame: bus.ram[0x568 + x],
+                            sprite_x_pos: [bus.ram[0x334], bus.ram[0x335]],
+                            player_state: [bus.ram[0x90], bus.ram[0x91]],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xAF45 | 0xAF27 if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_claw_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_claw_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} claw-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
