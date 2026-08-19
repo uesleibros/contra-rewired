@@ -1981,7 +1981,38 @@ replacement for its real 6502 code, cycle for cycle.
       session), and the scripted walkthrough never happened to reach it
       either way. Deferred alongside the other 0-hit families this
       session rather than guessed at further.
-- [ ] Everything else, logic side. One hundred forty-five routines out of what's
+- [x] **`ufo` family** (`crates/contra-native/src/enemy/ufo.rs`, `$a8fa`-
+      `$a97e`, level 5's own alien-carrier boss remap) - `mini_ufo`
+      ("flying saucer"): flies horizontally cycling its own sprite
+      animation until nearing either screen edge, descends, reverses at
+      the bottom of its arc, and repeats; `boss_ufo_bomb`: a dropped
+      projectile that falls under gravity to a fixed explosion height.
+      Also adds `update_enemy_x_pos_rem_off_screen` (`$e842`) to the
+      existing `update_enemy_pos` module - a real, shared X-only
+      position updater this family needed that a previous session's
+      `set_enemy_falling_arc_pos` port had only inlined privately.
+      A real bug caught by careful exit-address reasoning *before*
+      writing the live-verification hooks (not by the hooks catching it
+      after the fact): `mini_ufo_routine_01`/`_02` both call their own
+      position-update primitive via `jsr`, and real ASM never checks
+      whether that removed the enemy before continuing - it always
+      re-reads the position and re-runs its own `< $20`/`>= $e0` (or
+      `< $a8`) comparison regardless, so `BeginDescent`/`ReachedBottom`
+      can still be the correct outcome even when the position update
+      already removed the enemy (that path's own `advance_enemy_routine`
+      call is simply guard-rejected against the now-zeroed routine, the
+      same real quirk this crate caught in `enemy_bullet_routine_01`).
+      An initial draft modeled removal as a separate, mutually-exclusive
+      outcome instead - caught and fixed before ever running against
+      real hardware.
+      Unit-tested (14 new tests, including both directions of the real
+      guard-rejected-but-still-BeginDescent/ReachedBottom case).
+      **Live-verified against real gameplay**: 0 real hits across all 8
+      real `CURRENT_LEVEL` values - same outcome as the `ice` family
+      (grouped under the same real per-level remap table), the
+      scripted walkthrough never reaching whichever level hosts it.
+      Deferred alongside the other 0-hit families this session.
+- [ ] Everything else, logic side. One hundred fifty-three routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

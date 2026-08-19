@@ -80,6 +80,18 @@ pub fn remove_enemy() -> RemovedEnemy {
     RemovedEnemy::default()
 }
 
+/// Native port of `update_enemy_x_pos_rem_off_screen` (`$e842`) - a
+/// real, shared "X-only" position updater reused by several enemy
+/// types whose own routines only ever move along X (`set_enemy_falling_
+/// arc_pos`'s own tail, `mini_ufo_routine_01`): applies X velocity with
+/// scroll, then removes the enemy if that alone pushed it off the left
+/// edge.
+pub fn update_enemy_x_pos_rem_off_screen(pos: u8, vel_accum: u8, vel_fract: u8, vel_fast: u8, frame_scroll: u8) -> (AxisUpdate, Option<RemovedEnemy>) {
+    let x = update_enemy_x_pos_with_scroll(pos, vel_accum, vel_fract, vel_fast, frame_scroll);
+    let removed = if x.pos < 0x08 { Some(remove_enemy()) } else { None };
+    (x, removed)
+}
+
 /// The result of one [`enemy_routine_remove_enemy`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnemyRoutineRemoveEnemyResult {
@@ -236,6 +248,20 @@ mod tests {
     #[test]
     fn remove_enemy_zeroes_both_fields() {
         assert_eq!(remove_enemy(), RemovedEnemy { routine: 0, sprites: 0 });
+    }
+
+    #[test]
+    fn update_enemy_x_pos_rem_off_screen_survives_mid_screen() {
+        let (x, removed) = update_enemy_x_pos_rem_off_screen(0x50, 0, 0, 0, 0x01);
+        assert_eq!(x.pos, 0x4F);
+        assert_eq!(removed, None);
+    }
+
+    #[test]
+    fn update_enemy_x_pos_rem_off_screen_removes_past_the_left_edge() {
+        let (x, removed) = update_enemy_x_pos_rem_off_screen(0x0A, 0, 0, 0, 0x05);
+        assert_eq!(x.pos, 0x05);
+        assert_eq!(removed, Some(remove_enemy()));
     }
 
     #[test]

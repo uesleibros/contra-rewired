@@ -5573,6 +5573,244 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} ice-separator-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_MINI_UFO_ROUTINE_00").is_ok() {
+            // VERIFY_MINI_UFO_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::ufo::mini_ufo_routine_00`. Real
+            // entry $a8fa (switchable bank, gated). Real exits: `set_
+            // mini_ufo_sprite`'s own `@exit` ($a96b, `Animating`), and
+            // the 2 shared exits ($e796/$e813, `Advanced`, via `jmp
+            // advance_enemy_routine`). No nested calls, so no
+            // disambiguation is needed.
+            let mut pending: Option<MiniUfoRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA8FA if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MiniUfoRoutine00Ctx { x, animation_delay: bus.ram[0x538 + x], sprite: bus.ram[0x30A + x], routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xA96B if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mini-ufo-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MINI_UFO_ROUTINE_01").is_ok() {
+            // VERIFY_MINI_UFO_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::ufo::mini_ufo_routine_01`. Real
+            // entry $a905 (switchable bank, gated). Real exits: `mini_
+            // ufo_exit` ($a94b, `Waiting`), and the 2 shared exits
+            // ($e796/$e813, `BeginDescent`, via `jmp advance_enemy_
+            // routine`). $e813 disambiguated via stack-peek: this
+            // routine's own `jsr update_enemy_x_pos_rem_off_screen` can
+            // itself trigger a nested removal that also reaches $e813 -
+            // genuine hits return outside this routine's own $a905-
+            // $a922 range.
+            let mut pending: Option<MiniUfoRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA905 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MiniUfoRoutine01Ctx {
+                            x,
+                            animation_delay: bus.ram[0x538 + x],
+                            sprite: bus.ram[0x30A + x],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            frame_scroll: bus.ram[0x68],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xA94B if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xA905..0xA922).contains(&ret) {
+                            // Nested return from `jsr update_enemy_x_pos_
+                            // rem_off_screen`'s own internal removal -
+                            // not our exit, keep waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mini-ufo-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MINI_UFO_ROUTINE_02").is_ok() {
+            // VERIFY_MINI_UFO_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::ufo::mini_ufo_routine_02`. Real
+            // entry $a922 (switchable bank, gated). Real exits: `mini_
+            // ufo_exit` ($a94b, `StillDescending` - same address `_01`'s
+            // own `Waiting` uses, harmless since these are separate,
+            // mutually-exclusive `VERIFY_` modes), and the 2 shared
+            // exits ($e796/$e813, `ReachedBottom`). $e813 disambiguated
+            // via stack-peek: this routine's own Y-position update can
+            // itself trigger a nested removal reaching $e813 - genuine
+            // hits return outside this routine's own $a922-$a94c range.
+            let mut pending: Option<MiniUfoRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA922 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MiniUfoRoutine02Ctx {
+                            x,
+                            animation_delay: bus.ram[0x538 + x],
+                            sprite: bus.ram[0x30A + x],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            frame_scroll: bus.ram[0x68],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xA94B if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE813 => {
+                        let sp = cpu.sp as usize;
+                        let ret_lo = bus.ram[0x100 + ((sp + 1) & 0xFF)] as u16;
+                        let ret_hi = bus.ram[0x100 + ((sp + 2) & 0xFF)] as u16;
+                        let ret = ret_lo | (ret_hi << 8);
+                        if (0xA922..0xA94C).contains(&ret) {
+                            // Nested return from the Y-position update's
+                            // own internal removal - not our exit, keep
+                            // waiting.
+                        } else if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mini-ufo-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MINI_UFO_ROUTINE_03").is_ok() {
+            // VERIFY_MINI_UFO_ROUTINE_03=1: verification pass for
+            // `contra_native::enemy::ufo::mini_ufo_routine_03`. Real
+            // entry $a94c (switchable bank, gated) - real ASM's own tail
+            // is a bare `jmp update_enemy_pos` after the sprite-cycle
+            // helper, so its own real exits are that routine's own:
+            // `apply_vel_exit` ($e849, success) and `remove_enemy`'s own
+            // address ($e809, off-screen removal). No nested calls
+            // reach either, so no disambiguation is needed.
+            let mut pending: Option<MiniUfoRoutine03Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA94C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MiniUfoRoutine03Ctx {
+                            x,
+                            animation_delay: bus.ram[0x538 + x],
+                            sprite: bus.ram[0x30A + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                        });
+                    }
+                    0xE849 | 0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_mini_ufo_routine_03(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} mini-ufo-routine-03 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_BOSS_UFO_BOMB_ROUTINE_00").is_ok() {
+            // VERIFY_BOSS_UFO_BOMB_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::ufo::boss_ufo_bomb_routine_00`.
+            // Real entry $a974 (switchable bank, gated). Real exits: the
+            // 2 shared exits ($e796/$e813, `Exploding`, via `jmp
+            // advance_enemy_routine`, reached *before* `update_enemy_
+            // pos` ever runs on this path so no disambiguation is
+            // needed there), and `update_enemy_pos`'s own real exits
+            // ($e849/$e809, `Falling`, via this routine's own tail `jmp
+            // update_enemy_pos`).
+            let mut pending: Option<BossUfoBombRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0xA974 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(BossUfoBombRoutine00Ctx {
+                            x,
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 | 0xE849 | 0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_boss_ufo_bomb_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} boss-ufo-bomb-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }
