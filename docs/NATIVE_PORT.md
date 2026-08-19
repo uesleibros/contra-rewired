@@ -2146,7 +2146,27 @@ replacement for its real 6502 code, cycle for cycle.
       Unit-tested (18 new tests across the three files).
       Not live-verified against real hardware this session (per updated
       project pace).
-- [ ] Everything else, logic side. One hundred eighty-nine routines out of what's
+- [x] **`alien_fetus` family** (`crates/contra-native/src/enemy/
+      alien_fetus.rs`, `$b6ec`-`$b7d2`) - the level 5 alien lair's alien
+      fetus enemy, the other real caller of `aim_var_1_for_quadrant_aim_
+      dir_00`/`quadrant_aim_dir_00` alongside the still-unported rotating
+      gun. Two real quirks ported faithfully: `alien_fetus_get_aim_timer`
+      reads through its delay table via a **global** cursor
+      (`ALIEN_FETUS_AIM_TIMER_INDEX`) shared by every alien fetus on
+      screen, not a per-enemy field; and `alien_fetus_set_velocity`'s own
+      `ENEMY_VAR_4 -= 3` is a real `clc`/`sbc #$02` idiom (subtracts one
+      extra via the inverted borrow bit) the disassembly's own comment
+      explains. `white_blob_alien_fetus_vel_tbl` is the same "one
+      overlapping sine table, no separate cosine table" trick as
+      `spinning_bubbles`' own velocity table, sampled at half the
+      resolution for this enemy's 12-step wheel - verified against real
+      trigonometry (not just transcribed), and caught the disassembly's
+      own inline comments being misplaced by one table entry in the
+      process.
+      Unit-tested (20 new tests).
+      Not live-verified against real hardware this session (per updated
+      project pace).
+- [ ] Everything else, logic side. One hundred ninety-four routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
