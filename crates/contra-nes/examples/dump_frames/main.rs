@@ -4954,6 +4954,393 @@ fn main() {
             if checked > 0 {
                 eprintln!("frame={frame}: {checked} moving-cart-routine-00 calls verified this frame, no mismatches unless printed above");
             }
+        } else if std::env::var("VERIFY_FLOATING_ROCK_ROUTINE_00").is_ok() {
+            // VERIFY_FLOATING_ROCK_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::rock::floating_rock_routine_00`.
+            // Real entry $97e9 (switchable bank, gated) - also the real
+            // entry for `moving_flame_routine_00` (the identical
+            // function, so hits may come from either enemy type). Real
+            // exit: the 2 shared exits ($e796/$e813) via `jmp advance_
+            // enemy_routine`. No nested calls, so no disambiguation is
+            // needed.
+            let mut pending: Option<FloatingRockRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x97E9 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FloatingRockRoutine00Ctx {
+                            x,
+                            attributes: bus.ram[0x5A8 + x],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_floating_rock_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} floating-rock-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FLOATING_ROCK_ROUTINE_01").is_ok() {
+            // VERIFY_FLOATING_ROCK_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::rock::floating_rock_routine_01`.
+            // Real entry $981c (switchable bank, gated) - falls straight
+            // through into `update_pos_turn_around_if_needed` with no
+            // call boundary. Real exits: `@exit` ($983b, `NoTurn`), and
+            // `reverse_enemy_x_direction`'s own rts ($e92f,
+            // `TurnedAround`, reached directly with no intervening jsr
+            // so no disambiguation is needed there).
+            let mut pending: Option<FloatingRockRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x981C if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FloatingRockRoutine01Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                        });
+                    }
+                    0x983B if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_floating_rock_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE92F => {
+                        if let Some(ctx) = pending.take() {
+                            verify_floating_rock_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} floating-rock-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_MOVING_FLAME_ROUTINE_01").is_ok() {
+            // VERIFY_MOVING_FLAME_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::rock::moving_flame_routine_01`.
+            // Real entry $9840 (switchable bank, gated) - tail-jumps
+            // into the same `update_pos_turn_around_if_needed` shared
+            // tail `floating_rock_routine_01` uses. Real exits: `@exit`
+            // ($983b, `NoTurn` - same address `floating_rock_routine_01`
+            // uses, harmless since these are separate, mutually-
+            // exclusive `VERIFY_` modes), and `reverse_enemy_x_
+            // direction`'s own rts ($e92f, `TurnedAround`).
+            let mut pending: Option<MovingFlameRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9840 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(MovingFlameRoutine01Ctx {
+                            x,
+                            frame_counter: bus.ram[0x1A],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            var_2: bus.ram[0x5C8 + x],
+                        });
+                    }
+                    0x983B if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_moving_flame_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE92F => {
+                        if let Some(ctx) = pending.take() {
+                            verify_moving_flame_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} moving-flame-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ROCK_CAVE_ROUTINE_00").is_ok() {
+            // VERIFY_ROCK_CAVE_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::rock::rock_cave_routine_00`. Real
+            // entry $985d (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via `jmp advance_enemy_
+            // routine`. No nested calls, so no disambiguation is needed.
+            let mut pending: Option<RockCaveRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x985D if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RockCaveRoutine00Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rock_cave_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} rock-cave-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ROCK_CAVE_ROUTINE_01").is_ok() {
+            // VERIFY_ROCK_CAVE_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::rock::rock_cave_routine_01`. Real
+            // entry $9863 (switchable bank, gated). Real exit: the 2
+            // shared exits ($e796/$e813) via `jmp set_anim_delay_adv_
+            // routine`. No nested calls, so no disambiguation is needed.
+            let mut pending: Option<RockCaveRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9863 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(RockCaveRoutine01Ctx {
+                            x,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            y_pos: bus.ram[0x324 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rock_cave_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} rock-cave-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_ROCK_CAVE_ROUTINE_02").is_ok() {
+            // VERIFY_ROCK_CAVE_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::rock::rock_cave_routine_02`. Real
+            // entry $986b (switchable bank, gated) - stays in this same
+            // routine forever (real ASM's own tail is `jmp generate_
+            // enemy_a`, never `advance_enemy_routine`). Real exits:
+            // `rock_exit` ($98cd, `Waiting` - a real forward relative
+            // branch reused from `falling_rock_routine_01`'s own tail,
+            // harmless since these are separate, mutually-exclusive
+            // `VERIFY_` modes), and `generate_enemy_a`'s own entry
+            // address ($eb52, `Spawned` - reached only via this
+            // routine's own real tail jump, with the position/delay
+            // writes already done by the time execution gets there).
+            use contra_native::enemy::enemy_slots::ENEMY_SLOT_COUNT;
+
+            let mut pending: Option<RockCaveRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x986B if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut enemy_routine_slots = [0u8; ENEMY_SLOT_COUNT];
+                        for (i, b) in enemy_routine_slots.iter_mut().enumerate() {
+                            *b = bus.ram[0x4B8 + i];
+                        }
+                        pending = Some(RockCaveRoutine02Ctx {
+                            x,
+                            current_level: bus.ram[0x30],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            enemy_routine_slots,
+                        });
+                    }
+                    0x98CD if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rock_cave_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xEB52 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_rock_cave_routine_02(ctx, &prg_rom_copy, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} rock-cave-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FALLING_ROCK_ROUTINE_00").is_ok() {
+            // VERIFY_FALLING_ROCK_ROUTINE_00=1: verification pass for
+            // `contra_native::enemy::rock::falling_rock_routine_00`.
+            // Real entry $9889 (switchable bank, gated). Real exit: the
+            // 2 shared exits ($e796/$e813) via `jmp set_anim_delay_adv_
+            // routine`. No nested calls, so no disambiguation is needed.
+            let mut pending: Option<FallingRockRoutine00Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x9889 if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FallingRockRoutine00Ctx { x, routine: bus.ram[0x4B8 + x] });
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_falling_rock_routine_00(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} falling-rock-routine-00 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FALLING_ROCK_ROUTINE_01").is_ok() {
+            // VERIFY_FALLING_ROCK_ROUTINE_01=1: verification pass for
+            // `contra_native::enemy::rock::falling_rock_routine_01`.
+            // Real entry $988e (switchable bank, gated). Real exits:
+            // `rock_exit` ($98cd, `Waiting`), and the 2 shared exits
+            // ($e796/$e813, `Activated`, via `jmp set_anim_delay_adv_
+            // routine`). No nested calls that reach either address, so
+            // no disambiguation is needed.
+            let mut pending: Option<FallingRockRoutine01Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x988E if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        pending = Some(FallingRockRoutine01Ctx {
+                            x,
+                            frame_counter: bus.ram[0x1A],
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                            animation_delay: bus.ram[0x538 + x],
+                            state_width: bus.ram[0x598 + x],
+                            routine: bus.ram[0x4B8 + x],
+                        });
+                    }
+                    0x98CD if bus.mapper.bank_select() == 0 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_falling_rock_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    0xE796 | 0xE813 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_falling_rock_routine_01(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} falling-rock-routine-01 calls verified this frame, no mismatches unless printed above");
+            }
+        } else if std::env::var("VERIFY_FALLING_ROCK_ROUTINE_02").is_ok() {
+            // VERIFY_FALLING_ROCK_ROUTINE_02=1: verification pass for
+            // `contra_native::enemy::rock::falling_rock_routine_02`.
+            // Real entry $98ce (switchable bank, gated) - real ASM's own
+            // tail is `jmp update_enemy_pos`, so its real exits are that
+            // routine's own: `apply_vel_exit` ($e849, success) and
+            // `remove_enemy`'s own address ($e809, off-screen removal).
+            // No nested calls reach either, so no disambiguation is
+            // needed.
+            let mut pending: Option<FallingRockRoutine02Ctx> = None;
+            let mut checked = 0u64;
+            nes.run_frame_with_hook(&mut |cpu, bus| {
+                match cpu.pc {
+                    0x98CE if bus.mapper.bank_select() == 0 => {
+                        let x = cpu.x as usize;
+                        let mut bg_collision_data = [0u8; contra_native::physics::collision::BG_COLLISION_DATA_LEN];
+                        for (i, b) in bg_collision_data.iter_mut().enumerate() {
+                            *b = bus.ram[0x0680 + i];
+                        }
+                        pending = Some(FallingRockRoutine02Ctx {
+                            x,
+                            frame_counter: bus.ram[0x1A],
+                            sprite_attr: bus.ram[0x358 + x],
+                            y_pos: bus.ram[0x324 + x],
+                            var_1: bus.ram[0x5B8 + x],
+                            vertical_scroll: bus.ram[0xFC],
+                            horizontal_scroll: bus.ram[0xFD],
+                            ppuctrl_settings: bus.ram[0xFF],
+                            bg_collision_data,
+                            level_scrolling_type: bus.ram[0x41],
+                            frame_scroll: bus.ram[0x68],
+                            x_pos: bus.ram[0x33E + x],
+                            x_vel_accum: bus.ram[0x4D8 + x],
+                            x_vel_fract: bus.ram[0x518 + x],
+                            x_vel_fast: bus.ram[0x508 + x],
+                            y_vel_accum: bus.ram[0x4C8 + x],
+                            y_vel_fract: bus.ram[0x4F8 + x],
+                            y_vel_fast: bus.ram[0x4E8 + x],
+                        });
+                    }
+                    0xE849 | 0xE809 => {
+                        if let Some(ctx) = pending.take() {
+                            verify_falling_rock_routine_02(ctx, cpu, bus, frame, &mut checked);
+                        }
+                    }
+                    _ => {}
+                }
+                HookAction::Continue
+            });
+            if checked > 0 {
+                eprintln!("frame={frame}: {checked} falling-rock-routine-02 calls verified this frame, no mismatches unless printed above");
+            }
         } else {
             nes.run_frame();
         }

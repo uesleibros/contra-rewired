@@ -1930,7 +1930,32 @@ replacement for its real 6502 code, cycle for cycle.
       walkthrough didn't reach before dying to an earlier boss encounter.
       Deferred alongside `scuba_soldier`/`mortar_shot`/`grenade` for the
       same reason.
-- [ ] Everything else, logic side. One hundred twenty-nine routines out of what's
+- [x] **`rock` family** (`crates/contra-native/src/enemy/rock.rs`,
+      `$97e9`-`$992a`, level 3 only) - `floating_rock`/`moving_flame`
+      (share the exact same `_00` entry, `floating_rock_routine_00`, and
+      the same "bounce off a boundary" shared tail, `update_pos_turn_
+      around_if_needed`, real ASM's own reuse rather than 2 independent
+      ports of the same logic), `rock_cave` (a stationary generator that
+      periodically spawns a falling rock via `generate_enemy_at_pos`,
+      staying in its own single routine forever rather than advancing -
+      the real tail is `jmp generate_enemy_a`, not `advance_enemy_
+      routine`), and `falling_rock` itself (wobbles left/right in place
+      for a fixed delay, then falls and bounces exactly once off the
+      first real floor collision it finds at or past its own tracked
+      ground level). `boss_mouth` (level 3's own dragon boss, sharing
+      this same address range) is not ported here - its own animation
+      routines depend on the unported PPU graphics-buffer subsystem.
+      Unit-tested (14 new tests, including the exact boundary condition
+      for `update_pos_turn_around_if_needed`'s own turn-around check
+      landing *on* vs. past a boundary, and both the real bounce and
+      fall-through paths in `falling_rock_routine_02` using genuinely
+      independent background-collision-data offsets).
+      **Live-verified against real gameplay**: 0 real hits - this
+      family's own enemy placements sit in level 3's first screen (the
+      same screen the scripted walkthrough gets stuck against an
+      obstacle in, already noted for `scuba_soldier`). Deferred for the
+      same reason.
+- [ ] Everything else, logic side. One hundred forty routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
