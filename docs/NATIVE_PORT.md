@@ -2073,7 +2073,27 @@ replacement for its real 6502 code, cycle for cycle.
       attempted for every new family by default - see this crate's own
       `docs/NATIVE_PORT.md` history for the ones that already got hits
       and the many 0-hit attempts that didn't).
-- [ ] Everything else, logic side. One hundred seventy routines out of what's
+- [x] **`wall_core::wall_core_routine_00` / `wall_core_routine_03`**
+      (`crates/contra-native/src/enemy/wall_core.rs`, `$9124`/`$91cf`) -
+      the level 2/4 wall core's init state and "fire at player if
+      conditions met" state, the only 2 of the family's 10 routines with
+      no dependency on the unported PPU graphics-buffer subsystem
+      (`_01`/`_02`/`_04` all call `update_enemy_nametable_tiles`/
+      `update_nametable_tiles_set_delay` directly; `_05`/`_07`/`_08`/
+      `_09` weren't investigated). `_03` turned out to need nothing new -
+      `aim_and_create_enemy_bullet`, the whole `quadrant_aim_dir`
+      subsystem, and `set_08_09_to_enemy_pos` were all already ported
+      from an earlier session (initially suspected as still blocked by
+      the same rotation/aiming wall as `sniper_02`-`_05` - re-checking
+      the actual module contents ruled that out for this specific
+      caller).
+      Unit-tested (11 new tests, including every core-type/plated
+      combination for `_00`'s table lookups and every early-exit gate for
+      `_03`).
+      Not live-verified against real hardware this session (per updated
+      project pace: live-verification `JUMP_STAGE` hunting is no longer
+      attempted for every new family by default).
+- [ ] Everything else, logic side. One hundred seventy-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on
