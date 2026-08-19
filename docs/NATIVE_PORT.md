@@ -2051,7 +2051,29 @@ replacement for its real 6502 code, cycle for cycle.
       this session - likely a different screen within that level the
       scripted walkthrough doesn't visit. Deferred alongside the other
       0-hit families this session.
-- [ ] Everything else, logic side. One hundred sixty-one routines out of what's
+- [x] **`fire_beam` family** (`crates/contra-native/src/enemy/
+      fire_beam.rs`, `$a997`-`$aa9a`, level 6 only) - `fire_beam_down`/
+      `_left`/`_right`'s own idle/ignition-wait states, sharing `fire_
+      beam_add_pos_set_delay` (init) and `begin_fire_beam_attack`
+      (ignition) - the 3 orientations differ only in their own initial
+      flip-bit merge and, more interestingly, their own **ignition
+      trigger**: `down` waits for a player within `$20` pixels, `left`
+      waits for `FRAME_COUNTER` to hit a synchronized value (no player-
+      distance check at all - ports faithfully rather than assuming all
+      3 share `down`'s own proximity gate), `right` just re-arms on a
+      plain countdown and attacks immediately. `_02`/`_03` (drawing/
+      extending the beam itself) are **not ported** - `draw_fire_beam_
+      if_anim_elapsed` depends on the unported PPU graphics-buffer
+      subsystem, and `fire_beam_disable_collision_routine_01` (only
+      reachable from the unported `_03`) is skipped along with it.
+      Unit-tested (10 new tests, one per real orientation's own distinct
+      trigger condition).
+      Not live-verified against real hardware this session (per updated
+      project pace: live-verification `JUMP_STAGE` hunting is no longer
+      attempted for every new family by default - see this crate's own
+      `docs/NATIVE_PORT.md` history for the ones that already got hits
+      and the many 0-hit attempts that didn't).
+- [ ] Everything else, logic side. One hundred seventy routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

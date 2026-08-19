@@ -16,6 +16,7 @@ pub mod enemy_routine_transition;
 pub mod enemy_slots;
 pub mod enemy_spawn;
 pub mod find_far_segment;
+pub mod fire_beam;
 pub mod flying_capsule;
 pub mod four_soldiers;
 pub mod generate_enemy_at_pos;
