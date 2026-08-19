@@ -61,18 +61,20 @@ pub fn alien_fetus_get_aim_timer(index: u8) -> (u8, u8) {
 /// SPINNING_BULLET_VEL_TBL` uses, but sampled at *half* the resolution:
 /// this enemy's 12-step wheel (`quadrant_aim_dir_00`) reads every other
 /// entry of what is structurally the same 24-sample-per-circle table
-/// shape (`Y = table[aim_dir*2]`, `X = table[aim_dir*2 + 6]` - a quarter
-/// turn is 6 entries on a 24-sample circle, matching `spinning_bubbles`'
-/// own `+6` even though the two *wheels* are different sizes). Verified
-/// against real trigonometry, not just transcribed blindly: `aim_dir=0`
-/// ("facing right") gives `Y=(0,0)` (no vertical motion) and `X=(0,
-/// 0xff)` (peak rightward) as expected, and `aim_dir=1`'s `Y=0x7f`/
-/// `X=0xdd` ratio (~0.498/~0.867) matches `sin(30°)`/`cos(30°)`
-/// (~0.5/~0.866) to 3 decimal places - the real disassembly's own inline
-/// comments ("aim rotation dir - #$00 - facing right" on entry `1`, not
-/// `0`) are misplaced by one entry; this port follows the literal
-/// `asl;asl` byte-offset arithmetic, not the comment text.
-const WHITE_BLOB_ALIEN_FETUS_VEL_TBL: [(u8, u8); 30] = [
+/// shape - a quarter turn is 6 entries on a 24-sample circle, matching
+/// `spinning_bubbles`' own `+6` even though the two *wheels* are
+/// different sizes. Verified against real trigonometry, not just
+/// transcribed blindly: pair `0` ("facing right") gives `Y=(0,0)` (no
+/// vertical motion) and `X=(0,0xff)` (peak rightward) as expected, and
+/// pair `1`'s `Y=0x7f`/`X=0xdd` ratio (~0.498/~0.867) matches
+/// `sin(30°)`/`cos(30°)` (~0.5/~0.866) to 3 decimal places - the real
+/// disassembly's own inline comments ("aim rotation dir - #$00 - facing
+/// right" on entry `1`, not `0`) are misplaced by one entry; this port
+/// follows the literal byte-offset arithmetic its two real callers use,
+/// not the comment text (see [`set_white_blob_alien_fetus_vel`]'s own
+/// doc comment for why the two callers pass a different multiple of
+/// their own aim direction).
+pub(crate) const WHITE_BLOB_ALIEN_FETUS_VEL_TBL: [(u8, u8); 30] = [
     (0x00, 0x00),
     (0x00, 0x42),
     (0x00, 0x7F),
@@ -105,12 +107,21 @@ const WHITE_BLOB_ALIEN_FETUS_VEL_TBL: [(u8, u8); 30] = [
     (0x00, 0xF7),
 ];
 
-/// Native port of `set_white_blob_alien_fetus_vel` (`$b7b9`) - returns
-/// `(y_velocity, x_velocity)` as `(frac, fast)` pairs, matching this
-/// crate's usual convention (the table's own raw ROM layout is `(fast,
-/// frac)` - see `WHITE_BLOB_ALIEN_FETUS_VEL_TBL`'s doc comment).
-pub fn set_white_blob_alien_fetus_vel(aim_dir: u8) -> ((u8, u8), (u8, u8)) {
-    let y_idx = aim_dir as usize * 2;
+/// Native port of `set_white_blob_alien_fetus_vel` (`$b7b9`) - `pair_
+/// index` is the real ASM's own `y` register value *as a table-pair
+/// index* (i.e., already halved from the raw byte offset the two real
+/// callers each compute their own way): `alien_fetus_set_velocity`
+/// doubles its aim direction twice (`asl;asl`, a raw `*4` byte offset -
+/// `*2` as a pair index) since its 12-step wheel samples every *other*
+/// table entry; `white_blob_init_velocity` (`crate::enemy::white_blob`)
+/// doubles just once (`*2` byte offset - `*1` pair index, i.e. `pair_
+/// index == aim_dir` directly) since its 24-step wheel samples every
+/// entry. Returns `(y_velocity, x_velocity)` as `(frac, fast)` pairs,
+/// matching this crate's usual convention (the table's own raw ROM
+/// layout is `(fast, frac)` - see `WHITE_BLOB_ALIEN_FETUS_VEL_TBL`'s doc
+/// comment).
+pub fn set_white_blob_alien_fetus_vel(pair_index: u8) -> ((u8, u8), (u8, u8)) {
+    let y_idx = pair_index as usize;
     let x_idx = y_idx + 6;
     let (y_fast, y_frac) = WHITE_BLOB_ALIEN_FETUS_VEL_TBL[y_idx];
     let (x_fast, x_frac) = WHITE_BLOB_ALIEN_FETUS_VEL_TBL[x_idx];
@@ -120,12 +131,13 @@ pub fn set_white_blob_alien_fetus_vel(aim_dir: u8) -> ((u8, u8), (u8, u8)) {
 /// Native port of `alien_fetus_set_velocity` (`$b7a6`) - the real shared
 /// tail both `alien_fetus_routine_00` (`jmp`) and `alien_fetus_routine_
 /// 01`'s own re-aim path (`jsr`, after rotating `ENEMY_VAR_1`) fall into:
-/// sets velocity from `var_1` via [`set_white_blob_alien_fetus_vel`],
-/// then reduces `var_4` by `3` (see this module's doc comment for the
-/// real `clc`/`sbc` quirk this is). Returns `(y_velocity, x_velocity,
+/// sets velocity from `var_1` via [`set_white_blob_alien_fetus_vel`]
+/// (doubled to a pair index - see that function's own doc comment), then
+/// reduces `var_4` by `3` (see this module's doc comment for the real
+/// `clc`/`sbc` quirk this is). Returns `(y_velocity, x_velocity,
 /// new_var_4)`.
 fn alien_fetus_set_velocity(var_1: u8, var_4: u8) -> ((u8, u8), (u8, u8), u8) {
-    let (y_velocity, x_velocity) = set_white_blob_alien_fetus_vel(var_1);
+    let (y_velocity, x_velocity) = set_white_blob_alien_fetus_vel(var_1.wrapping_mul(2));
     (y_velocity, x_velocity, var_4.wrapping_sub(3))
 }
 
@@ -368,7 +380,7 @@ mod tests {
 
     #[test]
     fn set_white_blob_alien_fetus_vel_matches_expected_trig_ratios() {
-        // aim_dir=0 ("facing right"): Y should be ~0, X should be peak.
+        // pair_index=0 ("facing right"): Y should be ~0, X should be peak.
         let (y0, x0) = set_white_blob_alien_fetus_vel(0x00);
         assert_eq!(y0, (0x00, 0x00));
         assert_eq!(x0, (0xFF, 0x00)); // (frac, fast) = (0xff, 0x00) -> ~0.996, "peak"
@@ -376,11 +388,21 @@ mod tests {
 
     #[test]
     fn set_white_blob_alien_fetus_vel_swaps_the_raw_fast_frac_order() {
-        // aim_dir=1 -> y_idx=2 -> raw entry 2 = (fast=0x00, frac=0x7f);
-        // the function must return (frac, fast) = (0x7f, 0x00).
-        let (y, _x) = set_white_blob_alien_fetus_vel(0x01);
+        // pair_index=2 -> raw entry 2 = (fast=0x00, frac=0x7f); the
+        // function must return (frac, fast) = (0x7f, 0x00).
+        let (y, _x) = set_white_blob_alien_fetus_vel(0x02);
         assert_eq!(WHITE_BLOB_ALIEN_FETUS_VEL_TBL[2], (0x00, 0x7F));
         assert_eq!(y, (0x7F, 0x00));
+    }
+
+    #[test]
+    fn alien_fetus_set_velocity_doubles_var_1_into_a_pair_index() {
+        // alien_fetus's own 12-step wheel samples every OTHER table
+        // entry (var_1 * 2, not var_1 directly) - confirmed by cross-
+        // checking against a direct set_white_blob_alien_fetus_vel(2) call.
+        let (y, x, _) = alien_fetus_set_velocity(0x01, 0x00);
+        let (expected_y, expected_x) = set_white_blob_alien_fetus_vel(0x02);
+        assert_eq!((y, x), (expected_y, expected_x));
     }
 
     #[test]

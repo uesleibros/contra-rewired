@@ -2166,7 +2166,33 @@ replacement for its real 6502 code, cycle for cycle.
       Unit-tested (20 new tests).
       Not live-verified against real hardware this session (per updated
       project pace).
-- [ ] Everything else, logic side. One hundred ninety-four routines out of what's
+- [x] **`white_blob` family** (`crates/contra-native/src/enemy/
+      white_blob.rs`, `$b874`-`$b98f`) - the level 5 alien lair's white
+      blob enemy, the other real caller of `aim_var_1_for_quadrant_aim_
+      dir_01`/`quadrant_aim_dir_01` alongside `spinning_bubbles`. A design
+      mistake caught and fixed *before* this stage: `alien_fetus.rs`'s
+      own `set_white_blob_alien_fetus_vel` had baked in `alien_fetus`'s
+      specific `*2`-pair-index stride as if it were that shared routine's
+      general contract - `white_blob_init_velocity` turned out to call
+      the exact same real routine with a *different* stride (`*1`),
+      proving the original signature wrong. Fixed by moving the stride
+      multiplication out to each caller. Two more real quirks ported
+      faithfully: `white_blob_spider_set_sprite`'s nibble-packed dual
+      counter (shared with the unported alien spider) has a "coincidental
+      8" - its velocity-adjustment trigger checks the raw timer value,
+      not "did the sprite just change", and `white_blob_routine_00`
+      deliberately seeds a `12`-count timer specifically so that check
+      fires once *before* the sprite-cycle's own natural reset ever
+      would; and `white_blob_routine_02`'s own re-dash reads the shared
+      velocity table at a `+1`/`+4` pair offset, a genuinely different
+      phase relationship than the `+0`/`+6` every other caller uses.
+      `mult_velocity_by_3` was ported as the literal `asl`/`rol`/`adc`
+      carry chain (not a closed-form `*3`) and cross-checked against the
+      disassembly's own worked example.
+      Unit-tested (17 new tests).
+      Not live-verified against real hardware this session (per updated
+      project pace).
+- [ ] Everything else, logic side. Two hundred one routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

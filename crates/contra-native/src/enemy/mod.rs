@@ -47,3 +47,4 @@ pub mod ufo;
 pub mod update_enemy_pos;
 pub mod wall_core;
 pub mod weapon_item;
+pub mod white_blob;
