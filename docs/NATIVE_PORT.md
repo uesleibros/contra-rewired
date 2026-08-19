@@ -2093,7 +2093,38 @@ replacement for its real 6502 code, cycle for cycle.
       Not live-verified against real hardware this session (per updated
       project pace: live-verification `JUMP_STAGE` hunting is no longer
       attempted for every new family by default).
-- [ ] Everything else, logic side. One hundred seventy-two routines out of what's
+- [x] **Rotation/aiming subsystem + `sniper_routine_02`-`_05`**
+      (`crates/contra-native/src/enemy/quadrant_aim_dir.rs` `get_rotate_
+      dir`/`get_rotate_dir_for_index`/`get_rotate_00`/`get_rotate_01`,
+      `$f44d`-`$f4a8`; `crates/contra-native/src/enemy/soldier.rs`
+      `init_soldier_hit_vel`/`apply_gravity_to_destroyed_soldier`,
+      `$88cb`/`$8903`, factored out of the already-ported `soldier_
+      routine_04`/`_05` so `sniper_routine_04`/`_05` can reuse the exact
+      same shared tail; `crates/contra-native/src/enemy/sniper.rs`
+      `sniper_routine_02`-`_05`, `$89d2`-`$8afc`) - previously assumed
+      blocked behind the same wall as `eye_projectile`/`spinning_
+      bubbles`/`sniper_02`-`_05` itself; re-checking found `get_quadrant_
+      aim_dir`/`get_quadrant_aim_dir_for_player` (and `aim_and_create_
+      enemy_bullet`, `set_08_09_to_enemy_pos`) already ported from an
+      earlier session, leaving only `get_rotate_dir`'s own rotation-
+      direction math - a real, tricky 8-bit compare/wraparound routine -
+      as new logic. Ported it in full (including the clockwise/counter-
+      clockwise/no-change decision `sniper_routine_02` itself never
+      actually reads - it only wants `get_rotate_01`'s `new_aim_dir`
+      output; still translated faithfully rather than half-ported, since
+      it's a real, self-contained routine other future callers like
+      `rotating_gun` will need whole). One real dead branch documented,
+      not modeled: `get_rotate_dir_for_index`'s negative-player-index
+      path reads an undefined prior `$0c` value as a target position -
+      even the original disassembly's own comment says "not sure when
+      this happens"; every real caller passes a valid `0`/`1` player
+      index.
+      Unit-tested (34 new tests across the three files, including all 6
+      of `get_rotate_dir`'s real wrap/no-wrap rotation-direction branches
+      hand-verified against the ASM's own carry-flag logic).
+      Not live-verified against real hardware this session (per updated
+      project pace).
+- [ ] Everything else, logic side. One hundred eighty-two routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

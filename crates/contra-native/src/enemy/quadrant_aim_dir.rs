@@ -12,6 +12,29 @@
 //! `aim_and_create_enemy_bullet` (the dragon-boss-arm-orb path, which
 //! calls [`get_quadrant_aim_dir`] directly with an already-known target
 //! instead of going through the player-resolution step) is not ported.
+//!
+//! [`get_rotate_dir`] (`$f466`) is the next layer up - "given an already-
+//! computed aim direction and quadrant, and the enemy's own *current*
+//! stored aim direction, which way (if any) should it rotate to face the
+//! target": reflects the raw aim direction across whichever axes the
+//! target quadrant calls for, then compares the result against the
+//! current direction (handling the direction-index wraparound at the
+//! table's own max value) to decide clockwise/counterclockwise/no
+//! change. [`get_rotate_00`]/[`get_rotate_01`] (`$f44d`/`$f451`) are its
+//! real callers' entry points, fixing the table selector to `0`/`1`
+//! (`quadrant_aim_dir_00`/`_01`) before resolving the target via
+//! [`get_quadrant_aim_dir_for_player`] - `get_rotate_02` (there's no
+//! real label for it; nothing in the ROM ever calls `get_rotate_dir_for_
+//! index` with table selector `2`) doesn't exist. The real ASM's own
+//! third entry point, `get_rotate_dir_for_index`, has one more path this
+//! port doesn't model: if the player-index input is negative (bit 7
+//! set), it reads `$0c`'s *prior* value (from whatever the caller last
+//! left there) as if it were a target Y position and aims at that
+//! directly - the real disassembly's own comment on this branch is "not
+//! sure when this happens"; every real caller of `get_rotate_00`/`_01`
+//! passes a player index straight from `player_enemy_x_dist` (always
+//! `0`/`1`), so this port only models the always-reachable "resolve via
+//! player state" path.
 
 /// One of the 3 real 32-byte (8 rows x 4 cols, 2 nibble-packed angle
 /// values per byte) lookup tables `get_quadrant_aim_dir` selects between
@@ -151,6 +174,143 @@ pub fn get_quadrant_aim_dir_for_player(
     get_quadrant_aim_dir(source_y, source_x, target_y, target_x, table)
 }
 
+/// `get_rotate_dir`'s own reflected-direction midpoint/max, selected by
+/// table parity (`$f466`'s own `lsr`/`bcc` on the table selector):
+/// `quadrant_aim_dir_01` (odd selector) uses a 24-step direction wheel
+/// (midway `$0c`, max `$18`); `_00`/`_02` (even selector) use a 12-step
+/// wheel (midway `$06`, max `$0c`).
+fn rotate_midway_max(table_index: u8) -> (u8, u8) {
+    if table_index & 0x01 != 0 { (0x0C, 0x18) } else { (0x06, 0x0C) }
+}
+
+/// Which way (if any) an enemy should rotate to face its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotationDirection {
+    Clockwise,
+    CounterClockwise,
+    /// Already aiming at the target - real ASM's own negative-flag/`$80`
+    /// sentinel.
+    NoChangeNeeded,
+}
+
+/// The full result of one [`get_rotate_dir`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetRotateDirResult {
+    /// `$0c` - the new aim direction, reflected into the correct
+    /// half/quadrant of the direction wheel. This is the only field
+    /// [`crate::enemy::sniper`]'s own callers actually use - they never
+    /// look at `direction` at all, matching the real ASM (`sniper_
+    /// routine_02` reads `$0c` straight back out and never inspects the
+    /// rotation-direction return value `get_rotate_dir` leaves in `a`).
+    pub new_aim_dir: u8,
+    pub direction: RotationDirection,
+}
+
+/// Native port of `get_rotate_dir` (`$f466`) - see this module's doc
+/// comment for the overall shape. `aim_dir`/`quadrant` are [`get_
+/// quadrant_aim_dir`]'s own two outputs for the resolved target;
+/// `current_aim_dir` is the enemy's own persisted aim direction (`ENEMY_
+/// VAR_1`) to rotate *from*.
+pub fn get_rotate_dir(aim_dir: u8, quadrant: u8, table_index: u8, current_aim_dir: u8) -> GetRotateDirResult {
+    let (midway, max) = rotate_midway_max(table_index);
+
+    let mut new_dir = aim_dir;
+    if quadrant & 0x02 != 0 {
+        // Target to the left of the enemy - reflect across the vertical
+        // axis.
+        new_dir = midway.wrapping_sub(new_dir);
+    }
+    if quadrant & 0x01 != 0 {
+        // Target above the enemy - reflect across the horizontal axis,
+        // clamping the one case (`new_dir == 0`) the real `sbc`/`cmp`
+        // pair forces back to `0` instead of leaving it at `max`.
+        let reflected = max.wrapping_sub(new_dir);
+        new_dir = if reflected < max { reflected } else { 0x00 };
+    }
+
+    let summed = current_aim_dir.wrapping_add(midway);
+    let (reflected_current, wrapped) = if summed < max { (summed, false) } else { (summed.wrapping_sub(max), true) };
+
+    let direction = if new_dir == current_aim_dir {
+        RotationDirection::NoChangeNeeded
+    } else if !wrapped {
+        if new_dir < current_aim_dir {
+            RotationDirection::CounterClockwise
+        } else if new_dir >= reflected_current {
+            RotationDirection::CounterClockwise
+        } else {
+            RotationDirection::Clockwise
+        }
+    } else if new_dir > current_aim_dir {
+        RotationDirection::Clockwise
+    } else if new_dir < reflected_current {
+        RotationDirection::Clockwise
+    } else {
+        RotationDirection::CounterClockwise
+    };
+
+    GetRotateDirResult { new_aim_dir: new_dir, direction }
+}
+
+/// Native port of `get_rotate_dir_for_index` (`$f453`) - resolves the
+/// target via [`get_quadrant_aim_dir_for_player`] (using
+/// `quadrant_aim_dir_lookup_ptr_tbl[table_index]`), then [`get_rotate_
+/// dir`]. See this module's doc comment for the real negative-`player_
+/// index` branch this port doesn't model.
+#[allow(clippy::too_many_arguments)]
+pub fn get_rotate_dir_for_index(
+    table_index: u8,
+    source_y: u8,
+    source_x: u8,
+    player_index: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+    current_aim_dir: u8,
+) -> GetRotateDirResult {
+    let table = match table_index {
+        0 => &QUADRANT_AIM_DIR_00,
+        1 => &QUADRANT_AIM_DIR_01,
+        _ => &QUADRANT_AIM_DIR_02,
+    };
+    let aimed =
+        get_quadrant_aim_dir_for_player(source_y, source_x, player_index, player_state, sprite_y_pos, sprite_x_pos, level_location_type, table);
+    get_rotate_dir(aimed.aim_dir, aimed.quadrant, table_index, current_aim_dir)
+}
+
+/// Native port of `get_rotate_00` (`$f44d`) - [`get_rotate_dir_for_
+/// index`] fixed to table selector `0` (`quadrant_aim_dir_00`).
+#[allow(clippy::too_many_arguments)]
+pub fn get_rotate_00(
+    source_y: u8,
+    source_x: u8,
+    player_index: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+    current_aim_dir: u8,
+) -> GetRotateDirResult {
+    get_rotate_dir_for_index(0, source_y, source_x, player_index, player_state, sprite_y_pos, sprite_x_pos, level_location_type, current_aim_dir)
+}
+
+/// Native port of `get_rotate_01` (`$f451`) - [`get_rotate_dir_for_
+/// index`] fixed to table selector `1` (`quadrant_aim_dir_01`).
+#[allow(clippy::too_many_arguments)]
+pub fn get_rotate_01(
+    source_y: u8,
+    source_x: u8,
+    player_index: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+    current_aim_dir: u8,
+) -> GetRotateDirResult {
+    get_rotate_dir_for_index(1, source_y, source_x, player_index, player_state, sprite_y_pos, sprite_x_pos, level_location_type, current_aim_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +406,108 @@ mod tests {
         let r = get_quadrant_aim_dir_for_player(0x00, 0x00, 0, [1, 1], [0x40, 0x99], [0x50, 0x88], 1, &QUADRANT_AIM_DIR_00);
         let direct = get_quadrant_aim_dir(0x00, 0x00, 0xB0, 0x50, &QUADRANT_AIM_DIR_00);
         assert_eq!(r, direct);
+    }
+
+    #[test]
+    fn rotate_dir_quadrant_0_passes_the_aim_dir_through_unreflected() {
+        let r = get_rotate_dir(0x05, 0x00, 0x00, 0x05);
+        assert_eq!(r.new_aim_dir, 0x05);
+        assert_eq!(r.direction, RotationDirection::NoChangeNeeded);
+    }
+
+    #[test]
+    fn rotate_dir_reflects_across_the_vertical_axis_when_target_is_left() {
+        // table 0: midway=6. aim_dir=2, quadrant bit1 set -> 6-2=4.
+        let r = get_rotate_dir(0x02, 0x02, 0x00, 0x00);
+        assert_eq!(r.new_aim_dir, 0x04);
+    }
+
+    #[test]
+    fn rotate_dir_reflects_across_the_horizontal_axis_when_target_is_above() {
+        // table 0: max=12. aim_dir=3, quadrant bit0 set -> 12-3=9.
+        let r = get_rotate_dir(0x03, 0x01, 0x00, 0x00);
+        assert_eq!(r.new_aim_dir, 0x09);
+    }
+
+    #[test]
+    fn rotate_dir_composes_both_reflections_in_order() {
+        // table 0: aim_dir=2, quadrant=3 (both bits) -> left: 6-2=4, then top: 12-4=8.
+        let r = get_rotate_dir(0x02, 0x03, 0x00, 0x00);
+        assert_eq!(r.new_aim_dir, 0x08);
+    }
+
+    #[test]
+    fn rotate_dir_horizontal_reflection_clamps_the_zero_case_to_zero_not_max() {
+        // table 0: max=12. aim_dir=0, quadrant bit0 set -> 12-0=12, clamped to 0.
+        let r = get_rotate_dir(0x00, 0x01, 0x00, 0x00);
+        assert_eq!(r.new_aim_dir, 0x00);
+    }
+
+    #[test]
+    fn rotate_dir_no_wrap_counterclockwise_when_new_is_smaller() {
+        // table 0 (midway=6, max=12): current=3 -> summed=9<12, no wrap.
+        let r = get_rotate_dir(0x01, 0x00, 0x00, 0x03);
+        assert_eq!(r.direction, RotationDirection::CounterClockwise);
+    }
+
+    #[test]
+    fn rotate_dir_no_wrap_clockwise_when_new_is_between_current_and_reflected() {
+        // current=2 -> summed=8<12, reflected_current=8. new_dir=5: 2<5<8.
+        let r = get_rotate_dir(0x05, 0x00, 0x00, 0x02);
+        assert_eq!(r.direction, RotationDirection::Clockwise);
+    }
+
+    #[test]
+    fn rotate_dir_no_wrap_counterclockwise_when_new_passes_the_reflected_current() {
+        // current=1 -> summed=7<12, reflected_current=7. new_dir=9 >= 7.
+        let r = get_rotate_dir(0x09, 0x00, 0x00, 0x01);
+        assert_eq!(r.direction, RotationDirection::CounterClockwise);
+    }
+
+    #[test]
+    fn rotate_dir_wrapped_clockwise_when_new_exceeds_current() {
+        // current=8 -> summed=14>=12, wrapped, reflected_current=2. new_dir=10>8.
+        let r = get_rotate_dir(0x0A, 0x00, 0x00, 0x08);
+        assert_eq!(r.direction, RotationDirection::Clockwise);
+    }
+
+    #[test]
+    fn rotate_dir_wrapped_clockwise_when_new_is_below_the_reflected_current() {
+        // current=8 (wrapped, reflected_current=2). new_dir=1 < current, 1 < 2.
+        let r = get_rotate_dir(0x01, 0x00, 0x00, 0x08);
+        assert_eq!(r.direction, RotationDirection::Clockwise);
+    }
+
+    #[test]
+    fn rotate_dir_wrapped_counterclockwise_when_new_reaches_the_reflected_current() {
+        // current=8 (wrapped, reflected_current=2). new_dir=5 < current, 5 >= 2.
+        let r = get_rotate_dir(0x05, 0x00, 0x00, 0x08);
+        assert_eq!(r.direction, RotationDirection::CounterClockwise);
+    }
+
+    #[test]
+    fn rotate_dir_for_index_selects_the_matching_table_and_delegates_to_rotate_dir() {
+        let r = get_rotate_dir_for_index(0, 0x00, 0x00, 0, [1, 1], [0x40, 0x50], [0x40, 0x50], 0, 0x00);
+        let aimed = get_quadrant_aim_dir_for_player(0x00, 0x00, 0, [1, 1], [0x40, 0x50], [0x40, 0x50], 0, &QUADRANT_AIM_DIR_00);
+        let expected = get_rotate_dir(aimed.aim_dir, aimed.quadrant, 0, 0x00);
+        assert_eq!(r, expected);
+    }
+
+    #[test]
+    fn rotate_00_uses_table_0() {
+        let r = get_rotate_00(0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        let expected = get_rotate_dir_for_index(0, 0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        assert_eq!(r, expected);
+    }
+
+    #[test]
+    fn rotate_01_uses_table_1() {
+        let r = get_rotate_01(0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        let expected = get_rotate_dir_for_index(1, 0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        assert_eq!(r, expected);
+        // table 1 uses the wider (midway=12, max=24) wheel - a case that
+        // wraps under table 0 (max=12) shouldn't necessarily wrap here.
+        let (midway, max) = rotate_midway_max(1);
+        assert_eq!((midway, max), (0x0C, 0x18));
     }
 }

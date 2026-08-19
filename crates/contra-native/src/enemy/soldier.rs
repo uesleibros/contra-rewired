@@ -744,40 +744,39 @@ pub fn soldier_routine_03(
     SoldierRoutine03Outcome::Fired(SoldierRoutine03Fired { score_collision, enemy_frame, attack_delay, var_3, bullet, gun_recoil_timer, tail })
 }
 
-/// The full result of one [`soldier_routine_04`] call.
+/// The full result of one [`init_soldier_hit_vel`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SoldierRoutine04Result {
-    pub sprite: SoldierSpriteResult,
+pub struct InitSoldierHitVelResult {
     /// `ENEMY_STATE_WIDTH` after [`disable_enemy_collision`] runs.
     pub state_width: u8,
-    /// Always `($80, $fc)` - the soldier's fixed "fly up when hit"
-    /// initial Y velocity.
+    /// Always `($80, $fc)` - the fixed "fly up when hit" initial Y
+    /// velocity.
     pub y_velocity: (u8, u8),
     pub x_velocity: (u8, u8),
     pub scroll: ScrolledEnemyPos,
     pub delayed_routine: DelayedRoutineUpdate,
 }
 
-/// Native port of `soldier_routine_04` (`$88c3`) - "soldier hit, begin
-/// destroying soldier": sets the destroyed-soldier sprite frame, disables
-/// further collision, and launches it upward with a fixed initial
-/// velocity - X velocity is zeroed instead if the soldier is near either
-/// screen edge (real ASM checks *both* edges, `< $10` or `>= $f0`, into
-/// the *same* zeroing step), then reversed if it was facing right (the
-/// fixed X velocity is authored assuming a left-facing soldier, the same
-/// convention `soldier_x_vel_tbl` uses).
+/// Native port of `init_soldier_hit_vel` (`$88cb`) - the real shared tail
+/// `soldier_routine_04` falls straight into after setting its own
+/// destroyed-soldier sprite frame, also reused directly (with no
+/// soldier-specific step of its own first) by `sniper_routine_04`
+/// (`crates/contra-native/src/enemy/sniper.rs`, `$8af1`): sets a fixed
+/// initial "fly up when hit" velocity - X velocity is zeroed instead if
+/// the enemy is near either screen edge (real ASM checks *both* edges,
+/// `< $10` or `>= $f0`, into the *same* zeroing step), then reversed if
+/// it was facing right (the fixed X velocity is authored assuming a
+/// left-facing enemy, the same convention `soldier_x_vel_tbl` uses).
 #[allow(clippy::too_many_arguments)]
-pub fn soldier_routine_04(
+pub fn init_soldier_hit_vel(
     enemy_x_pos: u8,
     enemy_y_pos: u8,
     enemy_var_2: u8,
-    enemy_var_1: u8,
     enemy_state_width: u8,
     level_scrolling_type: u8,
     frame_scroll: u8,
     current_routine: u8,
-) -> SoldierRoutine04Result {
-    let sprite = set_soldier_sprite(0x0B, enemy_var_2, enemy_var_1);
+) -> InitSoldierHitVelResult {
     let state_width = disable_enemy_collision(enemy_state_width);
     let y_velocity = (0x80, 0xFC);
 
@@ -793,13 +792,51 @@ pub fn soldier_routine_04(
     let scroll = add_scroll_to_enemy_pos(level_scrolling_type, frame_scroll, enemy_x_pos, enemy_y_pos);
     let delayed_routine = set_enemy_delay_adv_routine(0x10, current_routine);
 
-    SoldierRoutine04Result { sprite, state_width, y_velocity, x_velocity, scroll, delayed_routine }
+    InitSoldierHitVelResult { state_width, y_velocity, x_velocity, scroll, delayed_routine }
 }
 
-/// The real, branchy result of one [`soldier_routine_05`] call.
+/// The full result of one [`soldier_routine_04`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SoldierRoutine05Outcome {
-    /// The soldier's (unmodified-this-call) Y position was already above
+pub struct SoldierRoutine04Result {
+    pub sprite: SoldierSpriteResult,
+    pub state_width: u8,
+    pub y_velocity: (u8, u8),
+    pub x_velocity: (u8, u8),
+    pub scroll: ScrolledEnemyPos,
+    pub delayed_routine: DelayedRoutineUpdate,
+}
+
+/// Native port of `soldier_routine_04` (`$88c3`) - "soldier hit, begin
+/// destroying soldier": sets the destroyed-soldier sprite frame, then
+/// falls into the shared [`init_soldier_hit_vel`] tail.
+#[allow(clippy::too_many_arguments)]
+pub fn soldier_routine_04(
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    enemy_var_2: u8,
+    enemy_var_1: u8,
+    enemy_state_width: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    current_routine: u8,
+) -> SoldierRoutine04Result {
+    let sprite = set_soldier_sprite(0x0B, enemy_var_2, enemy_var_1);
+    let tail = init_soldier_hit_vel(enemy_x_pos, enemy_y_pos, enemy_var_2, enemy_state_width, level_scrolling_type, frame_scroll, current_routine);
+    SoldierRoutine04Result {
+        sprite,
+        state_width: tail.state_width,
+        y_velocity: tail.y_velocity,
+        x_velocity: tail.x_velocity,
+        scroll: tail.scroll,
+        delayed_routine: tail.delayed_routine,
+    }
+}
+
+/// The real, branchy result of one [`apply_gravity_to_destroyed_soldier`]
+/// call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyGravityToDestroyedSoldierOutcome {
+    /// The enemy's (unmodified-this-call) Y position was already above
     /// the top of the screen: advances immediately, `update_enemy_pos`
     /// never runs at all (position/velocity-accumulator fields untouched
     /// beyond the Y-velocity gravity add every path gets).
@@ -811,22 +848,90 @@ pub enum SoldierRoutine05Outcome {
     Advanced { position: UpdatedEnemyPos, animation_delay: u8, routine_update: EnemyRoutineUpdate },
 }
 
+/// The full result of one [`apply_gravity_to_destroyed_soldier`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyGravityToDestroyedSoldierResult {
+    /// Y velocity after this call's fixed gravity add (`+$30` fractional,
+    /// every call, regardless of outcome).
+    pub y_velocity: (u8, u8),
+    pub outcome: ApplyGravityToDestroyedSoldierOutcome,
+}
+
+/// Native port of `apply_gravity_to_destroyed_soldier` (`$8903`) - the
+/// real shared tail `soldier_routine_05` falls straight into after
+/// setting its own sprite, also reused directly (with no soldier-
+/// specific step of its own first) by `sniper_routine_05`
+/// (`crates/contra-native/src/enemy/sniper.rs`, `$8afc`): the destroyed
+/// enemy launched by [`init_soldier_hit_vel`] keeps flying up,
+/// decelerating under a fixed gravity constant, until either it drifts
+/// off the top of the screen or its animation delay elapses, either of
+/// which advances to the next routine (real explosion/removal handling,
+/// not yet ported).
+#[allow(clippy::too_many_arguments)]
+pub fn apply_gravity_to_destroyed_soldier(
+    enemy_x_pos: u8,
+    enemy_y_pos: u8,
+    y_vel_fract: u8,
+    y_vel_fast: u8,
+    x_vel_accum: u8,
+    x_vel_fract: u8,
+    x_vel_fast: u8,
+    y_vel_accum: u8,
+    level_scrolling_type: u8,
+    frame_scroll: u8,
+    enemy_animation_delay: u8,
+    current_routine: u8,
+) -> ApplyGravityToDestroyedSoldierResult {
+    let y_velocity = add_a_to_enemy_y_fract_vel(0x30, y_vel_fract, y_vel_fast);
+
+    if enemy_y_pos < 0x08 {
+        let routine_update = advance_enemy_routine(current_routine);
+        return ApplyGravityToDestroyedSoldierResult {
+            y_velocity,
+            outcome: ApplyGravityToDestroyedSoldierOutcome::OffTopAdvance(routine_update),
+        };
+    }
+
+    let position = update_enemy_pos(
+        level_scrolling_type,
+        frame_scroll,
+        enemy_x_pos,
+        x_vel_accum,
+        x_vel_fract,
+        x_vel_fast,
+        enemy_y_pos,
+        y_vel_accum,
+        y_velocity.0,
+        y_velocity.1,
+    );
+    let animation_delay = enemy_animation_delay.wrapping_sub(1);
+    let outcome = if animation_delay == 0 {
+        ApplyGravityToDestroyedSoldierOutcome::Advanced { position, animation_delay, routine_update: advance_enemy_routine(current_routine) }
+    } else {
+        ApplyGravityToDestroyedSoldierOutcome::StillWaiting { position, animation_delay }
+    };
+    ApplyGravityToDestroyedSoldierResult { y_velocity, outcome }
+}
+
+/// The real, branchy result of one [`soldier_routine_05`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoldierRoutine05Outcome {
+    OffTopAdvance(EnemyRoutineUpdate),
+    StillWaiting { position: UpdatedEnemyPos, animation_delay: u8 },
+    Advanced { position: UpdatedEnemyPos, animation_delay: u8, routine_update: EnemyRoutineUpdate },
+}
+
 /// The full result of one [`soldier_routine_05`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SoldierRoutine05Result {
     pub sprite: SoldierSpriteResult,
-    /// Y velocity after this call's fixed gravity add (`+$30` fractional,
-    /// every call, regardless of outcome).
     pub y_velocity: (u8, u8),
     pub outcome: SoldierRoutine05Outcome,
 }
 
 /// Native port of `soldier_routine_05` (`$8900`) - "soldier hit, apply
-/// negative gravity": the destroyed soldier launched by `soldier_
-/// routine_04` keeps flying up, decelerating under a fixed gravity
-/// constant, until either it drifts off the top of the screen or its
-/// animation delay elapses, either of which advances to the next
-/// routine (real explosion/removal handling, not yet ported).
+/// negative gravity": sets the sprite, then falls into the shared
+/// [`apply_gravity_to_destroyed_soldier`] tail.
 #[allow(clippy::too_many_arguments)]
 pub fn soldier_routine_05(
     enemy_frame: u8,
@@ -846,32 +951,30 @@ pub fn soldier_routine_05(
     current_routine: u8,
 ) -> SoldierRoutine05Result {
     let sprite = set_soldier_sprite(enemy_frame, enemy_var_2, enemy_var_1);
-    let y_velocity = add_a_to_enemy_y_fract_vel(0x30, y_vel_fract, y_vel_fast);
-
-    if enemy_y_pos < 0x08 {
-        let routine_update = advance_enemy_routine(current_routine);
-        return SoldierRoutine05Result { sprite, y_velocity, outcome: SoldierRoutine05Outcome::OffTopAdvance(routine_update) };
-    }
-
-    let position = update_enemy_pos(
-        level_scrolling_type,
-        frame_scroll,
+    let tail = apply_gravity_to_destroyed_soldier(
         enemy_x_pos,
+        enemy_y_pos,
+        y_vel_fract,
+        y_vel_fast,
         x_vel_accum,
         x_vel_fract,
         x_vel_fast,
-        enemy_y_pos,
         y_vel_accum,
-        y_velocity.0,
-        y_velocity.1,
+        level_scrolling_type,
+        frame_scroll,
+        enemy_animation_delay,
+        current_routine,
     );
-    let animation_delay = enemy_animation_delay.wrapping_sub(1);
-    let outcome = if animation_delay == 0 {
-        SoldierRoutine05Outcome::Advanced { position, animation_delay, routine_update: advance_enemy_routine(current_routine) }
-    } else {
-        SoldierRoutine05Outcome::StillWaiting { position, animation_delay }
+    let outcome = match tail.outcome {
+        ApplyGravityToDestroyedSoldierOutcome::OffTopAdvance(r) => SoldierRoutine05Outcome::OffTopAdvance(r),
+        ApplyGravityToDestroyedSoldierOutcome::StillWaiting { position, animation_delay } => {
+            SoldierRoutine05Outcome::StillWaiting { position, animation_delay }
+        }
+        ApplyGravityToDestroyedSoldierOutcome::Advanced { position, animation_delay, routine_update } => {
+            SoldierRoutine05Outcome::Advanced { position, animation_delay, routine_update }
+        }
     };
-    SoldierRoutine05Result { sprite, y_velocity, outcome }
+    SoldierRoutine05Result { sprite, y_velocity: tail.y_velocity, outcome }
 }
 
 /// Native port of `soldier_set_y_pos_sprite_add_scroll` (`$88ba`) - adds
