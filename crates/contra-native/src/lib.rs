@@ -61,6 +61,10 @@
 //!   soldier`]).
 //! - [`physics`] - background collision and player/bullet velocity
 //!   integration.
+//! - [`graphics_buffer`] - the live nametable-write-queue subsystem many
+//!   enemy families (bridges, weapon boxes, wall cores/turrets, ...)
+//!   funnel through to redraw parts of the nametable at runtime -
+//!   started, not complete (see that module's own doc comment).
 //! - [`audio`] - DPCM samples, the sound-code bytecode format, and its
 //!   playback engine.
 //! - [`world`] - graphics decompression, palettes, super-tiles, and
@@ -80,5 +84,6 @@
 
 pub mod audio;
 pub mod enemy;
+pub mod graphics_buffer;
 pub mod physics;
 pub mod world;

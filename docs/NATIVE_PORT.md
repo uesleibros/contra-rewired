@@ -2218,6 +2218,34 @@ replacement for its real 6502 code, cycle for cycle.
       Unit-tested (21 new tests).
       Not live-verified against real hardware this session (per updated
       project pace).
+- [x] **PPU graphics-buffer subsystem - started, not complete.**
+      (`crates/contra-native/src/graphics_buffer.rs`, `$e999`-`$e9ea`) -
+      `set_ppu_addresses_in_mem` and `set_graphics_buffer_header`, the
+      foundational address-computation piece the whole `CPU_GRAPHICS_
+      BUFFER` nametable-write-queue mechanism builds on. This is the
+      single biggest remaining blocker across the whole enemy roster -
+      `draw_enemy_supertile_a`/`update_enemy_nametable_tiles`/`load_
+      bank_3_update_nametable_supertile` and their real callers (bridges,
+      weapon boxes, wall cores/turrets, the tank's tires, spiked walls,
+      fire beams, rotating gun, alien mouth, boss bomb turret, and more)
+      account for the large majority of everything still unported. Given
+      the stakes (a bug here would propagate into every family this
+      eventually unblocks), this port was cross-derived against the
+      well-known standard NES nametable/attribute-table addressing
+      formulas by hand before writing any Rust, and the test suite
+      re-runs that same cross-check in code rather than only asserting
+      against values re-derived from the same ASM reading.
+      Unit-tested (10 new tests, including 2 direct cross-checks against
+      the standard NES addressing formula at independent positions).
+      **Explicitly not done yet**: the actual `CPU_GRAPHICS_BUFFER`
+      byte-queue construction (`update_nametable_supertile`'s own tile-
+      copy loop, `update_supertile_palette`'s branchy palette-quadrant
+      writes, cross-bank `nametable_update_data_ptr_tbl` reads), the
+      separate but similarly-sized `update_nametable_tiles` routine, and
+      `draw_enemy_supertile_a`/`update_enemy_nametable_tiles` themselves
+      - real, substantial work still ahead before any blocked family
+      becomes portable. Not live-verified against real hardware this
+      session (per updated project pace).
 - [ ] Everything else, logic side. Two hundred eight routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
