@@ -2192,7 +2192,33 @@ replacement for its real 6502 code, cycle for cycle.
       Unit-tested (17 new tests).
       Not live-verified against real hardware this session (per updated
       project pace).
-- [ ] Everything else, logic side. Two hundred one routines out of what's
+- [x] **`alien_spider` family** (`crates/contra-native/src/enemy/
+      alien_spider.rs`, `$ba3b`-`$bb68`) - the level 5 alien lair's alien
+      spider enemy: spawns either already grounded or as a falling/
+      rising egg that hatches on landing, walks the ground/ceiling, and
+      occasionally leaps toward the target player. The first family this
+      session ported for neither of the two established reasons (PPU
+      graphics, rotation/aiming subsystem) - genuinely self-contained.
+      Shares `crate::enemy::white_blob::white_blob_spider_set_sprite`'s
+      nibble-packed sprite/delay cycling (made `pub(crate)` for this).
+      Investigated and resolved (not a bug) an apparent contradiction
+      between this project's own established `set_enemy_routine_to_a`
+      convention and a real ASM comment on that routine itself explaining
+      enemy routines are real-hardware "off by one" relative to their
+      table index - this project's existing Rust ports were already
+      correct throughout (they mirror the raw byte value literally), the
+      confusion was purely about which *name* a given raw value reaches,
+      documented for future reference. Two real quirks ported faithfully:
+      a permanent one-shot "has this spider ever jumped" flag (`ENEMY_
+      VAR_3`, never reset once set - after a spider's first jump it walks
+      forever after), and a second real inter-instruction carry
+      dependency in the jump-velocity calc (`mv_low_nibble_to_high`'s own
+      carry-out, undocumented in that routine's own header, relied on by
+      this specific caller's immediately-following `adc`).
+      Unit-tested (21 new tests).
+      Not live-verified against real hardware this session (per updated
+      project pace).
+- [ ] Everything else, logic side. Two hundred eight routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

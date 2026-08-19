@@ -152,7 +152,7 @@ pub struct WhiteBlobSpiderSpriteResult {
 
 /// Native port of `white_blob_spider_set_sprite` (`$b9ad`) - see this
 /// module's own doc comment for the nibble-packing shape.
-fn white_blob_spider_set_sprite(base_sprite_offset: u8, enemy_animation_delay: u8) -> WhiteBlobSpiderSpriteResult {
+pub(crate) fn white_blob_spider_set_sprite(base_sprite_offset: u8, enemy_animation_delay: u8) -> WhiteBlobSpiderSpriteResult {
     let mut sprite_index = enemy_animation_delay & 0x0F;
     let timer = enemy_animation_delay >> 4;
     let decremented_timer = timer.wrapping_sub(1);
