@@ -2124,7 +2124,29 @@ replacement for its real 6502 code, cycle for cycle.
       hand-verified against the ASM's own carry-flag logic).
       Not live-verified against real hardware this session (per updated
       project pace).
-- [ ] Everything else, logic side. One hundred eighty-two routines out of what's
+- [x] **`eye_projectile` + `spinning_bubbles` families, `rotate_enemy_
+      var_1`/`aim_var_1_for_quadrant_aim_dir_00`/`_01`**
+      (`crates/contra-native/src/enemy/eye_projectile.rs`, `$8f3f`-
+      `$8f58`; `crates/contra-native/src/enemy/spinning_bubbles.rs`,
+      `$a05b`-`$a094`; the 3 new functions in `crates/contra-native/src/
+      enemy/quadrant_aim_dir.rs`, `$f47b`-`$f4a8`) - both projectile
+      families were on the same "blocked behind rotation/aiming" list as
+      `sniper_02`-`_05`; unblocked in the same pass. `spinning_bubbles`
+      needed one more piece beyond what `sniper` did: `rotate_enemy_
+      var_1`, which steps `ENEMY_VAR_1` exactly *one* increment per call
+      toward `get_rotate_dir`'s target (so a rotating enemy visibly
+      sweeps instead of snapping) - this is the real, first consumer of
+      `get_rotate_dir`'s own clockwise/counterclockwise decision this
+      crate has ported, confirming that logic (translated but functionally
+      unread by `sniper_02`) is actually correct. One real overlapping-
+      table trick ported faithfully: `spinning_bullet_vel_tbl` stores only
+      a Y (sine) table plus 6 extra entries - the X (cosine) velocity is
+      read from the *same* array at a `+6`-entry offset (`cos(dir) ==
+      sin(dir + 6)` on this 24-step wheel), never a separate table.
+      Unit-tested (18 new tests across the three files).
+      Not live-verified against real hardware this session (per updated
+      project pace).
+- [ ] Everything else, logic side. One hundred eighty-nine routines out of what's
       realistically hundreds across 8 PRG banks - `bank7.asm` alone (the
       fixed, always-mapped bank) is close to 11,000 lines of assembly by
       itself. No claim is made here about which routine comes next or on

@@ -179,7 +179,7 @@ pub fn get_quadrant_aim_dir_for_player(
 /// `quadrant_aim_dir_01` (odd selector) uses a 24-step direction wheel
 /// (midway `$0c`, max `$18`); `_00`/`_02` (even selector) use a 12-step
 /// wheel (midway `$06`, max `$0c`).
-fn rotate_midway_max(table_index: u8) -> (u8, u8) {
+pub(crate) fn rotate_midway_max(table_index: u8) -> (u8, u8) {
     if table_index & 0x01 != 0 { (0x0C, 0x18) } else { (0x06, 0x0C) }
 }
 
@@ -309,6 +309,82 @@ pub fn get_rotate_01(
     current_aim_dir: u8,
 ) -> GetRotateDirResult {
     get_rotate_dir_for_index(1, source_y, source_x, player_index, player_state, sprite_y_pos, sprite_x_pos, level_location_type, current_aim_dir)
+}
+
+/// The full result of one [`rotate_enemy_var_1`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotateEnemyVar1Result {
+    pub new_aim_dir: u8,
+    /// Real ASM's own carry flag - `true` once the aim direction equals
+    /// the target (either already did, coming in as [`RotationDirection::
+    /// NoChangeNeeded`], or just landed on it this single one-step
+    /// rotation).
+    pub already_aiming: bool,
+}
+
+/// Native port of `rotate_enemy_var_1` (`$f47b`) - steps the enemy's own
+/// persisted aim direction (`ENEMY_VAR_1`) exactly *one* increment
+/// clockwise or counterclockwise toward `target_dir` (real ASM's `$0c`),
+/// wrapping at `max` (real ASM's `$06` - a real, deliberate side effect
+/// of [`get_rotate_dir`] having just stored the same wheel size there;
+/// this port recomputes it via [`rotate_midway_max`] instead of
+/// threading it as hidden state, since it's a pure function of the same
+/// `table_index` the caller already has). Called once per frame by
+/// [`aim_var_1_for_quadrant_aim_dir_00`]/[`_01`] rather than jumping
+/// straight to the target, so a rotating enemy visibly sweeps toward its
+/// target over several frames instead of snapping.
+pub fn rotate_enemy_var_1(current_aim_dir: u8, max: u8, target_dir: u8, direction: RotationDirection) -> RotateEnemyVar1Result {
+    if direction == RotationDirection::NoChangeNeeded {
+        return RotateEnemyVar1Result { new_aim_dir: current_aim_dir, already_aiming: true };
+    }
+
+    let new_aim_dir = if direction == RotationDirection::CounterClockwise {
+        if current_aim_dir == 0 { max - 1 } else { current_aim_dir - 1 }
+    } else {
+        let next = current_aim_dir.wrapping_add(1);
+        if next >= max { 0x00 } else { next }
+    };
+
+    RotateEnemyVar1Result { new_aim_dir, already_aiming: new_aim_dir == target_dir }
+}
+
+/// Native port of `aim_var_1_for_quadrant_aim_dir_00` (`$f496`) - [`get_
+/// rotate_00`] then [`rotate_enemy_var_1`]. Real ASM comment: "used by
+/// rotating gun and alien fetus" (neither ported yet).
+#[allow(clippy::too_many_arguments)]
+pub fn aim_var_1_for_quadrant_aim_dir_00(
+    source_y: u8,
+    source_x: u8,
+    player_index: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+    current_aim_dir: u8,
+) -> RotateEnemyVar1Result {
+    let rotate = get_rotate_00(source_y, source_x, player_index, player_state, sprite_y_pos, sprite_x_pos, level_location_type, current_aim_dir);
+    let (_, max) = rotate_midway_max(0);
+    rotate_enemy_var_1(current_aim_dir, max, rotate.new_aim_dir, rotate.direction)
+}
+
+/// Native port of `aim_var_1_for_quadrant_aim_dir_01` (`$f4a3`) - [`get_
+/// rotate_01`] then [`rotate_enemy_var_1`]. Real ASM comment: "used by
+/// spinning bubbles, tank, and white blob" (`crate::enemy::
+/// spinning_bubbles` is the only one of the three ported so far).
+#[allow(clippy::too_many_arguments)]
+pub fn aim_var_1_for_quadrant_aim_dir_01(
+    source_y: u8,
+    source_x: u8,
+    player_index: u8,
+    player_state: [u8; 2],
+    sprite_y_pos: [u8; 2],
+    sprite_x_pos: [u8; 2],
+    level_location_type: u8,
+    current_aim_dir: u8,
+) -> RotateEnemyVar1Result {
+    let rotate = get_rotate_01(source_y, source_x, player_index, player_state, sprite_y_pos, sprite_x_pos, level_location_type, current_aim_dir);
+    let (_, max) = rotate_midway_max(1);
+    rotate_enemy_var_1(current_aim_dir, max, rotate.new_aim_dir, rotate.direction)
 }
 
 #[cfg(test)]
@@ -509,5 +585,62 @@ mod tests {
         // wraps under table 0 (max=12) shouldn't necessarily wrap here.
         let (midway, max) = rotate_midway_max(1);
         assert_eq!((midway, max), (0x0C, 0x18));
+    }
+
+    #[test]
+    fn rotate_enemy_var_1_no_change_needed_leaves_the_direction_alone() {
+        let r = rotate_enemy_var_1(0x05, 0x0C, 0x05, RotationDirection::NoChangeNeeded);
+        assert_eq!(r, RotateEnemyVar1Result { new_aim_dir: 0x05, already_aiming: true });
+    }
+
+    #[test]
+    fn rotate_enemy_var_1_clockwise_steps_up_by_one() {
+        let r = rotate_enemy_var_1(0x05, 0x0C, 0x08, RotationDirection::Clockwise);
+        assert_eq!(r.new_aim_dir, 0x06);
+        assert!(!r.already_aiming);
+    }
+
+    #[test]
+    fn rotate_enemy_var_1_clockwise_wraps_at_max() {
+        let r = rotate_enemy_var_1(0x0B, 0x0C, 0x00, RotationDirection::Clockwise);
+        assert_eq!(r.new_aim_dir, 0x00);
+        assert!(r.already_aiming); // wrapped straight onto the target
+    }
+
+    #[test]
+    fn rotate_enemy_var_1_counterclockwise_steps_down_by_one() {
+        let r = rotate_enemy_var_1(0x05, 0x0C, 0x02, RotationDirection::CounterClockwise);
+        assert_eq!(r.new_aim_dir, 0x04);
+        assert!(!r.already_aiming);
+    }
+
+    #[test]
+    fn rotate_enemy_var_1_counterclockwise_wraps_at_zero() {
+        let r = rotate_enemy_var_1(0x00, 0x0C, 0x0B, RotationDirection::CounterClockwise);
+        assert_eq!(r.new_aim_dir, 0x0B);
+        assert!(r.already_aiming);
+    }
+
+    #[test]
+    fn rotate_enemy_var_1_reports_already_aiming_once_it_lands_on_the_target() {
+        let r = rotate_enemy_var_1(0x07, 0x0C, 0x08, RotationDirection::Clockwise);
+        assert_eq!(r.new_aim_dir, 0x08);
+        assert!(r.already_aiming);
+    }
+
+    #[test]
+    fn aim_var_1_for_quadrant_aim_dir_01_composes_get_rotate_01_and_rotate_enemy_var_1() {
+        let r = aim_var_1_for_quadrant_aim_dir_01(0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        let rotate = get_rotate_01(0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        let expected = rotate_enemy_var_1(0x00, 0x18, rotate.new_aim_dir, rotate.direction);
+        assert_eq!(r, expected);
+    }
+
+    #[test]
+    fn aim_var_1_for_quadrant_aim_dir_00_composes_get_rotate_00_and_rotate_enemy_var_1() {
+        let r = aim_var_1_for_quadrant_aim_dir_00(0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        let rotate = get_rotate_00(0x50, 0x50, 0, [1, 0], [0x30, 0x00], [0x90, 0x00], 0, 0x00);
+        let expected = rotate_enemy_var_1(0x00, 0x0C, rotate.new_aim_dir, rotate.direction);
+        assert_eq!(r, expected);
     }
 }
